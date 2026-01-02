@@ -4,7 +4,9 @@ import dotenv from 'dotenv';
 import apiRoutes from './api';
 import { errorMiddleware } from './middleware/error.middleware';
 import './types/request';
-import './init_db'; // Initialize database tables
+import initializeDatabase from './init_db';
+import seedDatabase from './seed';
+
 import path from 'path';
 dotenv.config();
 
@@ -54,6 +56,17 @@ app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 // --- Error Handling ---
 app.use(errorMiddleware);
 
-app.listen(port, () => {
-  console.log(`[server]: Server is running at http://localhost:${port}`);
-});
+const startServer = async () => {
+  try {
+    await initializeDatabase();
+    await seedDatabase();
+    app.listen(port, () => {
+      console.log(`[server]: Server is running at http://localhost:${port}`);
+    });
+  } catch (error) {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+  }
+};
+
+startServer();

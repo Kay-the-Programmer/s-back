@@ -890,8 +890,5 @@ async function initializeDatabase() {
     }
 }
 
-// Run the initialization
-initializeDatabase().catch(err => {
-    console.error('Failed to initialize database:', err);
-});
+export default initializeDatabase;
 

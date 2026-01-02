@@ -18,8 +18,8 @@ const defaultSettings: StoreSettings = {
     lowStockThreshold: 15,
     skuPrefix: 'SPGM-',
     enableStoreCredit: true,
-    paymentMethods: [ { id: 'cash', name: 'Cash' }, { id: 'card', name: 'Credit/Debit Card' } ],
-    supplierPaymentMethods: [ { id: 'bank_transfer', name: 'Bank Transfer' }, { id: 'check', name: 'Check' } ]
+    paymentMethods: [{ id: 'cash', name: 'Cash' }, { id: 'card', name: 'Credit/Debit Card' }],
+    supplierPaymentMethods: [{ id: 'bank_transfer', name: 'Bank Transfer' }, { id: 'check', name: 'Check' }]
 };
 
 const initialAccounts: Omit<Account, 'id' | 'balance'>[] = [
@@ -107,11 +107,11 @@ async function seedAccounts(client: any) {
 async function seedInitialData(client: any) {
     const supplierMap = new Map<string, string>();
     for (const sup of initialSuppliers) {
-         let res = await client.query('SELECT id FROM suppliers WHERE name = $1', [sup.name]);
-         if (res.rowCount === 0) {
+        let res = await client.query('SELECT id FROM suppliers WHERE name = $1', [sup.name]);
+        if (res.rowCount === 0) {
             res = await client.query('INSERT INTO suppliers (id, name, contact_person, email, payment_terms) VALUES ($1, $2, $3, $4, $5) RETURNING id', [generateId('sup'), sup.name, sup.contactPerson, sup.email, sup.paymentTerms]);
-         }
-         if (res.rows[0]) supplierMap.set(sup.name, res.rows[0].id);
+        }
+        if (res.rows[0]) supplierMap.set(sup.name, res.rows[0].id);
     }
 
     const categoryMap = new Map<string, string>();
@@ -131,7 +131,7 @@ async function seedInitialData(client: any) {
         { name: 'Artisan Sourdough Bread', description: 'Naturally leavened sourdough with a crispy crust and chewy interior.', sku: 'SP-33215', barcode: '888000011144', categoryId: categoryMap.get('Bakery'), price: 6.99, costPrice: 3.50, stock: 25, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Local Mill & Co.'), brand: 'The Bakehouse', status: 'active' },
         { name: 'Gourmet Chocolate Bar', description: '70% dark chocolate with hints of sea salt.', sku: 'SP-54321', price: 5.99, costPrice: 2.50, stock: 100, imageUrls: ['/images/salepilot.png'], status: 'active' },
     ];
-    
+
     for (const p of initialProducts) {
         await client.query(
             `INSERT INTO products(id, name, description, sku, barcode, category_id, supplier_id, price, cost_price, stock, image_urls, brand, status)
@@ -161,8 +161,8 @@ async function seedDatabase() {
         console.error('❌ Error seeding database:', error);
     } finally {
         client.release();
-        pool.end();
     }
+
 }
 
-seedDatabase();
+export default seedDatabase;
