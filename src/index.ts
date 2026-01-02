@@ -17,6 +17,7 @@ const port = process.env.PORT || 5000;
 // Configure CORS with specific options suitable for Vercel/Render
 const allowedOrigins: (string | RegExp)[] = [
   process.env.FRONTEND_URL || '',
+  'https://salepilot-scope.vercel.app',
   /https?:\/\/.+\.vercel\.app$/,
   /https?:\/\/.+\.onrender\.com$/,
   'http://localhost:5173',
@@ -29,8 +30,12 @@ const corsOptions: cors.CorsOptions = {
     const isAllowed = allowedOrigins.some((o) =>
       typeof o === 'string' ? origin === o : (o as RegExp).test(origin)
     );
-    if (isAllowed) return callback(null, true);
-    return callback(new Error(`CORS: Origin ${origin} not allowed`), false);
+    if (isAllowed) {
+      return callback(null, true);
+    } else {
+      console.log('❌ CORS Blocked Origin:', origin);
+      return callback(new Error(`CORS: Origin ${origin} not allowed`), false);
+    }
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
