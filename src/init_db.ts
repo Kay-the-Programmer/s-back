@@ -634,7 +634,7 @@ async function initializeDatabase() {
             { name: 'Green Leaf Teas', contact: 'Jane Steep', email: 'contact@greenleaf.com', terms: 'Net 15' },
             { name: 'Local Mill & Co.', contact: 'Bob Miller', email: 'orders@localmill.com', terms: 'COD' }
         ];
-        const supplierIds: Record<string,string> = {};
+        const supplierIds: Record<string, string> = {};
         for (const s of supplierDefs) {
             const found = await client.query('SELECT id FROM suppliers WHERE name = $1', [s.name]);
             if (found.rowCount && found.rows[0]) {
@@ -647,8 +647,8 @@ async function initializeDatabase() {
         }
 
         // Seed categories
-        const categoryDefs = ['Beverages','Bakery'];
-        const categoryIds: Record<string,string> = {};
+        const categoryDefs = ['Beverages', 'Bakery'];
+        const categoryIds: Record<string, string> = {};
         for (const cname of categoryDefs) {
             const found = await client.query('SELECT id FROM categories WHERE name = $1 AND parent_id IS NULL', [cname]);
             if (found.rowCount && found.rows[0]) {
@@ -674,7 +674,7 @@ async function initializeDatabase() {
                     `INSERT INTO products (id, name, description, sku, barcode, category_id, supplier_id, price, cost_price, stock, image_urls, brand, status)
                      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
                      ON CONFLICT (sku) DO NOTHING`,
-                    [genId('prod'), p.name, p.description, p.sku, p.barcode, p.category ? categoryIds[p.category] : null, p.supplier ? supplierIds[p.supplier!] : null, p.price, p.cost, p.stock, JSON.stringify(['/images/salepilot.png']), p.brand, p.status]
+                    [genId('prod'), p.name, p.description, p.sku, p.barcode, p.category ? categoryIds[p.category] : null, p.supplier ? supplierIds[p.supplier!] : null, p.price, p.cost, p.stock, ['/images/salepilot.png'], p.brand, p.status]
                 );
             }
         }
