@@ -1,0 +1,327 @@
+--
+-- CORE TABLES
+--
+
+CREATE TABLE users (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL, -- You will store the bcrypt hash here
+    role TEXT NOT NULL CHECK (role IN ('admin', 'staff', 'inventory_manager'))
+);
+
+CREATE TABLE suppliers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    contact_person TEXT,
+    phone TEXT,
+    email TEXT,
+    address TEXT,
+    payment_terms TEXT,
+    banking_details TEXT,
+    notes TEXT
+);
+
+CREATE TABLE categories (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    parent_id TEXT REFERENCES categories(id) ON DELETE SET NULL
+    -- We'll link accounting accounts and attributes later if needed
+);
+
+CREATE TABLE products (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    sku TEXT NOT NULL UNIQUE,
+    barcode TEXT UNIQUE,
+    category_id TEXT REFERENCES categories(id),
+    supplier_id TEXT REFERENCES suppliers(id),
+    price DECIMAL(10, 2) NOT NULL,
+    cost_price DECIMAL(10, 2),
+    stock DECIMAL(10, 3) NOT NULL DEFAULT 0,
+    unit_of_measure TEXT NOT NULL DEFAULT 'unit' CHECK (unit_of_measure IN ('unit','kg')),
+    image_urls TEXT[], -- PostgreSQL array type is great for this!
+    brand TEXT,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+    reorder_point INT,
+    weight DECIMAL(10, 3),
+    dimensions TEXT,
+    safety_stock INT,
+    variants JSONB DEFAULT '[]',
+    custom_attributes JSONB -- PostgreSQL's JSONB type is perfect for flexible key-value data
+);
+
+CREATE TABLE customers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    email TEXT,
+    phone TEXT,
+    address JSONB,
+    notes TEXT,
+    created_at TIMESTAMPTZ NOT NULL,
+    store_credit DECIMAL(10, 2) NOT NULL DEFAULT 0,
+    account_balance DECIMAL(10, 2) NOT NULL DEFAULT 0
+);
+
+--
+-- TRANSACTIONAL TABLES (Many-to-Many Relationships)
+--
+
+CREATE TABLE sales (
+    transaction_id TEXT PRIMARY KEY,
+    "timestamp" TIMESTAMPTZ NOT NULL,
+    customer_id TEXT REFERENCES customers(id),
+    total DECIMAL(10, 2) NOT NULL,
+    subtotal DECIMAL(10, 2) NOT NULL,
+    tax DECIMAL(10, 2) NOT NULL,
+    discount DECIMAL(10, 2) NOT NULL,
+    store_credit_used DECIMAL(10, 2),
+    payment_status TEXT NOT NULL CHECK (payment_status IN ('paid', 'unpaid', 'partially_paid')),
+    amount_paid DECIMAL(10, 2) NOT NULL,
+    due_date DATE,
+    refund_status TEXT NOT NULL DEFAULT 'none'
+);
+
+CREATE TABLE sale_items (
+    id SERIAL PRIMARY KEY, -- Auto-incrementing integer for the join table
+    sale_id TEXT NOT NULL REFERENCES sales(transaction_id) ON DELETE CASCADE,
+    product_id TEXT NOT NULL REFERENCES products(id),
+    quantity DECIMAL(10, 3) NOT NULL,
+    price_at_sale DECIMAL(10, 2) NOT NULL, -- Price of the item when it was sold
+    cost_at_sale DECIMAL(10, 2) -- Cost of the item when it was sold
+);
+
+CREATE TABLE payments (
+    id TEXT PRIMARY KEY,
+    sale_id TEXT NOT NULL REFERENCES sales(transaction_id) ON DELETE CASCADE,
+    date TIMESTAMPTZ NOT NULL,
+    amount DECIMAL(10, 2) NOT NULL,
+    method TEXT NOT NULL
+);
+
+
+--
+-- ADD INDEXES FOR PERFORMANCE
+-- These are crucial for fast lookups and joins.
+--
+
+CREATE INDEX idx_products_sku ON products(sku);
+CREATE INDEX idx_products_category_id ON products(category_id);
+CREATE INDEX idx_products_supplier_id ON products(supplier_id);
+CREATE INDEX idx_customers_email ON customers(email);
+CREATE INDEX idx_sales_customer_id ON sales(customer_id);
+CREATE INDEX idx_sale_items_sale_id ON sale_items(sale_id);
+CREATE INDEX idx_sale_items_product_id ON sale_items(product_id);
+
+--
+-- SYSTEM & SETTINGS
+--
+
+CREATE TABLE audit_logs (
+    id TEXT PRIMARY KEY,
+    "timestamp" TIMESTAMPTZ NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    user_name TEXT NOT NULL,
+    action TEXT NOT NULL,
+    details TEXT NOT NULL
+);
+
+CREATE INDEX idx_audit_logs_user_id ON audit_logs(user_id);
+CREATE INDEX idx_audit_logs_timestamp ON audit_logs("timestamp");
+
+
+-- The store_settings table is a "singleton" - it should only ever have one row.
+-- We enforce this with a constant primary key.
+CREATE TABLE store_settings (
+    id INT PRIMARY KEY DEFAULT 1,
+    name TEXT NOT NULL,
+    address TEXT,
+    phone TEXT,
+    email TEXT,
+    website TEXT,
+    tax_rate DECIMAL(5, 2) NOT NULL,
+    currency JSONB NOT NULL, -- e.g., {"symbol": "$", "code": "USD", "position": "before"}
+    receipt_message TEXT,
+    low_stock_threshold INT NOT NULL,
+    sku_prefix TEXT,
+    enable_store_credit BOOLEAN NOT NULL,
+    payment_methods JSONB, -- e.g., [{"id": "cash", "name": "Cash"}, ...]
+    supplier_payment_methods JSONB,
+    CONSTRAINT single_row_check CHECK (id = 1)
+);
+
+
+--
+-- ACCOUNTING & FINANCIALS
+-- Note: The 'accounts' table was in the previous guide but is included here for completeness.
+--
+
+CREATE TABLE accounts (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    number TEXT NOT NULL UNIQUE,
+    type TEXT NOT NULL CHECK (type IN ('asset', 'liability', 'equity', 'revenue', 'expense')),
+    sub_type TEXT UNIQUE CHECK (sub_type IN ('cash', 'accounts_receivable', 'inventory', 'accounts_payable', 'sales_tax_payable', 'sales_revenue', 'cogs', 'store_credit_payable', 'inventory_adjustment', NULL)),
+    balance DECIMAL(12, 2) NOT NULL DEFAULT 0,
+    is_debit_normal BOOLEAN NOT NULL,
+    description TEXT
+);
+
+CREATE TABLE journal_entries (
+    id TEXT PRIMARY KEY,
+    "date" TIMESTAMPTZ NOT NULL,
+    description TEXT NOT NULL,
+    source_type TEXT NOT NULL CHECK (source_type IN ('sale', 'purchase', 'manual', 'payment')),
+    source_id TEXT -- e.g., sale.transaction_id or po.id
+);
+
+CREATE TABLE journal_entry_lines (
+    id SERIAL PRIMARY KEY,
+    journal_entry_id TEXT NOT NULL REFERENCES journal_entries(id) ON DELETE CASCADE,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    type TEXT NOT NULL CHECK (type IN ('debit', 'credit')),
+    amount DECIMAL(10, 2) NOT NULL,
+    account_name TEXT NOT NULL -- Denormalized for easier display
+);
+
+CREATE INDEX idx_journal_entry_lines_journal_id ON journal_entry_lines(journal_entry_id);
+CREATE INDEX idx_journal_entry_lines_account_id ON journal_entry_lines(account_id);
+
+
+--
+-- RETURNS MANAGEMENT
+--
+
+CREATE TABLE returns (
+    id TEXT PRIMARY KEY,
+    original_sale_id TEXT NOT NULL REFERENCES sales(transaction_id),
+    "timestamp" TIMESTAMPTZ NOT NULL,
+    refund_amount DECIMAL(10, 2) NOT NULL,
+    refund_method TEXT NOT NULL
+);
+
+CREATE TABLE return_items (
+    id SERIAL PRIMARY KEY,
+    return_id TEXT NOT NULL REFERENCES returns(id) ON DELETE CASCADE,
+    product_id TEXT NOT NULL REFERENCES products(id),
+    product_name TEXT NOT NULL,
+    quantity DECIMAL(10, 3) NOT NULL,
+    reason TEXT,
+    add_to_stock BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE INDEX idx_returns_original_sale_id ON returns(original_sale_id);
+CREATE INDEX idx_return_items_return_id ON return_items(return_id);
+
+
+--
+-- PURCHASE ORDERS
+--
+
+CREATE TABLE purchase_orders (
+    id TEXT PRIMARY KEY,
+    po_number TEXT NOT NULL UNIQUE,
+    supplier_id TEXT NOT NULL REFERENCES suppliers(id),
+    supplier_name TEXT NOT NULL, -- Denormalized for easy display
+    status TEXT NOT NULL CHECK (status IN ('draft', 'ordered', 'partially_received', 'received', 'canceled')),
+    created_at TIMESTAMPTZ NOT NULL,
+    ordered_at TIMESTAMPTZ,
+    expected_at TIMESTAMPTZ,
+    received_at TIMESTAMPTZ, -- Date of last reception
+    notes TEXT,
+    subtotal DECIMAL(10, 2) NOT NULL,
+    shipping_cost DECIMAL(10, 2) NOT NULL DEFAULT 0,
+    tax DECIMAL(10, 2) NOT NULL DEFAULT 0,
+    total DECIMAL(10, 2) NOT NULL
+);
+
+CREATE TABLE purchase_order_items (
+    id SERIAL PRIMARY KEY,
+    po_id TEXT NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+    product_id TEXT NOT NULL REFERENCES products(id),
+    product_name TEXT NOT NULL,
+    sku TEXT NOT NULL,
+    quantity DECIMAL(10, 3) NOT NULL,
+    cost_price DECIMAL(10, 2) NOT NULL,
+    received_quantity DECIMAL(10, 3) NOT NULL DEFAULT 0
+);
+
+CREATE TABLE po_receptions (
+    id SERIAL PRIMARY KEY,
+    po_id TEXT NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+    reception_date TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE po_reception_items (
+    id SERIAL PRIMARY KEY,
+    reception_id INT NOT NULL REFERENCES po_receptions(id) ON DELETE CASCADE,
+    product_id TEXT NOT NULL REFERENCES products(id),
+    product_name TEXT NOT NULL,
+    quantity_received DECIMAL(10, 3) NOT NULL
+);
+
+CREATE INDEX idx_po_supplier_id ON purchase_orders(supplier_id);
+CREATE INDEX idx_po_items_po_id ON purchase_order_items(po_id);
+CREATE INDEX idx_po_receptions_po_id ON po_receptions(po_id);
+
+
+--
+-- ACCOUNTS PAYABLE (Supplier Billing)
+--
+
+CREATE TABLE supplier_invoices (
+    id TEXT PRIMARY KEY,
+    invoice_number TEXT NOT NULL,
+    supplier_id TEXT NOT NULL REFERENCES suppliers(id),
+    supplier_name TEXT NOT NULL,
+    purchase_order_id TEXT REFERENCES purchase_orders(id),
+    po_number TEXT,
+    invoice_date DATE NOT NULL,
+    due_date DATE NOT NULL,
+    amount DECIMAL(10, 2) NOT NULL,
+    amount_paid DECIMAL(10, 2) NOT NULL DEFAULT 0,
+    status TEXT NOT NULL CHECK (status IN ('unpaid', 'partially_paid', 'paid', 'overdue'))
+);
+
+CREATE TABLE supplier_payments (
+    id TEXT PRIMARY KEY,
+    supplier_invoice_id TEXT NOT NULL REFERENCES supplier_invoices(id) ON DELETE CASCADE,
+    "date" TIMESTAMPTZ NOT NULL,
+    amount DECIMAL(10, 2) NOT NULL,
+    method TEXT NOT NULL,
+    reference TEXT
+);
+
+CREATE INDEX idx_supplier_invoices_supplier_id ON supplier_invoices(supplier_id);
+CREATE INDEX idx_supplier_invoices_po_id ON supplier_invoices(purchase_order_id);
+CREATE INDEX idx_supplier_payments_invoice_id ON supplier_payments(supplier_invoice_id);
+
+
+--
+-- STOCK TAKES
+--
+
+CREATE TABLE stock_takes (
+    id TEXT PRIMARY KEY,
+    start_time TIMESTAMPTZ NOT NULL,
+    end_time TIMESTAMPTZ,
+    status TEXT NOT NULL CHECK (status IN ('active', 'completed'))
+);
+
+CREATE TABLE stock_take_items (
+    id SERIAL PRIMARY KEY,
+    stock_take_id TEXT NOT NULL REFERENCES stock_takes(id) ON DELETE CASCADE,
+    product_id TEXT NOT NULL REFERENCES products(id),
+    name TEXT NOT NULL,
+    sku TEXT NOT NULL,
+    expected DECIMAL(10, 3) NOT NULL,
+    counted DECIMAL(10, 3) -- Can be NULL if not yet counted
+);
+
+CREATE INDEX idx_stock_take_items_stock_take_id ON stock_take_items(stock_take_id);
+
+-- Run these commands in your SQL client
+ALTER TABLE categories ADD COLUMN attributes JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE categories ADD COLUMN revenue_account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL;
+ALTER TABLE categories ADD COLUMN cogs_account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL;
