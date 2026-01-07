@@ -59,10 +59,10 @@ export interface Customer {
 }
 
 export interface Payment {
-    id: string;
-    date: string;
-    amount: number;
-    method: string;
+  id: string;
+  date: string;
+  amount: number;
+  method: string;
 }
 
 export interface Sale {
@@ -79,6 +79,14 @@ export interface Sale {
   customerName?: string;
   // New fields for invoicing
   paymentStatus: 'paid' | 'unpaid' | 'partially_paid';
+  fulfillmentStatus?: 'pending' | 'fulfilled' | 'shipped' | 'cancelled'; // Default 'fulfilled' for POS
+  channel?: 'pos' | 'online'; // Default 'pos'
+  customerDetails?: {
+    name: string;
+    email?: string;
+    phone?: string;
+    address?: string;
+  };
   amountPaid: number;
   dueDate?: string;
   payments?: Payment[];
@@ -101,22 +109,22 @@ export interface Return {
 
 
 export interface CustomAttribute {
-    id: string;
-    name: string;
+  id: string;
+  name: string;
 }
 
 export interface Category {
-    id: string;
-    name: string;
-    parentId: string | null;
-    attributes: CustomAttribute[];
-    revenueAccountId?: string;
-    cogsAccountId?: string;
+  id: string;
+  name: string;
+  parentId: string | null;
+  attributes: CustomAttribute[];
+  revenueAccountId?: string;
+  cogsAccountId?: string;
 }
 
 export interface CountedItem {
   productId: string;
-  name:string;
+  name: string;
   sku: string;
   expected: number;
   counted: number | null; // null means not yet counted
@@ -180,32 +188,33 @@ export interface PurchaseOrder {
 }
 
 export interface StoreSettings {
-    // Store Information
-    name: string;
-    address: string;
-    phone: string;
-    email: string;
-    website: string;
+  // Store Information
+  name: string;
+  address: string;
+  phone: string;
+  email: string;
+  website: string;
 
-    // Financial
-    taxRate: number; // as a percentage, e.g., 10 for 10%
-    currency: {
-        symbol: string; // e.g., '$'
-        code: string; // e.g., 'USD'
-        position: 'before' | 'after';
-    };
-    
-    // Receipt
-    receiptMessage: string; // "Thank you for your purchase!"
+  // Financial
+  taxRate: number; // as a percentage, e.g., 10 for 10%
+  currency: {
+    symbol: string; // e.g., '$'
+    code: string; // e.g., 'USD'
+    position: 'before' | 'after';
+  };
 
-    // Inventory
-    lowStockThreshold: number; // Default reorder point if not set on product
-    skuPrefix: string; // e.g., 'SP-'
+  // Receipt
+  receiptMessage: string; // "Thank you for your purchase!"
 
-    // POS
-    enableStoreCredit: boolean;
-    paymentMethods: { id: string; name: string; }[];
-    supplierPaymentMethods: { id: string; name: string; }[];
+  // Inventory
+  lowStockThreshold: number; // Default reorder point if not set on product
+  skuPrefix: string; // e.g., 'SP-'
+
+  // POS
+  enableStoreCredit: boolean;
+  paymentMethods: { id: string; name: string; }[];
+  supplierPaymentMethods: { id: string; name: string; }[];
+  isOnlineStoreEnabled?: boolean;
 }
 
 // --- Accounting Types ---
@@ -213,56 +222,56 @@ export interface StoreSettings {
 export type AccountType = 'asset' | 'liability' | 'equity' | 'revenue' | 'expense';
 
 export interface Account {
-    id: string;
-    name: string;
-    number: string; // e.g., '1010'
-    type: AccountType;
-    // Special sub-type for automatic transaction mapping
-    subType?: 'cash' | 'accounts_receivable' | 'inventory' | 'accounts_payable' | 'sales_tax_payable' | 'sales_revenue' | 'cogs' | 'store_credit_payable' | 'inventory_adjustment';
-    balance: number;
-    isDebitNormal: boolean; // true for assets, expenses. false for liability, equity, revenue
-    description: string;
+  id: string;
+  name: string;
+  number: string; // e.g., '1010'
+  type: AccountType;
+  // Special sub-type for automatic transaction mapping
+  subType?: 'cash' | 'accounts_receivable' | 'inventory' | 'accounts_payable' | 'sales_tax_payable' | 'sales_revenue' | 'cogs' | 'store_credit_payable' | 'inventory_adjustment';
+  balance: number;
+  isDebitNormal: boolean; // true for assets, expenses. false for liability, equity, revenue
+  description: string;
 }
 
 export interface JournalEntryLine {
-    accountId: string;
-    type: 'debit' | 'credit';
-    amount: number;
-    accountName: string; // denormalized for display
+  accountId: string;
+  type: 'debit' | 'credit';
+  amount: number;
+  accountName: string; // denormalized for display
 }
 
 export interface JournalEntry {
-    id: string;
-    date: string;
-    description: string;
-    lines: JournalEntryLine[];
-    source: {
-        type: 'sale' | 'purchase' | 'manual' | 'payment';
-        id?: string; // e.g., sale.transactionId or po.id
-    };
+  id: string;
+  date: string;
+  description: string;
+  lines: JournalEntryLine[];
+  source: {
+    type: 'sale' | 'purchase' | 'manual' | 'payment';
+    id?: string; // e.g., sale.transactionId or po.id
+  };
 }
 
 export interface SupplierPayment {
-    id: string;
-    date: string;
-    amount: number;
-    method: string;
-    reference?: string; // e.g., check number
+  id: string;
+  date: string;
+  amount: number;
+  method: string;
+  reference?: string; // e.g., check number
 }
 
 export interface SupplierInvoice {
-    id: string;
-    invoiceNumber: string; // From the supplier
-    supplierId: string;
-    supplierName: string;
-    purchaseOrderId: string;
-    poNumber: string;
-    invoiceDate: string;
-    dueDate: string;
-    amount: number;
-    amountPaid: number;
-    status: 'unpaid' | 'partially_paid' | 'paid' | 'overdue';
-    payments: SupplierPayment[];
+  id: string;
+  invoiceNumber: string; // From the supplier
+  supplierId: string;
+  supplierName: string;
+  purchaseOrderId: string;
+  poNumber: string;
+  invoiceDate: string;
+  dueDate: string;
+  amount: number;
+  amountPaid: number;
+  status: 'unpaid' | 'partially_paid' | 'paid' | 'overdue';
+  payments: SupplierPayment[];
 }
 
 

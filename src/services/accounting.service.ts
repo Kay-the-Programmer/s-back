@@ -8,7 +8,7 @@ type DBClient = { query: (text: string, params?: any[]) => Promise<any> };
 const ensureCoreAccounts = async (storeId: string, client?: DBClient) => {
     const dbClient = client || db;
     // Define the standard chart of accounts we rely on
-    const accounts: Array<{ number: string; name: string; type: Account['type']; sub: Account['subType']; debit: boolean; desc: string } > = [
+    const accounts: Array<{ number: string; name: string; type: Account['type']; sub: Account['subType']; debit: boolean; desc: string }> = [
         { number: '1010', name: 'Cash on Hand', type: 'asset', sub: 'cash', debit: true, desc: 'Physical cash and cash equivalents in the register.' },
         { number: '1100', name: 'Accounts Receivable', type: 'asset', sub: 'accounts_receivable', debit: true, desc: 'Money owed to the business by customers.' },
         { number: '1200', name: 'Inventory', type: 'asset', sub: 'inventory', debit: true, desc: 'Value of all products available for sale.' },
@@ -51,14 +51,14 @@ const addJournalEntry = async (entry: Omit<JournalEntry, 'id'>, storeId: string,
 
     for (const line of entry.lines) {
         await dbClient.query('INSERT INTO journal_entry_lines (journal_entry_id, account_id, type, amount, account_name, store_id) VALUES ($1, $2, $3, $4, $5, $6)',
-           [entryId, line.accountId, line.type, line.amount, line.accountName, storeId]
-       );
+            [entryId, line.accountId, line.type, line.amount, line.accountName, storeId]
+        );
     }
 
     // Update account balances
     for (const line of entry.lines) {
         const accResult = await dbClient.query('SELECT is_debit_normal FROM accounts WHERE id = $1 AND store_id = $2', [line.accountId, storeId]);
-        if(accResult.rowCount > 0) {
+        if (accResult.rowCount > 0) {
             const acc = accResult.rows[0];
             let change = line.amount;
             if ((acc.is_debit_normal && line.type === 'credit') || (!acc.is_debit_normal && line.type === 'debit')) {
@@ -99,7 +99,7 @@ const recordSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) 
     const cashAccount = await findAccount('cash', storeId, dbClient);
     const arAccount = await findAccount('accounts_receivable', storeId, dbClient);
 
-    if(!inventoryAccount || !taxAccount || !cashAccount || !defaultRevenueAccount || !defaultCogsAccount || !arAccount) {
+    if (!inventoryAccount || !taxAccount || !cashAccount || !defaultRevenueAccount || !defaultCogsAccount || !arAccount) {
         console.error("Accounting Error: Core accounts for sales are not configured for store", storeId);
         return;
     }
@@ -170,9 +170,15 @@ const recordSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) 
         journalLines.push({ accountId: account.id, accountName: account.name, type: 'debit', amount: amount });
     });
 
+    const customerName = sale.customerName || 'Walk-in Customer';
+    let description = `Sale to ${customerName}`;
+    if (sale.transactionId && sale.transactionId !== 'undefined') {
+        description += ` - ID ${sale.transactionId}`;
+    }
+
     await addJournalEntry({
         date: sale.timestamp,
-        description: `Sale to ${sale.customerName || 'customer'} - ID ${sale.transactionId}`,
+        description: description,
         source: { type: 'sale', id: sale.transactionId },
         lines: journalLines.filter(line => line.amount > 0.001)
     }, storeId, dbClient);
@@ -231,9 +237,9 @@ const recordConsolidatedStockAdjustment = async (totalAdjustmentCost: number, de
 }
 
 const recordReturn = async (returnInfo: Return, originalSale: Sale, storeSettings: StoreSettings, client?: DBClient) => {
-     // Implementation would be similar to recordSale, but reversed, and would also require fetching products/categories/accounts.
-     // This is a complex function and will be left as a simplified placeholder for now to fix the compilation error.
-     console.log("Recording return to journal...", returnInfo);
+    // Implementation would be similar to recordSale, but reversed, and would also require fetching products/categories/accounts.
+    // This is a complex function and will be left as a simplified placeholder for now to fix the compilation error.
+    console.log("Recording return to journal...", returnInfo);
 };
 
 const recordPurchaseOrderReception = async (poId: string, poNumber: string, receivedItems: { productId: string, quantity: number, costPrice: number }[], client?: DBClient, storeId?: string) => {
@@ -257,14 +263,14 @@ const recordPurchaseOrderReception = async (poId: string, poNumber: string, rece
 
     if (totalCost > 0) {
         await addJournalEntry({
-           date: new Date().toISOString(),
-           description: `Received stock for PO ${poNumber}`,
-           source: { type: 'purchase', id: poId },
-           lines: [
-               { accountId: inventoryAccount.id, accountName: inventoryAccount.name, type: 'debit', amount: totalCost },
-               { accountId: apAccount.id, accountName: apAccount.name, type: 'credit', amount: totalCost },
-           ],
-       }, storeId, dbClient);
+            date: new Date().toISOString(),
+            description: `Received stock for PO ${poNumber}`,
+            source: { type: 'purchase', id: poId },
+            lines: [
+                { accountId: inventoryAccount.id, accountName: inventoryAccount.name, type: 'debit', amount: totalCost },
+                { accountId: apAccount.id, accountName: apAccount.name, type: 'credit', amount: totalCost },
+            ],
+        }, storeId, dbClient);
     }
 };
 
@@ -286,9 +292,13 @@ const recordCustomerPayment = async (sale: Sale, payment: Payment, client?: DBCl
         return;
     }
 
+    const invoiceRef = (sale.transactionId && sale.transactionId !== 'undefined')
+        ? sale.transactionId
+        : (sale.customerName || 'Walk-in Customer');
+
     await addJournalEntry({
         date: payment.date,
-        description: `Payment for Invoice ${sale.transactionId}`,
+        description: `Payment for Invoice ${invoiceRef}`,
         source: { type: 'payment', id: sale.transactionId },
         lines: [
             { accountId: cashAccount.id, accountName: cashAccount.name, type: 'debit', amount: payment.amount },
@@ -298,32 +308,32 @@ const recordCustomerPayment = async (sale: Sale, payment: Payment, client?: DBCl
 };
 
 const recordSupplierPayment = async (invoice: SupplierInvoice, payment: SupplierPayment, client?: DBClient, storeIdParam?: string) => {
-     const dbClient = client || db;
-     const storeId = storeIdParam || (invoice as any).store_id;
-     if (!storeId) {
-         console.warn('recordSupplierPayment: Missing store_id; aborting journal entry.');
-         return;
-     }
+    const dbClient = client || db;
+    const storeId = storeIdParam || (invoice as any).store_id;
+    if (!storeId) {
+        console.warn('recordSupplierPayment: Missing store_id; aborting journal entry.');
+        return;
+    }
 
-     // Ensure system accounts exist for this store
-     await ensureCoreAccounts(storeId, dbClient);
+    // Ensure system accounts exist for this store
+    await ensureCoreAccounts(storeId, dbClient);
 
-     const cashAccount = await findAccount('cash', storeId, dbClient);
-     const apAccount = await findAccount('accounts_payable', storeId, dbClient);
-     if (!cashAccount || !apAccount) {
-         console.error("Accounting Error: Core accounts for supplier payments are not configured.");
-         return;
-     }
+    const cashAccount = await findAccount('cash', storeId, dbClient);
+    const apAccount = await findAccount('accounts_payable', storeId, dbClient);
+    if (!cashAccount || !apAccount) {
+        console.error("Accounting Error: Core accounts for supplier payments are not configured.");
+        return;
+    }
 
-     await addJournalEntry({
-         date: payment.date,
-         description: `Payment for supplier invoice ${invoice.invoiceNumber}`,
-         source: { type: 'payment', id: invoice.id },
-         lines: [
-             { accountId: apAccount.id, accountName: apAccount.name, type: 'debit', amount: payment.amount },
-             { accountId: cashAccount.id, accountName: cashAccount.name, type: 'credit', amount: payment.amount },
-         ]
-     }, storeId, dbClient);
+    await addJournalEntry({
+        date: payment.date,
+        description: `Payment for supplier invoice ${invoice.invoiceNumber}`,
+        source: { type: 'payment', id: invoice.id },
+        lines: [
+            { accountId: apAccount.id, accountName: apAccount.name, type: 'debit', amount: payment.amount },
+            { accountId: cashAccount.id, accountName: cashAccount.name, type: 'credit', amount: payment.amount },
+        ]
+    }, storeId, dbClient);
 };
 
 

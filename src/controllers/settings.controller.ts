@@ -87,8 +87,8 @@ export const updateSettings = async (req: express.Request, res: express.Response
         newSettings.enableStoreCredit = newSettings.enableStoreCredit === true;
 
         const query = `
-            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             ON CONFLICT (store_id) DO UPDATE SET
                                            name = EXCLUDED.name,
                                            address = EXCLUDED.address,
@@ -102,14 +102,16 @@ export const updateSettings = async (req: express.Request, res: express.Response
                                            sku_prefix = EXCLUDED.sku_prefix,
                                            enable_store_credit = EXCLUDED.enable_store_credit,
                                            payment_methods = EXCLUDED.payment_methods,
-                                           supplier_payment_methods = EXCLUDED.supplier_payment_methods
+                                           supplier_payment_methods = EXCLUDED.supplier_payment_methods,
+                                           is_online_store_enabled = EXCLUDED.is_online_store_enabled
             RETURNING *;
         `;
         const values = [
             storeId,
             newSettings.name, newSettings.address, newSettings.phone, newSettings.email, newSettings.website,
             newSettings.taxRate, JSON.stringify(newSettings.currency), newSettings.receiptMessage, newSettings.lowStockThreshold,
-            newSettings.skuPrefix, newSettings.enableStoreCredit, JSON.stringify(newSettings.paymentMethods), JSON.stringify(newSettings.supplierPaymentMethods)
+            newSettings.skuPrefix, newSettings.enableStoreCredit, JSON.stringify(newSettings.paymentMethods), JSON.stringify(newSettings.supplierPaymentMethods),
+            newSettings.isOnlineStoreEnabled ?? true
         ];
 
         const result = await db.query(query, values);

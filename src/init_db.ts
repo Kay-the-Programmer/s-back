@@ -318,6 +318,9 @@ async function initializeDatabase() {
                 discount DECIMAL(10,2) NOT NULL,
                 store_credit_used DECIMAL(10,2),
                 payment_status TEXT NOT NULL CHECK (payment_status IN ('paid','unpaid','partially_paid')),
+                fulfillment_status TEXT NOT NULL DEFAULT 'fulfilled' CHECK (fulfillment_status IN ('pending','fulfilled','shipped','cancelled')),
+                channel TEXT NOT NULL DEFAULT 'pos' CHECK (channel IN ('pos','online')),
+                customer_details JSONB,
                 amount_paid DECIMAL(10,2) NOT NULL,
                 due_date DATE,
                 refund_status TEXT NOT NULL DEFAULT 'none',
@@ -326,6 +329,29 @@ async function initializeDatabase() {
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_sales_store_id ON sales(store_id);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_sales_store_id_timestamp ON sales(store_id, "timestamp");`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_sales_fulfillment_status ON sales(fulfillment_status);`);
+
+        // Migration for existing sales table
+        await client.query(`
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'sales') THEN
+                    ALTER TABLE sales ADD COLUMN IF NOT EXISTS fulfillment_status TEXT CHECK (fulfillment_status IN ('pending','fulfilled','shipped','cancelled'));
+                    ALTER TABLE sales ADD COLUMN IF NOT EXISTS channel TEXT CHECK (channel IN ('pos','online'));
+                    ALTER TABLE sales ADD COLUMN IF NOT EXISTS customer_details JSONB;
+                    
+                    ALTER TABLE sales ALTER COLUMN fulfillment_status SET DEFAULT 'fulfilled';
+                    ALTER TABLE sales ALTER COLUMN channel SET DEFAULT 'pos';
+                    
+                    UPDATE sales SET fulfillment_status = 'fulfilled' WHERE fulfillment_status IS NULL;
+                    UPDATE sales SET channel = 'pos' WHERE channel IS NULL;
+
+                    -- Re-apply NOT NULL constraints after population
+                    ALTER TABLE sales ALTER COLUMN fulfillment_status SET NOT NULL;
+                    ALTER TABLE sales ALTER COLUMN channel SET NOT NULL;
+                END IF;
+            END $$;
+        `);
         await client.query(`
             CREATE TABLE IF NOT EXISTS sale_items (
                 id SERIAL PRIMARY KEY,

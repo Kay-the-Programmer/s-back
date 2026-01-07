@@ -45,6 +45,15 @@ export const getSales = async (req: express.Request, res: express.Response) => {
         params.push(paymentStatus);
         whereClauses.push(`s.payment_status = $${params.length}`);
     }
+    const { fulfillmentStatus, channel } = req.query as { [key: string]: string };
+    if (fulfillmentStatus) {
+        params.push(fulfillmentStatus);
+        whereClauses.push(`s.fulfillment_status = $${params.length}`);
+    }
+    if (channel) {
+        params.push(channel);
+        whereClauses.push(`s.channel = $${params.length}`);
+    }
 
     if (whereClauses.length > 0) {
         baseQuery += ' WHERE ' + whereClauses.join(' AND ');
@@ -207,7 +216,7 @@ export const recordPayment = async (req: express.Request, res: express.Response)
         // Prevent overpayments beyond the remaining balance (allowing for cent rounding)
         if (paymentCents > remainingCents) {
             await client.query('ROLLBACK');
-            return res.status(400).json({ message: `Payment exceeds remaining balance. Remaining due is ${(remainingCents/100).toFixed(2)}.` });
+            return res.status(400).json({ message: `Payment exceeds remaining balance. Remaining due is ${(remainingCents / 100).toFixed(2)}.` });
         }
 
         const newAmountPaid = sale.amount_paid + paymentData.amount;
@@ -243,5 +252,44 @@ export const recordPayment = async (req: express.Request, res: express.Response)
         res.status(500).json({ message: 'Failed to record payment' });
     } finally {
         client.release();
+    }
+};
+
+export const updateFulfillmentStatus = async (req: express.Request, res: express.Response) => {
+    const { id } = req.params;
+    const { status } = req.body; // pending, fulfilled, shipped, cancelled
+
+    const validStatuses = ['pending', 'fulfilled', 'shipped', 'cancelled'];
+    if (!validStatuses.includes(status)) {
+        return res.status(400).json({ message: 'Invalid fulfillment status' });
+    }
+
+    // Enforce tenant context
+    const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
+    if (!storeId) {
+        return res.status(400).json({ message: 'Store context required' });
+    }
+
+    try {
+        const result = await db.query(
+            'UPDATE sales SET fulfillment_status = $1 WHERE transaction_id = $2 AND store_id = $3 RETURNING *',
+            [status, id, storeId]
+        );
+
+        if (result.rowCount === 0) {
+            return res.status(404).json({ message: 'Sale not found' });
+        }
+
+        await auditService.log(
+            req.user!,
+            'Update Order Status',
+            `Transaction ${id} status changed to ${status}`,
+            (db as any)
+        );
+
+        res.json(toCamelCase(result.rows[0]));
+    } catch (error) {
+        console.error('Error updating fulfillment status:', error);
+        res.status(500).json({ message: 'Error updating status' });
     }
 };

@@ -1,0 +1,11 @@
+Fetching test data...
+Testing with Store: store-1758301337328-jkis4eh, Product: prod-1765891612394-9su7bz1
+
+Test 1: Invalid Quantity (NaN)
+Response [400]: {"message":"No valid items in cart to checkout."}
+
+Test 2: Negative Quantity
+Response [400]: {"message":"No valid items in cart to checkout."}
+
+Test 3: Missing Product ID
+Response [400]: {"message":"No valid items in cart to checkout."}

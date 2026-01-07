@@ -57,6 +57,7 @@ app.get('/', (req: express.Request, res: express.Response) => {
 
 // Serve static files from uploads directory
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+app.use('/images', express.static(path.join(__dirname, '../public/images')));
 
 // --- Error Handling ---
 app.use(errorMiddleware);
