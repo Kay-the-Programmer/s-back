@@ -138,8 +138,8 @@ export const createSale = async (req: express.Request, res: express.Response) =>
             for (const payment of payments) {
                 const paymentId = generateId('pay');
                 const pResult = await client.query(
-                    'INSERT INTO payments(id, sale_id, date, amount, method, store_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-                    [paymentId, transactionId, timestamp, payment.amount, payment.method, storeId]
+                    'INSERT INTO payments(id, sale_id, date, amount, method, reference, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+                    [paymentId, transactionId, timestamp, payment.amount, payment.method, payment.reference, storeId]
                 );
                 finalPayments.push(pResult.rows[0]);
             }
@@ -165,8 +165,8 @@ export const createSale = async (req: express.Request, res: express.Response) =>
             }
         }
 
-        await auditService.log(req.user!, 'Sale Created', `Transaction ID: ${transactionId}, Total: ${saleData.total.toFixed(2)}`, client);
-        await accountingService.recordSale({ ...newSale, cart: saleData.cart }, client, storeId);
+        await auditService.log(req.user!, 'Sale Created', `Transaction ID: ${transactionId}, Total: ${Number(saleData.total).toFixed(2)}`, client);
+        await accountingService.recordSale(toCamelCase({ ...newSale, cart: saleData.cart }), client, storeId);
 
         await client.query('COMMIT');
 
@@ -219,13 +219,13 @@ export const recordPayment = async (req: express.Request, res: express.Response)
             return res.status(400).json({ message: `Payment exceeds remaining balance. Remaining due is ${(remainingCents / 100).toFixed(2)}.` });
         }
 
-        const newAmountPaid = sale.amount_paid + paymentData.amount;
+        const newAmountPaid = Number(sale.amount_paid) + Number(paymentData.amount);
         const paidCents = Math.round(newAmountPaid * 100);
         const newPaymentStatus = paidCents >= totalCents ? 'paid' : 'partially_paid';
 
         await client.query(
-            'INSERT INTO payments(id, sale_id, date, amount, method, store_id) VALUES ($1, $2, $3, $4, $5, $6)',
-            [generateId('pay'), id, paymentData.date, paymentData.amount, paymentData.method, storeId]
+            'INSERT INTO payments(id, sale_id, date, amount, method, reference, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+            [generateId('pay'), id, paymentData.date, paymentData.amount, paymentData.method, paymentData.reference, storeId]
         );
 
         const updatedSaleResult = await client.query(
@@ -240,16 +240,16 @@ export const recordPayment = async (req: express.Request, res: express.Response)
             );
         }
 
-        await auditService.log(req.user!, 'Payment Recorded', `For Invoice ${id}, Amount: ${paymentData.amount.toFixed(2)}`, client);
-        await accountingService.recordCustomerPayment(sale, { ...paymentData, id: '' }, client, storeId);
+        await auditService.log(req.user!, 'Payment Recorded', `For Invoice ${id}, Amount: ${Number(paymentData.amount).toFixed(2)}`, client);
+        await accountingService.recordCustomerPayment(toCamelCase(sale), { ...paymentData, id: '' }, client, storeId);
 
         await client.query('COMMIT');
         res.status(200).json(toCamelCase(updatedSaleResult.rows[0]));
 
-    } catch (error) {
+    } catch (error: any) {
         await client.query('ROLLBACK');
         console.error('Error recording payment:', error);
-        res.status(500).json({ message: 'Failed to record payment' });
+        res.status(500).json({ message: 'Failed to record payment', error: error.message });
     } finally {
         client.release();
     }

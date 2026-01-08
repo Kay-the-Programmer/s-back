@@ -296,9 +296,14 @@ const recordCustomerPayment = async (sale: Sale, payment: Payment, client?: DBCl
         ? sale.transactionId
         : (sale.customerName || 'Walk-in Customer');
 
+    let description = `Payment for Invoice ${invoiceRef}`;
+    if (payment.reference) {
+        description += ` (Ref: ${payment.reference})`;
+    }
+
     await addJournalEntry({
         date: payment.date,
-        description: `Payment for Invoice ${invoiceRef}`,
+        description: description,
         source: { type: 'payment', id: sale.transactionId },
         lines: [
             { accountId: cashAccount.id, accountName: cashAccount.name, type: 'debit', amount: payment.amount },

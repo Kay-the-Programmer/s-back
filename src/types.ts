@@ -63,6 +63,7 @@ export interface Payment {
   date: string;
   amount: number;
   method: string;
+  reference?: string;
 }
 
 export interface Sale {

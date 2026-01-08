@@ -211,6 +211,11 @@ async function initializeDatabase() {
                     ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS store_id TEXT;
                     CREATE INDEX IF NOT EXISTS idx_supplier_payments_store_id ON supplier_payments(store_id);
                 END IF;
+
+                -- Payments table reference column migration
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'payments') THEN
+                    ALTER TABLE payments ADD COLUMN IF NOT EXISTS reference TEXT;
+                END IF;
             END $$;
         `);
 
@@ -372,6 +377,7 @@ async function initializeDatabase() {
                 date TIMESTAMPTZ NOT NULL,
                 amount DECIMAL(10,2) NOT NULL,
                 method TEXT NOT NULL,
+                reference TEXT,
                 store_id TEXT
             );
         `);
