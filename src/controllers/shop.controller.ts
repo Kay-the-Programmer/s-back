@@ -1,6 +1,7 @@
 import express from 'express';
 import db from '../db_client';
 import { toCamelCase } from '../utils/helpers';
+import { accountingService } from '../services/accounting.service';
 
 // Helper to filter product fields for public display
 const sanitizeProduct = (product: any) => {
@@ -19,7 +20,8 @@ const sanitizeProduct = (product: any) => {
         weight: parseFloat(product.weight || 0),
         dimensions: product.dimensions,
         variants: product.variants,
-        custom_attributes: product.custom_attributes
+        custom_attributes: product.custom_attributes,
+        store_id: product.store_id
     };
 };
 
@@ -39,7 +41,7 @@ export const getShopInfo = async (req: express.Request, res: express.Response) =
 
         // Also fetch public store settings (currency, contact info, etc.)
         const settingsResult = await db.query(
-            'SELECT name, address, phone, email, website, currency FROM store_settings WHERE store_id = $1',
+            'SELECT name, address, phone, email, website, currency, tax_rate, is_online_store_enabled, receipt_message FROM store_settings WHERE store_id = $1',
             [storeId]
         );
 
@@ -265,6 +267,23 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
             );
         }
 
+        // 5. Record in Accounting
+        const saleForAccounting = {
+            transactionId,
+            timestamp,
+            customerId,
+            total,
+            subtotal,
+            tax,
+            discount: 0,
+            paymentStatus: 'unpaid',
+            amountPaid: 0,
+            cart: validItems,
+            customerName: customerDetails.name
+        };
+
+        await accountingService.recordSale(saleForAccounting as any, client, storeId);
+
         await client.query('COMMIT');
 
         res.status(201).json({
@@ -293,12 +312,38 @@ export const getPublicStores = async (req: express.Request, res: express.Respons
             SELECT s.id, s.name, s.status, ss.address, ss.phone, ss.email, ss.website, ss.currency
             FROM stores s
             LEFT JOIN store_settings ss ON s.id = ss.store_id
-            WHERE s.status = 'active'
+            WHERE s.status = 'active' AND (ss.is_online_store_enabled IS NULL OR ss.is_online_store_enabled = TRUE)
         `);
 
         res.status(200).json(toCamelCase(result.rows));
     } catch (error) {
         console.error('Error fetching public stores:', error);
         res.status(500).json({ message: 'Failed to fetch stores' });
+    }
+};
+
+export const getGlobalProducts = async (req: express.Request, res: express.Response) => {
+    try {
+        const result = await db.query(`
+            SELECT p.*, s.name as store_name, ss.currency as store_currency
+            FROM products p
+            JOIN stores s ON p.store_id = s.id
+            LEFT JOIN store_settings ss ON s.id = ss.store_id
+            WHERE p.status = 'active' 
+            AND s.status = 'active'
+            AND (ss.is_online_store_enabled IS NULL OR ss.is_online_store_enabled = TRUE)
+            ORDER BY p.name ASC
+            LIMIT 100
+        `);
+
+        const sanitizedProducts = result.rows.map(p => ({
+            ...sanitizeProduct(p),
+            store_name: p.store_name,
+            currency: p.store_currency
+        }));
+        res.status(200).json(toCamelCase(sanitizedProducts));
+    } catch (error) {
+        console.error('Error fetching global products:', error);
+        res.status(500).json({ message: 'Failed to fetch products' });
     }
 };

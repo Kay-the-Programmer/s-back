@@ -271,23 +271,74 @@ export const updateFulfillmentStatus = async (req: express.Request, res: express
     }
 
     try {
-        const result = await db.query(
-            'UPDATE sales SET fulfillment_status = $1 WHERE transaction_id = $2 AND store_id = $3 RETURNING *',
-            [status, id, storeId]
-        );
+        const client = await db._pool.connect();
+        try {
+            await client.query('BEGIN');
 
-        if (result.rowCount === 0) {
-            return res.status(404).json({ message: 'Sale not found' });
+            const saleResult = await client.query(
+                `SELECT s.*, 
+                 COALESCE(json_agg(DISTINCT jsonb_build_object('productId', si.product_id, 'name', p.name, 'price', si.price_at_sale, 'quantity', si.quantity, 'costPrice', si.cost_at_sale)) FILTER (WHERE si.id IS NOT NULL), '[]') as cart
+                 FROM sales s
+                 LEFT JOIN sale_items si ON s.transaction_id = si.sale_id
+                 LEFT JOIN products p ON si.product_id = p.id
+                 WHERE s.transaction_id = $1 AND s.store_id = $2
+                 GROUP BY s.transaction_id`,
+                [id, storeId]
+            );
+
+            if (saleResult.rowCount === 0) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({ message: 'Sale not found' });
+            }
+
+            const sale = toCamelCase(saleResult.rows[0]);
+
+            if (sale.fulfillmentStatus === 'cancelled') {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ message: 'Order is already cancelled' });
+            }
+
+            if (status === 'cancelled') {
+                for (const item of sale.cart) {
+                    await client.query(
+                        'UPDATE products SET stock = stock + $1 WHERE id = $2 AND store_id = $3',
+                        [item.quantity, item.productId, storeId]
+                    );
+                }
+
+                if (sale.customerId && sale.paymentStatus !== 'paid') {
+                    const balanceDue = Number(sale.total) - Number(sale.amountPaid || 0);
+                    if (balanceDue > 0) {
+                        await client.query(
+                            'UPDATE customers SET account_balance = account_balance - $1 WHERE id = $2 AND store_id = $3',
+                            [balanceDue, sale.customerId, storeId]
+                        );
+                    }
+                }
+
+                await accountingService.voidSale(sale, client, storeId);
+            }
+
+            const result = await client.query(
+                'UPDATE sales SET fulfillment_status = $1 WHERE transaction_id = $2 AND store_id = $3 RETURNING *',
+                [status, id, storeId]
+            );
+
+            await auditService.log(
+                req.user!,
+                'Update Order Status',
+                `Transaction ${id} status changed from ${sale.fulfillmentStatus} to ${status}`,
+                client
+            );
+
+            await client.query('COMMIT');
+            res.json(toCamelCase(result.rows[0]));
+        } catch (innerError) {
+            await client.query('ROLLBACK');
+            throw innerError;
+        } finally {
+            client.release();
         }
-
-        await auditService.log(
-            req.user!,
-            'Update Order Status',
-            `Transaction ${id} status changed to ${status}`,
-            (db as any)
-        );
-
-        res.json(toCamelCase(result.rows[0]));
     } catch (error) {
         console.error('Error updating fulfillment status:', error);
         res.status(500).json({ message: 'Error updating status' });

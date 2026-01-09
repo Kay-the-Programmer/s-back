@@ -216,6 +216,15 @@ export interface StoreSettings {
   paymentMethods: { id: string; name: string; }[];
   supplierPaymentMethods: { id: string; name: string; }[];
   isOnlineStoreEnabled?: boolean;
+
+  // Accounting Mappings
+  taxAccountId?: string;
+  revenueAccountId?: string;
+  cogsAccountId?: string;
+  inventoryAccountId?: string;
+  cashAccountId?: string;
+  arAccountId?: string;
+  apAccountId?: string;
 }
 
 // --- Accounting Types ---

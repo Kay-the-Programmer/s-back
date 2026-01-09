@@ -491,7 +491,8 @@ async function initializeDatabase() {
                 sku_prefix TEXT,
                 enable_store_credit BOOLEAN NOT NULL,
                 payment_methods JSONB,
-                supplier_payment_methods JSONB
+                supplier_payment_methods JSONB,
+                is_online_store_enabled BOOLEAN NOT NULL DEFAULT TRUE
             );
         `);
         // Migrate legacy singleton settings table to per-store if needed
@@ -510,6 +511,10 @@ async function initializeDatabase() {
                         SELECT 1 FROM information_schema.columns
                         WHERE table_name = 'store_settings' AND column_name = 'store_id'
                     ) INTO has_store_id;
+
+                    -- Add missing columns for existing tables
+                    ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS supplier_payment_methods JSONB;
+                    ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS is_online_store_enabled BOOLEAN NOT NULL DEFAULT TRUE;
 
                     IF NOT has_store_id THEN
                         -- Add store_id column
@@ -913,6 +918,66 @@ async function initializeDatabase() {
         await client.query(`
             CREATE INDEX IF NOT EXISTS idx_stock_take_items_store_id_stock_take_id ON stock_take_items(store_id, stock_take_id);
         `);
+
+        // Notifications Table (targeted)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS notifications (
+                id TEXT PRIMARY KEY,
+                store_id TEXT REFERENCES stores(id),
+                user_id TEXT REFERENCES users(id),
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                type TEXT DEFAULT 'info',
+                is_read BOOLEAN DEFAULT FALSE,
+                link TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_notifications_store_id ON notifications(store_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);`);
+
+        // Marketplace Tables
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS marketplace_requests (
+                id TEXT PRIMARY KEY,
+                customer_name TEXT NOT NULL,
+                customer_email TEXT NOT NULL,
+                query TEXT NOT NULL,
+                target_price DECIMAL(10, 2) NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'matched', 'completed', 'cancelled')),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_marketplace_requests_status ON marketplace_requests(status);`);
+
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS marketplace_matches (
+                id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL REFERENCES marketplace_requests(id) ON DELETE CASCADE,
+                store_id TEXT NOT NULL REFERENCES stores(id),
+                status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'notified', 'offered', 'declined', 'skipped')),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_marketplace_matches_request_id ON marketplace_matches(request_id);`);
+
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS marketplace_offers (
+                id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL REFERENCES marketplace_requests(id) ON DELETE CASCADE,
+                match_id TEXT REFERENCES marketplace_matches(id),
+                store_id TEXT NOT NULL REFERENCES stores(id),
+                product_id TEXT REFERENCES products(id),
+                seller_price DECIMAL(10, 2) NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'declined')),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_marketplace_offers_request_id ON marketplace_offers(request_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_marketplace_offers_store_id ON marketplace_offers(store_id);`);
 
         console.log('✅ Database schema verified/updated successfully');
     } catch (error) {

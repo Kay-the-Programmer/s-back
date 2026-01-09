@@ -17,6 +17,8 @@ import auditRoutes from './audit.routes';
 import storeRoutes from './stores.routes';
 import superadminRoutes from './superadmin.routes';
 import shopRoutes from './shop.routes';
+import marketplaceRoutes from './marketplace.routes';
+import notificationRoutes from './notifications.routes';
 
 
 const router = express.Router();
@@ -40,6 +42,8 @@ router.use('/audit', auditRoutes);
 router.use('/stores', storeRoutes);
 router.use('/superadmin', superadminRoutes);
 router.use('/shop', shopRoutes);
+router.use('/marketplace', marketplaceRoutes);
+router.use('/notifications', notificationRoutes);
 
 
 // A simple health check endpoint

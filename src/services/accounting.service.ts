@@ -184,6 +184,112 @@ const recordSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) 
     }, storeId, dbClient);
 };
 
+const voidSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) => {
+    const dbClient = client || db;
+    const storeId = storeIdParam || (sale as any).storeId || (sale as any).store_id;
+    if (!storeId) {
+        console.warn('voidSale: Missing store_id; aborting journal entry.');
+        return;
+    }
+
+    // Ensure system accounts exist
+    await ensureCoreAccounts(storeId, dbClient);
+
+    const productIds = sale.cart.map(i => i.productId);
+    if (productIds.length === 0) return;
+
+    const allProductsResult = await dbClient.query('SELECT * FROM products WHERE id = ANY($1::text[]) AND store_id = $2', [productIds, storeId]);
+    const allProducts: Product[] = allProductsResult.rows;
+
+    const allCategoriesResult = await dbClient.query('SELECT * FROM categories WHERE store_id = $1', [storeId]);
+    const allCategories: Category[] = allCategoriesResult.rows;
+
+    const revenueByAccount = new Map<string, { account: Account, amount: number }>();
+    const cogsByAccount = new Map<string, { account: Account, amount: number }>();
+
+    const defaultRevenueAccount = await findAccount('sales_revenue', storeId, dbClient);
+    const defaultCogsAccount = await findAccount('cogs', storeId, dbClient);
+    const inventoryAccount = await findAccount('inventory', storeId, dbClient);
+    const taxAccount = await findAccount('sales_tax_payable', storeId, dbClient);
+    const cashAccount = await findAccount('cash', storeId, dbClient);
+    const arAccount = await findAccount('accounts_receivable', storeId, dbClient);
+
+    if (!inventoryAccount || !taxAccount || !cashAccount || !defaultRevenueAccount || !defaultCogsAccount || !arAccount) {
+        console.error("Accounting Error: Core accounts for voiding sales are not configured for store", storeId);
+        return;
+    }
+
+    // Determine primary asset (AR or Cash) based on original status
+    const primaryAssetAccount = sale.paymentStatus === 'paid' ? cashAccount : arAccount;
+    const productMap = new Map(allProducts.map(p => [p.id, p]));
+    const categoryMap = new Map(allCategories.map(c => [c.id, c]));
+
+    const accountsMap = new Map<string, Account>();
+    const totalCartValue = sale.cart.reduce((acc, item) => acc + item.price * item.quantity, 0);
+    const discountRatio = totalCartValue > 0 ? (sale.subtotal) / totalCartValue : 1;
+
+    for (const item of sale.cart) {
+        const product = productMap.get(item.productId);
+        if (!product) continue;
+
+        let revenueAccount = defaultRevenueAccount;
+        if (product.categoryId) {
+            const category = categoryMap.get(product.categoryId);
+            if (category?.revenueAccountId) {
+                if (!accountsMap.has(category.revenueAccountId)) {
+                    const accountResult = await dbClient.query('SELECT * FROM accounts WHERE id = $1 AND store_id = $2', [category.revenueAccountId, storeId]);
+                    if (accountResult.rowCount > 0) accountsMap.set(category.revenueAccountId, accountResult.rows[0]);
+                }
+                revenueAccount = accountsMap.get(category.revenueAccountId) || defaultRevenueAccount;
+            }
+        }
+        const itemRevenue = (item.price * item.quantity) * discountRatio;
+        const currentRevenue = revenueByAccount.get(revenueAccount.id) || { account: revenueAccount, amount: 0 };
+        currentRevenue.amount += itemRevenue;
+        revenueByAccount.set(revenueAccount.id, currentRevenue);
+
+        let cogsAccount = defaultCogsAccount;
+        if (product.categoryId) {
+            const category = categoryMap.get(product.categoryId);
+            if (category?.cogsAccountId) {
+                if (!accountsMap.has(category.cogsAccountId)) {
+                    const accountResult = await dbClient.query('SELECT * FROM accounts WHERE id = $1 AND store_id = $2', [category.cogsAccountId, storeId]);
+                    if (accountResult.rowCount > 0) accountsMap.set(category.cogsAccountId, accountResult.rows[0]);
+                }
+                cogsAccount = accountsMap.get(category.cogsAccountId) || defaultCogsAccount;
+            }
+        }
+        const itemCogs = (product.costPrice || 0) * item.quantity;
+        const currentCogs = cogsByAccount.get(cogsAccount.id) || { account: cogsAccount, amount: 0 };
+        currentCogs.amount += itemCogs;
+        cogsByAccount.set(cogsAccount.id, currentCogs);
+    }
+
+    const totalCogs = Array.from(cogsByAccount.values()).reduce((sum, item) => sum + item.amount, 0);
+
+    // REVERSAL LINES (Swap Debit/Credit from recordSale)
+    const journalLines: JournalEntryLine[] = [
+        { accountId: primaryAssetAccount.id, accountName: primaryAssetAccount.name, type: 'credit', amount: sale.total },
+        { accountId: taxAccount.id, accountName: taxAccount.name, type: 'debit', amount: sale.tax },
+        { accountId: inventoryAccount.id, accountName: inventoryAccount.name, type: 'debit', amount: totalCogs },
+    ];
+
+    revenueByAccount.forEach(({ account, amount }) => {
+        journalLines.push({ accountId: account.id, accountName: account.name, type: 'debit', amount: amount });
+    });
+
+    cogsByAccount.forEach(({ account, amount }) => {
+        journalLines.push({ accountId: account.id, accountName: account.name, type: 'credit', amount: amount });
+    });
+
+    await addJournalEntry({
+        date: new Date().toISOString(),
+        description: `VOID/CANCELLED Sale - ID ${sale.transactionId}`,
+        source: { type: 'sale', id: sale.transactionId },
+        lines: journalLines.filter(line => line.amount > 0.001)
+    }, storeId, dbClient);
+};
+
 const recordStockAdjustment = async (product: Product, oldQuantity: number, reason: string, client?: DBClient, storeIdParam?: string) => {
     const quantityChange = product.stock - oldQuantity;
     if (quantityChange === 0) return;
@@ -351,4 +457,5 @@ export const accountingService = {
     recordPurchaseOrderReception,
     recordCustomerPayment,
     recordSupplierPayment,
+    voidSale,
 };
