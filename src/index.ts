@@ -1,14 +1,13 @@
+import dotenv from 'dotenv';
+dotenv.config();
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import apiRoutes from './api';
 import { errorMiddleware } from './middleware/error.middleware';
 import './types/request';
 import initializeDatabase from './init_db';
 import seedDatabase from './seed';
-
 import path from 'path';
-dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 5000;

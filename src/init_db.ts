@@ -991,6 +991,19 @@ async function initializeDatabase() {
         await client.query(`CREATE INDEX IF NOT EXISTS idx_marketplace_offers_request_id ON marketplace_offers(request_id);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_marketplace_offers_store_id ON marketplace_offers(store_id);`);
 
+        // Push Subscriptions Table
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS push_subscriptions (
+                id TEXT PRIMARY KEY,
+                user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+                endpoint TEXT UNIQUE NOT NULL,
+                p256dh TEXT NOT NULL,
+                auth TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_id ON push_subscriptions(user_id);`);
+
         console.log('✅ Database schema verified/updated successfully');
     } catch (error) {
         console.error('❌ Error initializing database:', error);
