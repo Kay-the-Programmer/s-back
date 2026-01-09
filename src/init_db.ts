@@ -941,7 +941,8 @@ async function initializeDatabase() {
             CREATE TABLE IF NOT EXISTS marketplace_requests (
                 id TEXT PRIMARY KEY,
                 customer_name TEXT NOT NULL,
-                customer_email TEXT NOT NULL,
+                customer_email TEXT,
+                customer_phone TEXT,
                 query TEXT NOT NULL,
                 target_price DECIMAL(10, 2) NOT NULL,
                 status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'matched', 'completed', 'cancelled')),
@@ -950,6 +951,17 @@ async function initializeDatabase() {
             );
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_marketplace_requests_status ON marketplace_requests(status);`);
+
+        // Migration for marketplace_requests
+        await client.query(`
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'marketplace_requests') THEN
+                    ALTER TABLE marketplace_requests ADD COLUMN IF NOT EXISTS customer_phone TEXT;
+                    ALTER TABLE marketplace_requests ALTER COLUMN customer_email DROP NOT NULL;
+                END IF;
+            END $$;
+        `);
 
         await client.query(`
             CREATE TABLE IF NOT EXISTS marketplace_matches (
