@@ -27,7 +27,8 @@ export interface User {
   id: string;
   name: string;
   email: string;
-  role: 'superadmin' | 'admin' | 'staff' | 'inventory_manager';
+  phone?: string | null;
+  role: 'superadmin' | 'admin' | 'staff' | 'inventory_manager' | 'customer';
   currentStoreId?: string; // Multi-tenant: currently selected store ID
 }
 
