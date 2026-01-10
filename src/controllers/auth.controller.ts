@@ -175,9 +175,86 @@ export const changePassword = async (req: express.Request, res: express.Response
 };
 
 
-export async function createAccountWithFirebaseAuth() {
-    const authCredentials = await signInWithEmailAndPassword(authentication, "", "");
-    const response = await signInWithPhoneNumber(authentication, "+260776006734")
 
 
-}
+export const googleLogin = async (req: express.Request, res: express.Response) => {
+    const { idToken, role: requestedRole } = req.body;
+    if (!idToken) {
+        return res.status(400).json({ message: 'Missing idToken' });
+    }
+
+    try {
+        // Correctly verify Firebase ID Token using Identity Toolkit API
+        // This validates that the token was signed by Firebase (Google) for THIS specific project
+        const apiKey = "AIzaSyBqcS-rap5P5jRl7nhfdESKWEJtZb4Zy8c"; // Hardcoded from firebase.ts because importing generated circular deps or module issues occasionally
+        const verifyUrl = `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${apiKey}`;
+
+        const googleRes = await fetch(verifyUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ idToken })
+        });
+
+        if (!googleRes.ok) {
+            const errorData = await googleRes.json();
+            console.error('Firebase token validation failed:', errorData);
+            return res.status(401).json({ message: 'Invalid Google token' });
+        }
+
+        const payload = await googleRes.json();
+        // Identity Toolkit returns { users: [ { localId, email, displayName, photoUrl, ... } ] }
+        const googleUser = payload.users?.[0];
+
+        if (!googleUser || !googleUser.email) {
+            return res.status(400).json({ message: 'Google account has no email' });
+        }
+
+        const email = googleUser.email;
+        const name = googleUser.displayName;
+        const normEmail = String(email).toLowerCase();
+
+        // Check if user exists
+        const result = await db.query('SELECT * FROM users WHERE email = $1', [normEmail]);
+        let user = result.rows[0];
+
+        if (!user) {
+            // Create new user (Role: customer by default)
+            const id = generateId('user');
+            // Generate a random high-entropy password since they login with Google
+            const randomPassword = Math.random().toString(36).slice(-8) + Math.random().toString(36).slice(-8);
+            const salt = await bcrypt.genSalt(10);
+            const password_hash = await bcrypt.hash(randomPassword, salt);
+
+            let role = 'customer';
+            if (requestedRole === 'business') {
+                role = 'staff';
+            } else if (requestedRole === 'customer') {
+                role = 'customer';
+            }
+
+            const insertResult = await db.query(
+                'INSERT INTO users(id, name, email, password_hash, role) VALUES($1, $2, $3, $4, $5) RETURNING id, name, email, role, phone',
+                [id, String(name || 'Google User'), normEmail, password_hash, role]
+            );
+            user = insertResult.rows[0];
+        }
+
+        // Generate App Token using EXISTING logic
+        const token = generateToken(user.id);
+
+        const userResponse = toCamelCase({
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            role: user.role,
+            phone: user.phone,
+            current_store_id: user.current_store_id,
+            token: token,
+        });
+        return res.json(userResponse);
+
+    } catch (error) {
+        console.error('Google login error:', error);
+        return res.status(500).json({ message: 'Server error during Google login' });
+    }
+};

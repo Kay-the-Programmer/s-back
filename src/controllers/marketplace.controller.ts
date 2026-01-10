@@ -256,3 +256,28 @@ export const getCustomerRequests = async (req: express.Request, res: express.Res
         res.status(500).json({ message: 'Internal server error' });
     }
 };
+
+export const getMyOrders = async (req: express.Request, res: express.Response) => {
+    const customerId = req.user!.id;
+    try {
+        // Fetch sales where the customer_id matches the logged-in user
+        // We also join with sale_items to get product details (simplified JSON agg)
+        const result = await db.query(`
+            SELECT s.*,
+                   ss.name as store_name,
+                   COALESCE(json_agg(jsonb_build_object('name', p.name, 'quantity', si.quantity, 'price', si.price_at_sale)) FILTER (WHERE si.id IS NOT NULL), '[]') as items
+            FROM sales s
+            JOIN store_settings ss ON s.store_id = ss.store_id
+            LEFT JOIN sale_items si ON s.transaction_id = si.sale_id
+            LEFT JOIN products p ON si.product_id = p.id
+            WHERE s.customer_id = $1
+            GROUP BY s.transaction_id, ss.name
+            ORDER BY s.timestamp DESC
+        `, [customerId]);
+
+        res.status(200).json(toCamelCase(result.rows));
+    } catch (error) {
+        console.error('Error fetching customer orders:', error);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+};
