@@ -18,7 +18,8 @@ async function initializeDatabase() {
                 name TEXT NOT NULL,
                 email TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
-                role TEXT NOT NULL CHECK (role IN ('superadmin','admin','staff','inventory_manager'))
+                role TEXT NOT NULL CHECK (role IN ('superadmin','admin','staff','inventory_manager','customer')),
+                phone TEXT
             );
         `);
         // Ensure role check allows superadmin on existing DBs
@@ -31,7 +32,12 @@ async function initializeDatabase() {
                 ) THEN
                     ALTER TABLE users DROP CONSTRAINT users_role_check;
                 END IF;
-                ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('superadmin','admin','staff','inventory_manager'));
+                ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('superadmin','admin','staff','inventory_manager','customer'));
+                
+                -- Add phone column if missing
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='phone') THEN
+                    ALTER TABLE users ADD COLUMN phone TEXT;
+                END IF;
             END $$;`
         );
         // Seed a default admin user if none exists (safe, idempotent)
@@ -940,6 +946,7 @@ async function initializeDatabase() {
         await client.query(`
             CREATE TABLE IF NOT EXISTS marketplace_requests (
                 id TEXT PRIMARY KEY,
+                customer_id TEXT REFERENCES users(id) ON DELETE SET NULL,
                 customer_name TEXT NOT NULL,
                 customer_email TEXT,
                 customer_phone TEXT,
@@ -958,6 +965,7 @@ async function initializeDatabase() {
             BEGIN
                 IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'marketplace_requests') THEN
                     ALTER TABLE marketplace_requests ADD COLUMN IF NOT EXISTS customer_phone TEXT;
+                    ALTER TABLE marketplace_requests ADD COLUMN IF NOT EXISTS customer_id TEXT REFERENCES users(id) ON DELETE SET NULL;
                     ALTER TABLE marketplace_requests ALTER COLUMN customer_email DROP NOT NULL;
                 END IF;
             END $$;

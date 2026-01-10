@@ -21,8 +21,9 @@ export const getRecentRequests = async (req: express.Request, res: express.Respo
         const result = await db.query(`
             SELECT id, query, target_price, created_at, customer_name
             FROM marketplace_requests 
+            WHERE status IN ('open', 'matched')
             ORDER BY created_at DESC 
-            LIMIT 5
+            LIMIT 10
         `);
         res.status(200).json(toCamelCase(result.rows));
     } catch (error) {
@@ -68,14 +69,22 @@ const notifyNextSeller = async (requestId: string) => {
 };
 
 export const createMarketplaceRequest = async (req: express.Request, res: express.Response) => {
-    const { customerName, customerEmail, query, targetPrice } = req.body;
+    const { customerName, customerEmail, customerPhone, query, targetPrice } = req.body;
     const requestId = genId('mreq');
+    const customerId = req.user?.id;
 
     try {
         await db.query(`
-            INSERT INTO marketplace_requests (id, customer_name, customer_email, query, target_price)
-            VALUES ($1, $2, $3, $4, $5)
-        `, [requestId, customerName, customerEmail, query, targetPrice || 0]);
+            INSERT INTO marketplace_requests (id, customer_id, customer_name, customer_email, customer_phone, query, target_price)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `, [requestId, customerId || null, customerName, customerEmail, customerPhone, query, targetPrice || 0]);
+
+        // If the user is logged in but doesn't have a phone number, update it
+        if (customerId && customerPhone) {
+            await db.query(`
+                UPDATE users SET phone = COALESCE(phone, $1) WHERE id = $2
+            `, [customerPhone, customerId]);
+        }
 
         const storeIds = await findMatchingStores(query);
 
@@ -108,9 +117,9 @@ export const getRequestDetails = async (req: express.Request, res: express.Respo
         if (result.rowCount === 0) return res.status(404).json({ message: 'Request not found' });
 
         const offers = await db.query(`
-            SELECT o.*, s.name as store_name 
+            SELECT o.*, ss.name as store_name, ss.phone as store_phone, ss.email as store_email, ss.address as store_address
             FROM marketplace_offers o
-            JOIN stores s ON o.store_id = s.id
+            JOIN store_settings ss ON o.store_id = ss.store_id
             WHERE o.request_id = $1
         `, [id]);
 
@@ -141,6 +150,23 @@ export const submitOffer = async (req: express.Request, res: express.Response) =
             VALUES ($1, $2, $3, $4, $5)
         `, [offerId, requestId, storeId, productId || null, sellerPrice]);
 
+        // Notify the customer if they are a registered user
+        const requestRes = await db.query('SELECT customer_id, query FROM marketplace_requests WHERE id = $1', [requestId]);
+        const request = requestRes.rows[0];
+        if (request && request.customer_id) {
+            await db.query(`
+                INSERT INTO notifications (id, user_id, title, message, type, link)
+                VALUES ($1, $2, $3, $4, $5, $6)
+            `, [
+                genId('notif'),
+                request.customer_id,
+                'New Offer Received! 🎁',
+                `A store has made an offer for your request: "${request.query}".`,
+                'marketplace',
+                `/marketplace/track/${requestId}`
+            ]);
+        }
+
         res.status(201).json({ id: offerId, message: 'Offer submitted successfully' });
     } catch (error) {
         console.error('Error submitting offer:', error);
@@ -161,11 +187,24 @@ export const respondToOffer = async (req: express.Request, res: express.Response
             await db.query("UPDATE marketplace_offers SET status = 'accepted' WHERE id = $1", [offerId]);
             await db.query("UPDATE marketplace_requests SET status = 'completed' WHERE id = $1", [offer.request_id]);
 
-            // Notify seller
+            // Get store details for customer notification (if needed) but mainly for the Deal Confirmed UI
+            const storeRes = await db.query('SELECT name, phone, email, address FROM store_settings WHERE store_id = $1', [offer.store_id]);
+            const store = storeRes.rows[0];
+
+            const requestRes = await db.query('SELECT customer_name, customer_phone, customer_email FROM marketplace_requests WHERE id = $1', [offer.request_id]);
+            const request = requestRes.rows[0];
+
+            // Notify seller with customer contact info
             await db.query(`
                 INSERT INTO notifications (id, store_id, title, message, type)
                 VALUES ($1, $2, $3, $4, $5)
-            `, [genId('notif'), offer.store_id, 'Offer Accepted', `Your offer for request ${offer.request_id} has been accepted!`, 'marketplace']);
+            `, [
+                genId('notif'),
+                offer.store_id,
+                'Deal Confirmed! 🎉',
+                `Contact ${request.customer_name} at ${request.customer_phone || request.customer_email} to finalize the delivery of "${offer.query}".`,
+                'marketplace'
+            ]);
 
         } else if (action === 'decline') {
             await db.query("UPDATE marketplace_offers SET status = 'declined' WHERE id = $1", [offerId]);
@@ -199,5 +238,21 @@ export const getStorePendingMatches = async (req: express.Request, res: express.
     } catch (error) {
         console.error('Error fetching pending matches:', error);
         res.status(500).json({ message: 'Failed to fetch pending matches' });
+    }
+};
+export const getCustomerRequests = async (req: express.Request, res: express.Response) => {
+    const customerId = req.user!.id;
+    try {
+        const result = await db.query(`
+            SELECT r.*, 
+                   (SELECT COUNT(*) FROM marketplace_offers WHERE request_id = r.id) as offer_count
+            FROM marketplace_requests r
+            WHERE r.customer_id = $1
+            ORDER BY r.created_at DESC
+        `, [customerId]);
+        res.status(200).json(toCamelCase(result.rows));
+    } catch (error) {
+        console.error('Error fetching customer requests:', error);
+        res.status(500).json({ message: 'Internal server error' });
     }
 };

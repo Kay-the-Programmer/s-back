@@ -33,6 +33,7 @@ export const loginUser = async (req: express.Request, res: express.Response) => 
                 name: user.name,
                 email: user.email,
                 role: user.role,
+                phone: user.phone,
                 current_store_id: user.current_store_id,
                 token: generateToken(user.id),
             });
@@ -67,7 +68,7 @@ export const registerUser = async (req: express.Request, res: express.Response) 
         const role = 'staff'; // Default role
 
         const insertResult = await db.query(
-            'INSERT INTO users(id, name, email, password_hash, role) VALUES($1, $2, $3, $4, $5) RETURNING id, name, email, role',
+            'INSERT INTO users(id, name, email, password_hash, role) VALUES($1, $2, $3, $4, $5) RETURNING id, name, email, role, phone',
             [id, String(name), normEmail, password_hash, role]
         );
         const newUser = insertResult.rows[0];
@@ -81,6 +82,47 @@ export const registerUser = async (req: express.Request, res: express.Response) 
     } catch (error: any) {
         console.error('Registration error:', error);
         // Uniqueness violation fallback
+        const message = (error?.code === '23505') ? 'User already exists' : 'Server error during registration';
+        const status = (error?.code === '23505') ? 409 : 500;
+        return res.status(status).json({ message });
+    }
+};
+
+export const registerCustomer = async (req: express.Request, res: express.Response) => {
+    const { name, email, password, phone } = req.body || {};
+    if (!name || !email || !password) {
+        return res.status(400).json({ message: 'Please add all fields' });
+    }
+    if (String(password).length < 8) {
+        return res.status(400).json({ message: 'Password must be at least 8 characters long.' });
+    }
+
+    try {
+        const normEmail = String(email).toLowerCase();
+        const userExistsResult = await db.query('SELECT id FROM users WHERE email = $1', [normEmail]);
+        if ((userExistsResult.rowCount ?? 0) > 0) {
+            return res.status(409).json({ message: 'User already exists' });
+        }
+
+        const salt = await bcrypt.genSalt(10);
+        const password_hash = await bcrypt.hash(String(password), salt);
+        const id = generateId('user');
+        const role = 'customer'; // Set role to customer
+
+        const insertResult = await db.query(
+            'INSERT INTO users(id, name, email, password_hash, role, phone) VALUES($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role, phone',
+            [id, String(name), normEmail, password_hash, role, phone || null]
+        );
+        const newUser = insertResult.rows[0];
+
+        const userResponse = toCamelCase({
+            ...newUser,
+            token: generateToken(newUser.id),
+        });
+
+        return res.status(201).json(userResponse);
+    } catch (error: any) {
+        console.error('Customer registration error:', error);
         const message = (error?.code === '23505') ? 'User already exists' : 'Server error during registration';
         const status = (error?.code === '23505') ? 409 : 500;
         return res.status(status).json({ message });
@@ -134,8 +176,8 @@ export const changePassword = async (req: express.Request, res: express.Response
 
 
 export async function createAccountWithFirebaseAuth() {
-    const authCredentials = await  signInWithEmailAndPassword(authentication,"","");
-  const response = await  signInWithPhoneNumber(authentication,"+260776006734")
-  
+    const authCredentials = await signInWithEmailAndPassword(authentication, "", "");
+    const response = await signInWithPhoneNumber(authentication, "+260776006734")
+
 
 }

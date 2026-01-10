@@ -25,7 +25,7 @@ export const protect = async (req: express.Request, res: express.Response, next:
             if (!isFreshUserRequest && cacheEntry && cacheEntry.expires > now && cacheEntry.user && cacheEntry.user.current_store_id) {
                 dbUser = cacheEntry.user;
             } else {
-                const result = await db.query('SELECT id, name, email, role, current_store_id FROM users WHERE id = $1', [decoded.id]);
+                const result = await db.query('SELECT id, name, email, role, phone, current_store_id FROM users WHERE id = $1', [decoded.id]);
                 dbUser = result.rows[0] as any;
                 if (dbUser) {
                     // If TTL is 0 (disabled), do not cache
@@ -48,6 +48,7 @@ export const protect = async (req: express.Request, res: express.Response, next:
                 id: dbUser.id,
                 name: dbUser.name,
                 email: dbUser.email,
+                phone: dbUser.phone,
                 role: dbUser.role,
                 currentStoreId: dbUser.current_store_id || undefined,
             };
@@ -55,7 +56,7 @@ export const protect = async (req: express.Request, res: express.Response, next:
 
             // Enforce store activation unless superadmin
             try {
-                if (user.currentStoreId && user.role !== 'superadmin') {
+                if (user.currentStoreId && user.role !== 'superadmin' && user.role !== 'customer') {
                     const storeRes = await db.query('SELECT status, subscription_status FROM stores WHERE id = $1', [user.currentStoreId]);
                     const store = storeRes.rows[0];
                     if (!store) {
@@ -89,6 +90,37 @@ export const protect = async (req: express.Request, res: express.Response, next:
     }
 };
 
+export const optionalProtect = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    let token;
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+        try {
+            token = req.headers.authorization.split(' ')[1];
+            if (!token || token === 'null' || token === 'undefined') {
+                return next();
+            }
+            const decoded = jwt.verify(token, JWT_SECRET) as { id: string };
+
+            const result = await db.query('SELECT id, name, email, role, phone, current_store_id FROM users WHERE id = $1', [decoded.id]);
+            const dbUser = result.rows[0];
+
+            if (dbUser) {
+                req.user = {
+                    id: dbUser.id,
+                    name: dbUser.name,
+                    email: dbUser.email,
+                    phone: dbUser.phone,
+                    role: dbUser.role as any,
+                    currentStoreId: dbUser.current_store_id
+                };
+            }
+        } catch (error) {
+            console.error('Optional auth failed:', error);
+            // Don't fail the request, just proceed without req.user
+        }
+    }
+    next();
+};
+
 export const adminOnly = (req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (req.user && (req.user.role === 'admin' || req.user.role === 'superadmin')) {
         next();
@@ -106,7 +138,7 @@ export const superAdminOnly = (req: express.Request, res: express.Response, next
 };
 
 export const canManageInventory = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-     if (req.user && (req.user.role === 'admin' || req.user.role === 'inventory_manager')) {
+    if (req.user && (req.user.role === 'admin' || req.user.role === 'inventory_manager')) {
         next();
     } else {
         res.status(403).json({ message: 'Forbidden: Inventory management access required' });
@@ -114,7 +146,7 @@ export const canManageInventory = (req: express.Request, res: express.Response, 
 };
 
 export const canPerformSales = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-     if (req.user && (req.user.role === 'admin' || req.user.role === 'staff')) {
+    if (req.user && (req.user.role === 'admin' || req.user.role === 'staff')) {
         next();
     } else {
         res.status(403).json({ message: 'Forbidden: Sales access required' });

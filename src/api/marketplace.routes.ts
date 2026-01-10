@@ -5,8 +5,10 @@ import {
     getRequestDetails,
     submitOffer,
     respondToOffer,
-    getStorePendingMatches
+    getStorePendingMatches,
+    getCustomerRequests
 } from '../controllers/marketplace.controller';
+import { protect } from '../middleware/auth.middleware';
 
 const router = express.Router();
 
@@ -14,6 +16,7 @@ const router = express.Router();
 router.post('/requests', createMarketplaceRequest);
 router.get('/requests/recent', getRecentRequests);
 router.get('/requests/:id', getRequestDetails);
+router.get('/my-requests', protect, getCustomerRequests);
 router.post('/offers/:offerId/respond', respondToOffer);
 
 // Routes for sellers (authenticated in production, but keeping it simple for now)
