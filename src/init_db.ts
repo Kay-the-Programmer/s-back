@@ -278,8 +278,8 @@ async function initializeDatabase() {
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 description TEXT,
-                sku TEXT NOT NULL UNIQUE,
-                barcode TEXT UNIQUE,
+                sku TEXT NOT NULL,
+                barcode TEXT,
                 category_id TEXT REFERENCES categories(id),
                 supplier_id TEXT REFERENCES suppliers(id),
                 price DECIMAL(10,2) NOT NULL,
@@ -300,6 +300,30 @@ async function initializeDatabase() {
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_products_store_id ON products(store_id);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_products_store_id_status ON products(store_id, status);`);
+
+        // Migration: Switch from global unique constraints to store-scoped unique indexes
+        await client.query(`
+            DO $$
+            BEGIN
+                -- Drop old global unique constraints if they exist
+                IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'products_sku_key') THEN
+                    ALTER TABLE products DROP CONSTRAINT products_sku_key;
+                END IF;
+                IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'products_barcode_key') THEN
+                    ALTER TABLE products DROP CONSTRAINT products_barcode_key;
+                END IF;
+
+                -- Drop old unique indexes if they exist (sometimes named implicitly)
+                DROP INDEX IF EXISTS products_sku_key;
+                DROP INDEX IF EXISTS products_barcode_key;
+            END $$;
+        `);
+
+        // Create new store-scoped unique indexes
+        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_products_store_sku ON products(store_id, sku);`);
+        // Only enforce unique barcode if barcode is not null (Postgres ignores nulls in unique indexes by default, but explicit is good)
+        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_products_store_barcode ON products(store_id, barcode) WHERE barcode IS NOT NULL;`);
+
         // Customers
         await client.query(`
             CREATE TABLE IF NOT EXISTS customers (

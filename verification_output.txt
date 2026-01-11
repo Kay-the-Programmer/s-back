@@ -1,0 +1,3 @@
+Verifying constraints...
+Old Constraints (should be empty): []
+New Indexes (should exist): [{"indexname":"uidx_products_store_sku","indexdef":"CREATE UNIQUE INDEX uidx_products_store_sku ON public.products USING btree (store_id, sku)"},{"indexname":"uidx_products_store_barcode","indexdef":"CREATE UNIQUE INDEX uidx_products_store_barcode ON public.products USING btree (store_id, barcode) WHERE (barcode IS NOT NULL)"}]
