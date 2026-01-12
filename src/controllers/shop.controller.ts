@@ -142,7 +142,40 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
 
         // 1. Handle Customer (Find or Create)
         let customerId = null;
-        if (customerDetails.email) {
+        const { userId } = req.body; // Extract userId if authenticated
+
+        if (userId) {
+            // Authenticated User: Use their UserID as CustomerID for this store
+            // Check if they are already a customer record in this store
+            const customerRes = await client.query(
+                'SELECT id FROM customers WHERE id = $1 AND store_id = $2',
+                [userId, storeId]
+            );
+
+            if ((customerRes.rowCount || 0) > 0) {
+                customerId = customerRes.rows[0].id;
+            } else {
+                // Register them as a customer in this store using their UserID
+                customerId = userId;
+
+                // If checking by email found a different ID, we effectively ignore it here 
+                // in favor of the UserID to ensure Marketplace Dashboard visibility.
+                // NOTE: We could merge, but that's complex. For now, we prioritize the UserID link.
+
+                await client.query(
+                    'INSERT INTO customers (id, name, email, phone, address, store_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, NOW())',
+                    [
+                        customerId,
+                        customerDetails.name,
+                        customerDetails.email,
+                        customerDetails.phone,
+                        JSON.stringify({ street: customerDetails.address }),
+                        storeId
+                    ]
+                );
+            }
+        } else if (customerDetails.email) {
+            // Guest with Email
             const customerRes = await client.query(
                 'SELECT id FROM customers WHERE email = $1 AND store_id = $2',
                 [customerDetails.email, storeId]
@@ -164,8 +197,7 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
                 );
             }
         } else {
-            // Guest without email - maybe use phone or just create new generic guest
-            // For now, always create a record if provided info
+            // Guest without email
             customerId = `cus_${Math.random().toString(36).substr(2, 9)}`;
             await client.query(
                 'INSERT INTO customers (id, name, email, phone, address, store_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, NOW())',
@@ -309,13 +341,28 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
 export const getPublicStores = async (req: express.Request, res: express.Response) => {
     try {
         const result = await db.query(`
-            SELECT s.id, s.name, s.status, ss.address, ss.phone, ss.email, ss.website, ss.currency
+            SELECT s.id, s.name, s.status, ss.address, ss.phone, ss.email, ss.website, 
+            COALESCE(ss.currency, '{"code":"USD","symbol":"$","position":"before"}') as currency
             FROM stores s
             LEFT JOIN store_settings ss ON s.id = ss.store_id
             WHERE s.status = 'active' AND (ss.is_online_store_enabled IS NULL OR ss.is_online_store_enabled = TRUE)
         `);
 
-        res.status(200).json(toCamelCase(result.rows));
+        // Helper to parse currency safely
+        const parseCurrency = (row: any) => {
+            try {
+                return typeof row.currency === 'string' ? JSON.parse(row.currency) : row.currency;
+            } catch (e) {
+                return { code: 'USD', symbol: '$', position: 'before' };
+            }
+        };
+
+        const sanitizedStores = result.rows.map(s => ({
+            ...s,
+            currency: parseCurrency(s)
+        }));
+
+        res.status(200).json(toCamelCase(sanitizedStores));
     } catch (error) {
         console.error('Error fetching public stores:', error);
         res.status(500).json({ message: 'Failed to fetch stores' });
@@ -325,7 +372,8 @@ export const getPublicStores = async (req: express.Request, res: express.Respons
 export const getGlobalProducts = async (req: express.Request, res: express.Response) => {
     try {
         const result = await db.query(`
-            SELECT p.*, s.name as store_name, ss.currency as store_currency
+            SELECT p.*, s.name as store_name, 
+            COALESCE(ss.currency, '{"code":"USD","symbol":"$","position":"before"}') as store_currency
             FROM products p
             JOIN stores s ON p.store_id = s.id
             LEFT JOIN store_settings ss ON s.id = ss.store_id
@@ -336,10 +384,19 @@ export const getGlobalProducts = async (req: express.Request, res: express.Respo
             LIMIT 100
         `);
 
+        // Helper to parse currency safely
+        const parseCurrency = (currencyStr: any) => {
+            try {
+                return typeof currencyStr === 'string' ? JSON.parse(currencyStr) : currencyStr;
+            } catch (e) {
+                return { code: 'USD', symbol: '$', position: 'before' };
+            }
+        };
+
         const sanitizedProducts = result.rows.map(p => ({
             ...sanitizeProduct(p),
             store_name: p.store_name,
-            currency: p.store_currency
+            currency: parseCurrency(p.store_currency)
         }));
         res.status(200).json(toCamelCase(sanitizedProducts));
     } catch (error) {

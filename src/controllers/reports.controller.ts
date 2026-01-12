@@ -161,6 +161,15 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         const newCustomersResult = await db.query(newCustomersQuery, [startDate, adjustedEndDate, storeId]);
         const newCustomers = parseInt(newCustomersResult.rows[0].newCustomers, 10);
 
+        // --- Sales by Channel ---
+        const salesByChannelQuery = `
+            SELECT channel, SUM(total) as revenue, COUNT(*) as count
+            FROM sales
+            WHERE timestamp BETWEEN $1 AND $2 AND payment_status = 'paid' AND store_id = $3
+            GROUP BY channel;
+        `;
+        const salesByChannelResult = await db.query(salesByChannelQuery, [startDate, adjustedEndDate, storeId]);
+
         // --- Final Report Object ---
         const report = {
             sales: {
@@ -171,6 +180,11 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
                 avgSaleValue: salesData.totalTransactions > 0 ? salesData.totalRevenue / salesData.totalTransactions : 0,
                 grossMargin: salesData.totalRevenue > 0 ? (salesData.totalProfit / salesData.totalRevenue) * 100 : 0,
                 salesTrend: salesTrend,
+                salesByChannel: salesByChannelResult.rows.map(row => ({
+                    channel: row.channel || 'pos',
+                    revenue: parseFloat(row.revenue),
+                    count: parseInt(row.count, 10)
+                })),
                 topProductsByRevenue: topProductsRevenueResult.rows.map(row => ({
                     name: row.name,
                     quantity: parseInt(row.quantity, 10),
