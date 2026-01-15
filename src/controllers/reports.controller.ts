@@ -28,7 +28,12 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3;
         `;
         const salesResult = await db.query(salesQuery, [startDate, adjustedEndDate, storeId]);
-        const salesData = salesResult.rows[0];
+        const salesData = salesResult.rows[0] || {
+            totalRevenue: 0,
+            totalProfit: 0,
+            totalCogs: 0,
+            totalTransactions: 0
+        };
 
         // --- Sales Trend ---
         const trendQuery = `
@@ -131,7 +136,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             FROM products WHERE status = 'active' AND store_id = $1;
         `;
         const invResult = await db.query(invQuery, [storeId]);
-        const invData = invResult.rows[0];
+        const invData = invResult.rows[0] || { totalRetailValue: 0, totalCostValue: 0, totalUnits: 0 };
 
         // --- Customer Calculations ---
         const customerQuery = `
@@ -141,7 +146,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             FROM customers WHERE store_id = $1
         `;
         const customerResult = await db.query(customerQuery, [storeId]);
-        const customerData = customerResult.rows[0];
+        const customerData = customerResult.rows[0] || { totalCustomers: '0', totalStoreCreditOwed: '0' };
 
         // --- Active Customers in Period ---
         const activeCustomersQuery = `
@@ -150,7 +155,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             WHERE timestamp BETWEEN $1 AND $2 AND customer_id IS NOT NULL AND store_id = $3
         `;
         const activeCustomersResult = await db.query(activeCustomersQuery, [startDate, adjustedEndDate, storeId]);
-        const activeCustomers = parseInt(activeCustomersResult.rows[0].activeCustomers, 10);
+        const activeCustomers = activeCustomersResult.rows[0] ? parseInt(activeCustomersResult.rows[0].activeCustomers, 10) : 0;
 
         // --- New Customers in Period ---
         const newCustomersQuery = `
@@ -159,7 +164,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             WHERE created_at BETWEEN $1 AND $2 AND store_id = $3
         `;
         const newCustomersResult = await db.query(newCustomersQuery, [startDate, adjustedEndDate, storeId]);
-        const newCustomers = parseInt(newCustomersResult.rows[0].newCustomers, 10);
+        const newCustomers = newCustomersResult.rows[0] ? parseInt(newCustomersResult.rows[0].newCustomers, 10) : 0;
 
         // --- Sales by Channel ---
         const salesByChannelQuery = `
@@ -173,12 +178,12 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         // --- Final Report Object ---
         const report = {
             sales: {
-                totalRevenue: parseFloat(salesData.totalRevenue),
-                totalProfit: parseFloat(salesData.totalProfit),
-                totalCogs: parseFloat(salesData.totalCogs),
-                totalTransactions: parseInt(salesData.totalTransactions, 10),
-                avgSaleValue: salesData.totalTransactions > 0 ? salesData.totalRevenue / salesData.totalTransactions : 0,
-                grossMargin: salesData.totalRevenue > 0 ? (salesData.totalProfit / salesData.totalRevenue) * 100 : 0,
+                totalRevenue: parseFloat(salesData.totalRevenue || 0),
+                totalProfit: parseFloat(salesData.totalProfit || 0),
+                totalCogs: parseFloat(salesData.totalCogs || 0),
+                totalTransactions: parseInt(salesData.totalTransactions || 0, 10),
+                avgSaleValue: (parseInt(salesData.totalTransactions || 0, 10)) > 0 ? (parseFloat(salesData.totalRevenue || 0) / parseInt(salesData.totalTransactions, 10)) : 0,
+                grossMargin: (parseFloat(salesData.totalRevenue || 0)) > 0 ? ((parseFloat(salesData.totalProfit || 0) / parseFloat(salesData.totalRevenue)) * 100) : 0,
                 salesTrend: salesTrend,
                 salesByChannel: salesByChannelResult.rows.map(row => ({
                     channel: row.channel || 'pos',
@@ -200,14 +205,14 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
                 })),
             },
             inventory: {
-                totalRetailValue: parseFloat(invData.totalRetailValue),
-                totalCostValue: parseFloat(invData.totalCostValue),
-                potentialProfit: invData.totalRetailValue - invData.totalCostValue,
-                totalUnits: parseInt(invData.totalUnits, 10),
+                totalRetailValue: parseFloat(invData.totalRetailValue || 0),
+                totalCostValue: parseFloat(invData.totalCostValue || 0),
+                potentialProfit: (parseFloat(invData.totalRetailValue || 0) - parseFloat(invData.totalCostValue || 0)),
+                totalUnits: parseInt(invData.totalUnits || 0, 10),
             },
             customers: {
-                totalCustomers: parseInt(customerData.totalCustomers, 10),
-                totalStoreCreditOwed: parseFloat(customerData.totalStoreCreditOwed),
+                totalCustomers: parseInt(customerData.totalCustomers || 0, 10),
+                totalStoreCreditOwed: parseFloat(customerData.totalStoreCreditOwed || 0),
                 activeCustomersInPeriod: activeCustomers,
                 newCustomersInPeriod: newCustomers,
             },

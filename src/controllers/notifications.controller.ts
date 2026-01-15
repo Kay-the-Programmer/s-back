@@ -13,7 +13,7 @@ export const getStoreNotifications = async (req: express.Request, res: express.R
         res.status(200).json(toCamelCase(result.rows));
     } catch (error) {
         console.error('Error fetching notifications:', error);
-        res.status(500).json({ message: 'Failed to fetch notifications' });
+        res.status(500).json({ message: 'Failed to fetch notifications', error: (error as Error).message });
     }
 };
 

@@ -237,7 +237,7 @@ export const getStorePendingMatches = async (req: express.Request, res: express.
         res.status(200).json(toCamelCase(result.rows));
     } catch (error) {
         console.error('Error fetching pending matches:', error);
-        res.status(500).json({ message: 'Failed to fetch pending matches' });
+        res.status(500).json({ message: 'Failed to fetch pending matches', error: (error as Error).message });
     }
 };
 export const getCustomerRequests = async (req: express.Request, res: express.Response) => {
