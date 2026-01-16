@@ -19,8 +19,12 @@ const allowedOrigins: (string | RegExp)[] = [
   'https://salepilot-scope.vercel.app',
   /https?:\/\/.+\.vercel\.app$/,
   /https?:\/\/.+\.onrender\.com$/,
+  'https://www.salepilot.space',
+  'https://salepilot.space',
   'http://localhost:5173',
   'http://localhost:3000',
+  'http://localhost',
+  'capacitor://localhost',
 ].filter(Boolean) as (string | RegExp)[];
 
 const corsOptions: cors.CorsOptions = {

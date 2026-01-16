@@ -73,15 +73,68 @@ export const createNotification = async (req: express.Request, res: express.Resp
     if (!title || !message) return res.status(400).json({ message: 'Title and message are required' });
     const id = generateId('notif');
     const createdAt = new Date().toISOString();
+
+    // Original system_notifications insert (keeping for audit/history)
     await db.query(
       `INSERT INTO system_notifications (id, title, message, created_at, created_by) VALUES ($1, $2, $3, $4, $5)`,
       [id, title, message, createdAt, req.user!.id]
     );
-    await auditService.log(req.user!, 'System Notification Sent', `Title: ${title}`);
+
+    // Fan-out: Send to all active stores
+    const stores = await db.query("SELECT id FROM stores WHERE status = 'active'");
+
+    const queries = stores.rows.map(store => {
+      const notifId = generateId('notif');
+      return db.query(
+        `INSERT INTO notifications (id, store_id, title, message, type, is_read, reference_id, created_at) VALUES ($1, $2, $3, $4, 'system_priority', false, $5, $6)`,
+        [notifId, store.id, title, message, id, createdAt]
+      );
+    });
+
+    await Promise.all(queries);
+
+    await auditService.log(req.user!, 'System Notification Sent', `Title: ${title} to ${stores.rows.length} stores`);
     return res.status(201).json(toCamelCase({ notification: { id, title, message, created_at: createdAt, created_by: req.user!.id } }));
   } catch (e) {
     console.error('Error creating notification', e);
     return res.status(500).json({ message: 'Error creating notification' });
+  }
+};
+
+export const listSystemNotifications = async (req: express.Request, res: express.Response) => {
+  try {
+    const result = await db.query(`SELECT * FROM system_notifications ORDER BY created_at DESC`);
+    return res.status(200).json(toCamelCase({ notifications: result.rows }));
+  } catch (e) {
+    console.error('Error listing system notifications', e);
+    return res.status(500).json({ message: 'Error listing notifications' });
+  }
+};
+
+export const getNotificationStatus = async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params; // system_notification id
+    const result = await db.query(`
+            SELECT 
+                s.name as store_name,
+                n.is_read,
+                n.created_at as sent_at
+            FROM notifications n
+            JOIN stores s ON n.store_id = s.id
+            WHERE n.reference_id = $1
+            ORDER BY n.is_read DESC, s.name ASC
+        `, [id]);
+
+    // Also get the original message details
+    const original = await db.query('SELECT * FROM system_notifications WHERE id = $1', [id]);
+
+    return res.status(200).json(toCamelCase({
+      notification: original.rows[0],
+      statuses: result.rows
+    }));
+  } catch (e) {
+    console.error('Error fetching notification status', e);
+    return res.status(500).json({ message: 'Error fetching notification status' });
   }
 };
 

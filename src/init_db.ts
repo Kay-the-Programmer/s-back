@@ -960,8 +960,19 @@ async function initializeDatabase() {
                 type TEXT DEFAULT 'info',
                 is_read BOOLEAN DEFAULT FALSE,
                 link TEXT,
+                reference_id TEXT, -- ID of related entity, e.g. system_notification.id
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
+        `);
+        // Migration to add reference_id if missing
+        await client.query(`
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'notifications') THEN
+                    ALTER TABLE notifications ADD COLUMN IF NOT EXISTS reference_id TEXT;
+                    CREATE INDEX IF NOT EXISTS idx_notifications_reference_id ON notifications(reference_id);
+                END IF;
+            END $$;
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_notifications_store_id ON notifications(store_id);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);`);
