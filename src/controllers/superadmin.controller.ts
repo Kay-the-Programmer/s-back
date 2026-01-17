@@ -197,3 +197,78 @@ export const recordSubscriptionPayment = async (req: express.Request, res: expre
     return res.status(500).json({ message: 'Error recording subscription payment' });
   }
 };
+export const getStoreDetails = async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params;
+
+    // parallelize queries for efficiency
+    const [storeRes, settingsRes, ownerRes, statsRes] = await Promise.all([
+      db.query(`SELECT * FROM stores WHERE id = $1`, [id]),
+      db.query(`SELECT * FROM store_settings WHERE store_id = $1`, [id]),
+      // Find a user who is likely the owner (admin role + current_store_id matches)
+      db.query(`SELECT name, email, phone FROM users WHERE current_store_id = $1 AND role = 'admin' LIMIT 1`, [id]),
+      // Quick usage stats
+      db.query(`SELECT COUNT(*) as users_count FROM users WHERE current_store_id = $1`, [id])
+    ]);
+
+    if (storeRes.rowCount === 0) {
+      return res.status(404).json({ message: 'Store not found' });
+    }
+
+    const store = storeRes.rows[0];
+    const settings = settingsRes.rows[0] || {};
+    const owner = ownerRes.rows[0] || {};
+    const stats = statsRes.rows[0] || {};
+
+    // Merge info for the frontend
+    const detailedStore = {
+      ...store,
+      address: settings.address,
+      phone: settings.phone || owner.phone, // fallback to owner phone
+      email: settings.email || owner.email, // fallback to owner email
+      ownerName: owner.name,
+      usersCount: parseInt(stats.users_count || '0')
+    };
+
+    return res.status(200).json(toCamelCase({ store: detailedStore }));
+  } catch (e) {
+    console.error('Error fetching store details', e);
+    return res.status(500).json({ message: 'Error fetching store details' });
+  }
+};
+
+export const sendStoreNotification = async (req: express.Request, res: express.Response) => {
+  try {
+    const { id } = req.params; // store id
+    const { title, message, type } = req.body;
+
+    if (!title || !message) {
+      return res.status(400).json({ message: 'Title and message are required' });
+    }
+
+    // Verify store exists
+    const storeCheck = await db.query('SELECT 1 FROM stores WHERE id = $1', [id]);
+    if (storeCheck.rowCount === 0) {
+      return res.status(404).json({ message: 'Store not found' });
+    }
+
+    const notifId = generateId('notif');
+    const createdAt = new Date().toISOString();
+
+    await db.query(
+      `INSERT INTO notifications (id, store_id, title, message, type, is_read, created_at) 
+             VALUES ($1, $2, $3, $4, $5, false, $6)`,
+      [notifId, id, title, message, type || 'system_targeted', createdAt]
+    );
+
+    // Also log this as a system notification reference if we want global tracking? 
+    // For simple targeted messaging, just inserting into local notifications is enough, 
+    // but let's log audit.
+    await auditService.log(req.user!, 'Store Notification Sent', `To Store ${id}: ${title}`);
+
+    return res.status(201).json({ message: 'Notification sent successfully' });
+  } catch (e) {
+    console.error('Error sending store notification', e);
+    return res.status(500).json({ message: 'Error sending notification' });
+  }
+};

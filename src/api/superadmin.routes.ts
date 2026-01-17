@@ -1,12 +1,16 @@
 import express from 'express';
-import { listStores, updateStore, createNotification, listSystemNotifications, getNotificationStatus, listRevenueSummary, listSubscriptionPayments, recordSubscriptionPayment } from '../controllers/superadmin.controller';
+import { listStores, updateStore, createNotification, listSystemNotifications, getNotificationStatus, listRevenueSummary, listSubscriptionPayments, recordSubscriptionPayment, getStoreDetails, sendStoreNotification } from '../controllers/superadmin.controller';
 import { protect, superAdminOnly } from '../middleware/auth.middleware';
 
 const router = express.Router();
 
 // Store management
+
+// Store management
 router.get('/stores', protect, superAdminOnly, listStores);
+router.get('/stores/:id', protect, superAdminOnly, getStoreDetails);
 router.patch('/stores/:id', protect, superAdminOnly, updateStore);
+router.post('/stores/:id/notifications', protect, superAdminOnly, sendStoreNotification);
 
 // System-wide notifications
 router.post('/notifications', protect, superAdminOnly, createNotification);

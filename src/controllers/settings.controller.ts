@@ -34,8 +34,8 @@ export const getSettings = async (req: express.Request, res: express.Response) =
                 supplierPaymentMethods: []
             };
             const insert = await db.query(
-                `INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                `INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
                  RETURNING *;`,
                 [
                     storeId,
@@ -51,7 +51,8 @@ export const getSettings = async (req: express.Request, res: express.Response) =
                     defaults.skuPrefix,
                     defaults.enableStoreCredit,
                     JSON.stringify(defaults.paymentMethods),
-                    JSON.stringify(defaults.supplierPaymentMethods)
+                    JSON.stringify(defaults.supplierPaymentMethods),
+                    true // Default is_online_store_enabled
                 ]
             );
             return res.status(200).json(toCamelCase(insert.rows[0]));
