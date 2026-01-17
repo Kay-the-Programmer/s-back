@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { generateId } from './utils/helpers';
 import { Pool } from 'pg';
 import { StoreSettings, Account, Supplier, Category, Product } from './types';
+import { categoryHierarchy, initialAccountsData } from './utils/initial-data';
 
 // --- Seed Data ---
 
@@ -18,23 +19,19 @@ const defaultSettings: StoreSettings = {
     lowStockThreshold: 15,
     skuPrefix: 'SPGM-',
     enableStoreCredit: true,
-    paymentMethods: [{ id: 'cash', name: 'Cash' }, { id: 'card', name: 'Credit/Debit Card' }],
-    supplierPaymentMethods: [{ id: 'bank_transfer', name: 'Bank Transfer' }, { id: 'check', name: 'Check' }]
+    paymentMethods: [
+        { id: 'cash', name: 'CASH' },
+        { id: 'airtel', name: 'AIRTEL' },
+        { id: 'mtn', name: 'MTN' }
+    ],
+    supplierPaymentMethods: [
+        { id: 'cash', name: 'CASH' },
+        { id: 'airtel', name: 'AIRTEL' },
+        { id: 'mtn', name: 'MTN' }
+    ]
 };
 
-const initialAccounts: Omit<Account, 'id' | 'balance'>[] = [
-    { number: '1010', name: 'Cash on Hand', type: 'asset', subType: 'cash', isDebitNormal: true, description: 'Physical cash and cash equivalents in the register.' },
-    { number: '1100', name: 'Accounts Receivable', type: 'asset', subType: 'accounts_receivable', isDebitNormal: true, description: 'Money owed to the business by customers.' },
-    { number: '1200', name: 'Inventory', type: 'asset', subType: 'inventory', isDebitNormal: true, description: 'Value of all products available for sale.' },
-    { number: '2010', name: 'Accounts Payable', type: 'liability', subType: 'accounts_payable', isDebitNormal: false, description: 'Money owed to suppliers for inventory.' },
-    { number: '2200', name: 'Sales Tax Payable', type: 'liability', subType: 'sales_tax_payable', isDebitNormal: false, description: 'Sales tax collected, to be remitted to the government.' },
-    { number: '2300', name: 'Store Credit Payable', type: 'liability', subType: 'store_credit_payable', isDebitNormal: false, description: 'Total outstanding store credit owed to customers.' },
-    { number: '3010', name: 'Owner\'s Equity', type: 'equity', isDebitNormal: false, description: 'Initial investment and retained earnings.' },
-    { number: '4010', name: 'Sales Revenue', type: 'revenue', subType: 'sales_revenue', isDebitNormal: false, description: 'Default account for revenue from sales.' },
-    { number: '5010', name: 'Cost of Goods Sold', type: 'expense', subType: 'cogs', isDebitNormal: true, description: 'Default account for the cost of goods sold.' },
-    { number: '6010', name: 'Rent Expense', type: 'expense', isDebitNormal: true, description: 'Monthly rent for the store premises.' },
-    { number: '6020', name: 'Inventory Adjustment Expense', type: 'expense', subType: 'inventory_adjustment', isDebitNormal: true, description: 'Expense from inventory shrinkage, damage, or adjustments.' },
-];
+const initialAccounts = initialAccountsData;
 
 const initialSuppliers: Omit<Supplier, 'id'>[] = [
     { name: 'World Coffee Importers', contactPerson: 'John Bean', email: 'sales@wcoffee.com', paymentTerms: 'Net 30' },
@@ -48,16 +45,7 @@ const initialSuppliers: Omit<Supplier, 'id'>[] = [
     { name: 'Snack Haven', contactPerson: 'Tom Munch', email: 'hello@snackhaven.com', paymentTerms: 'COD' },
 ];
 
-const initialCategories: Omit<Category, 'id'>[] = [
-    { name: 'Beverages', parentId: null, attributes: [], revenueAccountId: undefined, cogsAccountId: undefined },
-    { name: 'Bakery', parentId: null, attributes: [], revenueAccountId: undefined, cogsAccountId: undefined },
-    { name: 'Produce', parentId: null, attributes: [], revenueAccountId: undefined, cogsAccountId: undefined },
-    { name: 'Dairy & Eggs', parentId: null, attributes: [], revenueAccountId: undefined, cogsAccountId: undefined },
-    { name: 'Meat & Seafood', parentId: null, attributes: [], revenueAccountId: undefined, cogsAccountId: undefined },
-    { name: 'Pantry', parentId: null, attributes: [], revenueAccountId: undefined, cogsAccountId: undefined },
-    { name: 'Snacks', parentId: null, attributes: [], revenueAccountId: undefined, cogsAccountId: undefined },
-    { name: 'Frozen Foods', parentId: null, attributes: [], revenueAccountId: undefined, cogsAccountId: undefined },
-];
+const initialCategories = categoryHierarchy;
 
 // --- Seeding Functions ---
 
@@ -135,12 +123,28 @@ async function seedInitialData(client: any) {
     }
 
     const categoryMap = new Map<string, string>();
-    for (const cat of initialCategories) {
-        let res = await client.query('SELECT id FROM categories WHERE name = $1 AND parent_id IS NULL AND store_id = $2', [cat.name, storeId]);
+    const insertCategoryRecursive = async (cat: any, parentId: string | null) => {
+        const name = typeof cat === 'string' ? cat : cat.name;
+        let res = await client.query('SELECT id FROM categories WHERE name = $1 AND (parent_id = $2 OR (parent_id IS NULL AND $2 IS NULL)) AND store_id = $3', [name, parentId, storeId]);
+        let id: string;
         if (res.rowCount === 0) {
-            res = await client.query('INSERT INTO categories (id, name, parent_id, attributes, store_id) VALUES ($1, $2, $3, $4, $5) RETURNING id', [generateId('cat'), cat.name, cat.parentId, '[]', storeId]);
+            id = generateId('cat');
+            res = await client.query('INSERT INTO categories (id, name, parent_id, attributes, store_id) VALUES ($1, $2, $3, $4, $5) RETURNING id', [id, name, parentId, '[]', storeId]);
+            id = res.rows[0].id;
+        } else {
+            id = res.rows[0].id;
         }
-        if (res.rows[0]) categoryMap.set(cat.name, res.rows[0].id);
+        categoryMap.set(name, id);
+
+        if (cat.children && Array.isArray(cat.children)) {
+            for (const child of cat.children) {
+                await insertCategoryRecursive(child, id);
+            }
+        }
+    };
+
+    for (const cat of initialCategories) {
+        await insertCategoryRecursive(cat, null);
     }
     console.log('✅ Initial suppliers & categories seeded.');
 

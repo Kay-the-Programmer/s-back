@@ -30,8 +30,16 @@ export const getSettings = async (req: express.Request, res: express.Response) =
                 lowStockThreshold: 5,
                 skuPrefix: 'SKU-',
                 enableStoreCredit: false,
-                paymentMethods: [],
-                supplierPaymentMethods: []
+                paymentMethods: [
+                    { id: 'cash', name: 'CASH' },
+                    { id: 'airtel', name: 'AIRTEL' },
+                    { id: 'mtn', name: 'MTN' }
+                ],
+                supplierPaymentMethods: [
+                    { id: 'cash', name: 'CASH' },
+                    { id: 'airtel', name: 'AIRTEL' },
+                    { id: 'mtn', name: 'MTN' }
+                ]
             };
             const insert = await db.query(
                 `INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled)
