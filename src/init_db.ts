@@ -730,6 +730,10 @@ async function initializeDatabase() {
         // Seed a few sample products if table is empty
         const existingProducts = await client.query('SELECT 1 FROM products LIMIT 1');
         if (existingProducts.rowCount === 0) {
+            // Find a store id to seed products (prefer a real one)
+            const storeRes = await client.query('SELECT current_store_id FROM users WHERE current_store_id IS NOT NULL LIMIT 1');
+            const chosenStore = storeRes.rows?.[0]?.current_store_id || null;
+
             const samples = [
                 { name: 'Premium Blend Coffee', description: 'A rich, full-bodied blend of Arabica beans from South America.', sku: 'SP-84321', barcode: '888000011122', category: 'Beverages', price: 18.99, cost: 12.50, stock: 50, supplier: 'World Coffee Importers', brand: 'Global Roast', status: 'active' },
                 { name: 'Organic Green Tea', description: 'Delicate and refreshing green tea, sourced from the finest gardens.', sku: 'SP-19874', barcode: '888000011133', category: 'Beverages', price: 12.49, cost: 8.00, stock: 75, supplier: 'Green Leaf Teas', brand: 'Zen Garden', status: 'active' },
@@ -738,10 +742,10 @@ async function initializeDatabase() {
             ];
             for (const p of samples) {
                 await client.query(
-                    `INSERT INTO products (id, name, description, sku, barcode, category_id, supplier_id, price, cost_price, stock, image_urls, brand, status)
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-                     ON CONFLICT (sku) DO NOTHING`,
-                    [genId('prod'), p.name, p.description, p.sku, p.barcode, p.category ? categoryIds[p.category] : null, p.supplier ? supplierIds[p.supplier!] : null, p.price, p.cost, p.stock, ['/images/salepilot.png'], p.brand, p.status]
+                    `INSERT INTO products (id, name, description, sku, barcode, category_id, supplier_id, price, cost_price, stock, image_urls, brand, status, store_id)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                     ON CONFLICT (store_id, sku) DO NOTHING`,
+                    [genId('prod'), p.name, p.description, p.sku, p.barcode, p.category ? categoryIds[p.category] : null, p.supplier ? supplierIds[p.supplier!] : null, p.price, p.cost, p.stock, ['/images/salepilot.png'], p.brand, p.status, chosenStore]
                 );
             }
         }

@@ -40,11 +40,23 @@ const initialSuppliers: Omit<Supplier, 'id'>[] = [
     { name: 'World Coffee Importers', contactPerson: 'John Bean', email: 'sales@wcoffee.com', paymentTerms: 'Net 30' },
     { name: 'Green Leaf Teas', contactPerson: 'Jane Steep', email: 'contact@greenleaf.com', paymentTerms: 'Net 15' },
     { name: 'Local Mill & Co.', contactPerson: 'Bob Miller', email: 'orders@localmill.com', paymentTerms: 'COD' },
+    { name: 'Fresh Farms Produce', contactPerson: 'Alice Green', email: 'orders@freshfarms.com', paymentTerms: 'Net 7' },
+    { name: 'Dairy Delight', contactPerson: 'Charlie Moo', email: 'sales@dairydelight.com', paymentTerms: 'Net 15' },
+    { name: 'Ocean Harvest', contactPerson: 'Sam Fisher', email: 'info@oceanharvest.com', paymentTerms: 'Net 30' },
+    { name: 'Pantry Essentials', contactPerson: 'Dave Stock', email: 'wholesale@pantry.com', paymentTerms: 'Net 30' },
+    { name: 'Meat & Poultry Co.', contactPerson: 'Sarah Butcher', email: 'orders@meatco.com', paymentTerms: 'Net 15' },
+    { name: 'Snack Haven', contactPerson: 'Tom Munch', email: 'hello@snackhaven.com', paymentTerms: 'COD' },
 ];
 
 const initialCategories: Omit<Category, 'id'>[] = [
     { name: 'Beverages', parentId: null, attributes: [], revenueAccountId: undefined, cogsAccountId: undefined },
     { name: 'Bakery', parentId: null, attributes: [], revenueAccountId: undefined, cogsAccountId: undefined },
+    { name: 'Produce', parentId: null, attributes: [], revenueAccountId: undefined, cogsAccountId: undefined },
+    { name: 'Dairy & Eggs', parentId: null, attributes: [], revenueAccountId: undefined, cogsAccountId: undefined },
+    { name: 'Meat & Seafood', parentId: null, attributes: [], revenueAccountId: undefined, cogsAccountId: undefined },
+    { name: 'Pantry', parentId: null, attributes: [], revenueAccountId: undefined, cogsAccountId: undefined },
+    { name: 'Snacks', parentId: null, attributes: [], revenueAccountId: undefined, cogsAccountId: undefined },
+    { name: 'Frozen Foods', parentId: null, attributes: [], revenueAccountId: undefined, cogsAccountId: undefined },
 ];
 
 // --- Seeding Functions ---
@@ -105,39 +117,81 @@ async function seedAccounts(client: any) {
 }
 
 async function seedInitialData(client: any) {
+    const storeRes = await client.query('SELECT current_store_id AS store_id FROM users WHERE current_store_id IS NOT NULL LIMIT 1');
+    const storeId: string | null = storeRes.rows?.[0]?.store_id || null;
+
+    if (!storeId) {
+        console.log('ℹ️ No store_id found to seed initial data; skipping products/suppliers/categories.');
+        return;
+    }
+
     const supplierMap = new Map<string, string>();
     for (const sup of initialSuppliers) {
-        let res = await client.query('SELECT id FROM suppliers WHERE name = $1', [sup.name]);
+        let res = await client.query('SELECT id FROM suppliers WHERE name = $1 AND store_id = $2', [sup.name, storeId]);
         if (res.rowCount === 0) {
-            res = await client.query('INSERT INTO suppliers (id, name, contact_person, email, payment_terms) VALUES ($1, $2, $3, $4, $5) RETURNING id', [generateId('sup'), sup.name, sup.contactPerson, sup.email, sup.paymentTerms]);
+            res = await client.query('INSERT INTO suppliers (id, name, contact_person, email, payment_terms, store_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id', [generateId('sup'), sup.name, sup.contactPerson, sup.email, sup.paymentTerms, storeId]);
         }
         if (res.rows[0]) supplierMap.set(sup.name, res.rows[0].id);
     }
 
     const categoryMap = new Map<string, string>();
     for (const cat of initialCategories) {
-        let res = await client.query('SELECT id FROM categories WHERE name = $1 AND parent_id IS NULL', [cat.name]);
+        let res = await client.query('SELECT id FROM categories WHERE name = $1 AND parent_id IS NULL AND store_id = $2', [cat.name, storeId]);
         if (res.rowCount === 0) {
-            res = await client.query('INSERT INTO categories (id, name, parent_id, attributes) VALUES ($1, $2, $3, $4) RETURNING id', [generateId('cat'), cat.name, cat.parentId, '[]']);
+            res = await client.query('INSERT INTO categories (id, name, parent_id, attributes, store_id) VALUES ($1, $2, $3, $4, $5) RETURNING id', [generateId('cat'), cat.name, cat.parentId, '[]', storeId]);
         }
         if (res.rows[0]) categoryMap.set(cat.name, res.rows[0].id);
     }
     console.log('✅ Initial suppliers & categories seeded.');
 
     // --- Seed Products ---
+
     const initialProducts: Omit<Product, 'id'>[] = [
+        // Beverages
         { name: 'Premium Blend Coffee', description: 'A rich, full-bodied blend of Arabica beans from South America.', sku: 'SP-84321', barcode: '888000011122', categoryId: categoryMap.get('Beverages'), price: 18.99, costPrice: 12.50, stock: 50, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('World Coffee Importers'), brand: 'Global Roast', status: 'active' },
         { name: 'Organic Green Tea', description: 'Delicate and refreshing green tea, sourced from the finest gardens.', sku: 'SP-19874', barcode: '888000011133', categoryId: categoryMap.get('Beverages'), price: 12.49, costPrice: 8.00, stock: 75, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Green Leaf Teas'), brand: 'Zen Garden', status: 'active' },
+        { name: 'Sparkling Mineral Water', description: 'Naturally carbonated mineral water from the Alps.', sku: 'SP-12001', barcode: '888000022001', categoryId: categoryMap.get('Beverages'), price: 2.99, costPrice: 1.20, stock: 120, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Pantry Essentials'), status: 'active' },
+
+        // Bakery
         { name: 'Artisan Sourdough Bread', description: 'Naturally leavened sourdough with a crispy crust and chewy interior.', sku: 'SP-33215', barcode: '888000011144', categoryId: categoryMap.get('Bakery'), price: 6.99, costPrice: 3.50, stock: 25, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Local Mill & Co.'), brand: 'The Bakehouse', status: 'active' },
-        { name: 'Gourmet Chocolate Bar', description: '70% dark chocolate with hints of sea salt.', sku: 'SP-54321', price: 5.99, costPrice: 2.50, stock: 100, imageUrls: ['/images/salepilot.png'], status: 'active' },
+        { name: 'Butter Croissants (4-pack)', description: 'Flaky, buttery croissants made with premium French butter.', sku: 'SP-33216', barcode: '888000011155', categoryId: categoryMap.get('Bakery'), price: 8.50, costPrice: 4.00, stock: 30, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Local Mill & Co.'), brand: 'The Bakehouse', status: 'active' },
+
+        // Produce
+        { name: 'Honeycrisp Apples (3lb)', description: 'Sweet, crisp, and juicy Honeycrisp apples.', sku: 'SP-44001', barcode: '888000044001', categoryId: categoryMap.get('Produce'), price: 6.49, costPrice: 3.20, stock: 40, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Fresh Farms Produce'), status: 'active' },
+        { name: 'Organic Baby Spinach', description: 'Pre-washed baby spinach leaves.', sku: 'SP-44002', barcode: '888000044002', categoryId: categoryMap.get('Produce'), price: 4.99, costPrice: 2.10, stock: 60, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Fresh Farms Produce'), status: 'active' },
+        { name: 'Vine-Ripened Tomatoes', description: 'Farm-fresh tomatoes on the vine.', sku: 'SP-44003', barcode: '888000044003', categoryId: categoryMap.get('Produce'), price: 3.99, costPrice: 1.80, stock: 50, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Fresh Farms Produce'), status: 'active' },
+
+        // Dairy & Eggs
+        { name: 'Whole Milk (1 Gallon)', description: 'Fresh, pasteurized whole milk.', sku: 'SP-55001', barcode: '888000055001', categoryId: categoryMap.get('Dairy & Eggs'), price: 4.29, costPrice: 2.50, stock: 45, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Dairy Delight'), status: 'active' },
+        { name: 'Large Grade A Eggs (Dozen)', description: 'Farm-fresh large white eggs.', sku: 'SP-55002', barcode: '888000055002', categoryId: categoryMap.get('Dairy & Eggs'), price: 3.49, costPrice: 1.90, stock: 80, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Dairy Delight'), status: 'active' },
+        { name: 'Greek Yogurt (Plain)', description: 'Creamy high-protein plain Greek yogurt.', sku: 'SP-55003', barcode: '888000055003', categoryId: categoryMap.get('Dairy & Eggs'), price: 5.99, costPrice: 3.10, stock: 35, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Dairy Delight'), status: 'active' },
+
+        // Meat & Seafood
+        { name: 'Ribeye Steak (Twin Pack)', description: 'Premium marbled ribeye steaks.', sku: 'SP-66001', barcode: '888000066001', categoryId: categoryMap.get('Meat & Seafood'), price: 24.99, costPrice: 15.00, stock: 15, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Meat & Poultry Co.'), status: 'active' },
+        { name: 'Fresh Atlantic Salmon Fillet', description: 'Sustainably farmed Atlantic salmon.', sku: 'SP-66002', barcode: '888000066002', categoryId: categoryMap.get('Meat & Seafood'), price: 15.99, costPrice: 9.50, stock: 20, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Ocean Harvest'), status: 'active' },
+        { name: 'Chicken Breasts (Boneless)', description: 'Lean, skinless chicken breasts.', sku: 'SP-66003', barcode: '888000066003', categoryId: categoryMap.get('Meat & Seafood'), price: 12.49, costPrice: 7.20, stock: 30, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Meat & Poultry Co.'), status: 'active' },
+
+        // Pantry
+        { name: 'Extra Virgin Olive Oil', description: 'Cold-pressed extra virgin olive oil from Spain.', sku: 'SP-77001', barcode: '888000077001', categoryId: categoryMap.get('Pantry'), price: 14.99, costPrice: 8.00, stock: 40, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Pantry Essentials'), status: 'active' },
+        { name: 'Sea Salt', description: 'Fine grain natural sea salt.', sku: 'SP-77002', barcode: '888000077002', categoryId: categoryMap.get('Pantry'), price: 3.49, costPrice: 1.20, stock: 100, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Pantry Essentials'), status: 'active' },
+        { name: 'Organic Quinoa', description: 'Tri-color organic quinoa.', sku: 'SP-77003', barcode: '888000077003', categoryId: categoryMap.get('Pantry'), price: 8.99, costPrice: 4.50, stock: 50, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Pantry Essentials'), status: 'active' },
+
+        // Snacks
+        { name: 'Gourmet Chocolate Bar', description: '70% dark chocolate with hints of sea salt.', sku: 'SP-54321', barcode: '888000054321', categoryId: categoryMap.get('Snacks'), price: 5.99, costPrice: 2.50, stock: 100, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Snack Haven'), status: 'active' },
+        { name: 'Roasted Almonds (Salted)', description: 'Premium roasted almonds with a touch of sea salt.', sku: 'SP-88001', barcode: '888000088001', categoryId: categoryMap.get('Snacks'), price: 9.49, costPrice: 5.00, stock: 60, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Snack Haven'), status: 'active' },
+        { name: 'Potato Chips (Classic)', description: 'Kettle-cooked classic salted potato chips.', sku: 'SP-88002', barcode: '888000088002', categoryId: categoryMap.get('Snacks'), price: 3.99, costPrice: 1.50, stock: 150, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Snack Haven'), status: 'active' },
+
+        // Frozen Foods
+        { name: 'Frozen Blueberries', description: 'Anti-oxidant rich wild blueberries, flash-frozen.', sku: 'SP-99001', barcode: '888000099001', categoryId: categoryMap.get('Frozen Foods'), price: 7.99, costPrice: 4.00, stock: 45, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Fresh Farms Produce'), status: 'active' },
+        { name: 'Margherita Pizza', description: 'Wood-fired frozen pizza with fresh mozzarella and basil.', sku: 'SP-99002', barcode: '888000099002', categoryId: categoryMap.get('Frozen Foods'), price: 11.49, costPrice: 6.00, stock: 25, imageUrls: ['/images/salepilot.png'], supplierId: supplierMap.get('Pantry Essentials'), status: 'active' },
     ];
 
     for (const p of initialProducts) {
         await client.query(
-            `INSERT INTO products(id, name, description, sku, barcode, category_id, supplier_id, price, cost_price, stock, image_urls, brand, status)
-            VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-            ON CONFLICT (sku) DO NOTHING;`,
-            [generateId('prod'), p.name, p.description, p.sku, p.barcode, p.categoryId, p.supplierId, p.price, p.costPrice, p.stock, p.imageUrls, p.brand, p.status]
+            `INSERT INTO products(id, name, description, sku, barcode, category_id, supplier_id, price, cost_price, stock, image_urls, brand, status, store_id)
+            VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            ON CONFLICT (store_id, sku) DO NOTHING;`,
+            [generateId('prod'), p.name, p.description, p.sku, p.barcode, p.categoryId, p.supplierId, p.price, p.costPrice, p.stock, p.imageUrls, p.brand, p.status, storeId]
         );
     }
     console.log('✅ Sample products seeded.');

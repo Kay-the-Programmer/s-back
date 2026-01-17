@@ -38,7 +38,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         // --- Sales Trend ---
         const trendQuery = `
             SELECT
-                DATE(s.timestamp) as date,
+                DATE(s.timestamp)::text as date,
                 SUM(s.total) as revenue,
                 SUM(s.total) - SUM(si.cost_at_sale * si.quantity) as profit
             FROM sales s
@@ -49,8 +49,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         `;
         const trendResult = await db.query(trendQuery, [startDate, adjustedEndDate, storeId]);
         const salesTrend = trendResult.rows.reduce((acc, row) => {
-            const dateStr = new Date(row.date).toISOString().split('T')[0];
-            acc[dateStr] = { revenue: parseFloat(row.revenue), profit: parseFloat(row.profit) };
+            acc[row.date] = { revenue: parseFloat(row.revenue), profit: parseFloat(row.profit) };
             return acc;
         }, {});
 
@@ -96,7 +95,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         // --- Cashflow from Journal Entries ---
         const cashflowQuery = `
             SELECT
-                DATE(je.date) as date,
+                DATE(je.date)::text as date,
                 SUM(CASE WHEN jel.type = 'debit' AND a.type = 'asset' THEN jel.amount ELSE 0 END) as inflow,
                 SUM(CASE WHEN jel.type = 'credit' AND a.type = 'asset' THEN jel.amount ELSE 0 END) as outflow
             FROM journal_entries je
@@ -109,8 +108,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         const cashflowResult = await db.query(cashflowQuery, [startDate, adjustedEndDate]);
 
         const cashflowTrend = cashflowResult.rows.reduce((acc, row) => {
-            const dateStr = new Date(row.date).toISOString().split('T')[0];
-            acc[dateStr] = {
+            acc[row.date] = {
                 inflow: parseFloat(row.inflow),
                 outflow: parseFloat(row.outflow)
             };
@@ -245,7 +243,7 @@ export const getDailySalesWithProducts = async (req: express.Request, res: expre
         }
         const dailyItemsQuery = `
             SELECT
-                DATE(s.timestamp) as date,
+                DATE(s.timestamp)::text as date,
                 p.name as product_name,
                 SUM(si.quantity) as quantity,
                 SUM(si.price_at_sale * si.quantity) as revenue
@@ -260,7 +258,7 @@ export const getDailySalesWithProducts = async (req: express.Request, res: expre
 
         const grouped: Record<string, { date: string; totalRevenue: number; totalQuantity: number; items: { name: string; quantity: number; revenue: number }[] }> = {};
         for (const row of result.rows) {
-            const dateStr = new Date(row.date).toISOString().split('T')[0];
+            const dateStr = row.date;
             if (!grouped[dateStr]) {
                 grouped[dateStr] = { date: dateStr, totalRevenue: 0, totalQuantity: 0, items: [] };
             }

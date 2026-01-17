@@ -94,8 +94,14 @@ export const toCamelCase = (obj: any): any => {
                 key === 'end_time') && value) {
 
                 // Handle both string and Date object timestamps
-                if (typeof value === 'string' || value instanceof Date) {
+                if (value instanceof Date) {
                     value = formatTimestamp(value);
+                } else if (typeof value === 'string') {
+                    // Only format if it's not a simple date string (YYYY-MM-DD)
+                    // This prevents shifting date-only fields when they are already correct
+                    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+                        value = formatTimestamp(value);
+                    }
                 } else {
                     console.warn(`Unexpected timestamp format for key ${key}:`, typeof value, value);
                 }
