@@ -1,6 +1,6 @@
 import express from 'express';
 import {
-    getAccounts, createAccount, updateAccount, deleteAccount,
+    getAccounts, createAccount, updateAccount, deleteAccount, adjustAccountBalance,
     getJournalEntries, createManualJournalEntry,
     getSupplierInvoices, createSupplierInvoice, updateSupplierInvoice, recordSupplierPayment
 } from '../controllers/accounting.controller';
@@ -16,6 +16,7 @@ router.route('/accounts')
 router.route('/accounts/:id')
     .put(updateAccount)
     .delete(deleteAccount);
+router.post('/accounts/:id/adjust', adjustAccountBalance);
 
 // Journal Entries
 router.route('/journal-entries')

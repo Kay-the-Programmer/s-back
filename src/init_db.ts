@@ -831,6 +831,27 @@ async function initializeDatabase() {
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_supplier_payments_store_id ON supplier_payments(store_id);`);
 
+        // --- Expenses table ---
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS expenses (
+                id VARCHAR(50) PRIMARY KEY,
+                store_id TEXT NOT NULL,
+                date DATE NOT NULL,
+                description TEXT NOT NULL,
+                amount DECIMAL(12, 2) NOT NULL,
+                expense_account_id VARCHAR(50) NOT NULL,
+                expense_account_name VARCHAR(255) NOT NULL,
+                payment_account_id VARCHAR(50) NOT NULL,
+                payment_account_name VARCHAR(255) NOT NULL,
+                category VARCHAR(100),
+                reference VARCHAR(100),
+                created_by VARCHAR(50) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_expenses_store_date ON expenses(store_id, date DESC);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_expenses_store_account ON expenses(store_id, expense_account_id);`);
+
         // --- Stock Takes tables ---
         await client.query(`
             CREATE TABLE IF NOT EXISTS stock_takes (

@@ -20,6 +20,7 @@ import shopRoutes from './shop.routes';
 import marketplaceRoutes from './marketplace.routes';
 import notificationRoutes from './notifications.routes';
 import pushRoutes from './push.routes';
+import expenseRoutes from './expenses.routes';
 
 
 const router = express.Router();
@@ -46,6 +47,7 @@ router.use('/shop', shopRoutes);
 router.use('/marketplace', marketplaceRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/push', pushRoutes);
+router.use('/expenses', expenseRoutes);
 
 
 // A simple health check endpoint

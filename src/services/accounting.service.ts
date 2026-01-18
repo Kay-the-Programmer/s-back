@@ -447,6 +447,72 @@ const recordSupplierPayment = async (invoice: SupplierInvoice, payment: Supplier
     }, storeId, dbClient);
 };
 
+const recordExpense = async (expense: any, client?: DBClient, storeIdParam?: string) => {
+    const dbClient = client || db;
+    const storeId = storeIdParam || (expense as any).store_id;
+    if (!storeId) {
+        console.warn('recordExpense: Missing store_id; aborting journal entry.');
+        return;
+    }
+
+    // Ensure system accounts exist for this store
+    await ensureCoreAccounts(storeId, dbClient);
+
+    // Create journal entry: Debit Expense Account, Credit Payment Account (Cash or AP)
+    await addJournalEntry({
+        date: expense.date,
+        description: `Expense: ${expense.description}`,
+        source: { type: 'manual', id: expense.id },
+        lines: [
+            {
+                accountId: expense.expenseAccountId,
+                accountName: expense.expenseAccountName,
+                type: 'debit',
+                amount: expense.amount
+            },
+            {
+                accountId: expense.paymentAccountId,
+                accountName: expense.paymentAccountName,
+                type: 'credit',
+                amount: expense.amount
+            }
+        ]
+    }, storeId, dbClient);
+};
+
+const reverseExpense = async (expense: any, client?: DBClient, storeIdParam?: string) => {
+    const dbClient = client || db;
+    const storeId = storeIdParam || (expense as any).store_id;
+    if (!storeId) {
+        console.warn('reverseExpense: Missing store_id; aborting journal entry.');
+        return;
+    }
+
+    // Ensure system accounts exist for this store
+    await ensureCoreAccounts(storeId, dbClient);
+
+    // Reverse the journal entry: Credit Expense Account, Debit Payment Account
+    await addJournalEntry({
+        date: new Date().toISOString(),
+        description: `Reversal: Expense ${expense.description}`,
+        source: { type: 'manual', id: expense.id },
+        lines: [
+            {
+                accountId: expense.expenseAccountId,
+                accountName: expense.expenseAccountName,
+                type: 'credit',
+                amount: expense.amount
+            },
+            {
+                accountId: expense.paymentAccountId,
+                accountName: expense.paymentAccountName,
+                type: 'debit',
+                amount: expense.amount
+            }
+        ]
+    }, storeId, dbClient);
+};
+
 
 export const accountingService = {
     addJournalEntry,
@@ -458,4 +524,6 @@ export const accountingService = {
     recordCustomerPayment,
     recordSupplierPayment,
     voidSale,
+    recordExpense,
+    reverseExpense,
 };
