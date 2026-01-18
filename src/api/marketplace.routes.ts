@@ -13,8 +13,8 @@ import { protect } from '../middleware/auth.middleware';
 
 const router = express.Router();
 
-// Public routes for customers
-router.post('/requests', createMarketplaceRequest);
+// Public routes for customers (allow both authenticated and unauthenticated)
+router.post('/requests', protect, createMarketplaceRequest); // Now requires authentication
 router.get('/requests/recent', getRecentRequests);
 router.get('/requests/:id', getRequestDetails);
 router.get('/my-requests', protect, getCustomerRequests);
