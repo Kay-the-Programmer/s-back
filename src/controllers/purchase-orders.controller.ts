@@ -15,7 +15,7 @@ export const getPurchaseOrders = async (req: express.Request, res: express.Respo
             SELECT po.*,
                    COALESCE(json_agg(DISTINCT poi.*) FILTER (WHERE poi.id IS NOT NULL), '[]') as items
             FROM purchase_orders po
-                     LEFT JOIN purchase_order_items poi ON po.id = poi.po_id
+                     LEFT JOIN purchase_order_items poi ON po.id = poi.po_id AND poi.store_id = po.store_id
             WHERE po.store_id = $1
             GROUP BY po.id, po.created_at
             ORDER BY po.created_at DESC

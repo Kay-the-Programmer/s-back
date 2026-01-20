@@ -18,10 +18,11 @@ export const getSales = async (req: express.Request, res: express.Response) => {
 
     let baseQuery = `
         FROM sales s
-                 LEFT JOIN sale_items si ON s.transaction_id = si.sale_id
-                 LEFT JOIN products p ON si.product_id = p.id
-                 LEFT JOIN payments pay ON s.transaction_id = pay.sale_id
+                 LEFT JOIN sale_items si ON s.transaction_id = si.sale_id AND si.store_id = s.store_id
+                 LEFT JOIN products p ON si.product_id = p.id AND p.store_id = s.store_id
+                 LEFT JOIN payments pay ON s.transaction_id = pay.sale_id AND pay.store_id = s.store_id
     `;
+
     const params: any[] = [];
     const whereClauses: string[] = [];
 
@@ -279,8 +280,8 @@ export const updateFulfillmentStatus = async (req: express.Request, res: express
                 `SELECT s.*, 
                  COALESCE(json_agg(DISTINCT jsonb_build_object('productId', si.product_id, 'name', p.name, 'price', si.price_at_sale, 'quantity', si.quantity, 'costPrice', si.cost_at_sale)) FILTER (WHERE si.id IS NOT NULL), '[]') as cart
                  FROM sales s
-                 LEFT JOIN sale_items si ON s.transaction_id = si.sale_id
-                 LEFT JOIN products p ON si.product_id = p.id
+                 LEFT JOIN sale_items si ON s.transaction_id = si.sale_id AND si.store_id = s.store_id
+                 LEFT JOIN products p ON si.product_id = p.id AND p.store_id = s.store_id
                  WHERE s.transaction_id = $1 AND s.store_id = $2
                  GROUP BY s.transaction_id`,
                 [id, storeId]

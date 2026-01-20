@@ -57,9 +57,9 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         const topProductsRevenueQuery = `
             SELECT p.name, SUM(si.quantity) as quantity, SUM(si.price_at_sale * si.quantity) as revenue
             FROM sale_items si
-                     JOIN products p ON si.product_id = p.id
-                     JOIN sales s ON si.sale_id = s.transaction_id
-            WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3
+                     JOIN products p ON si.product_id = p.id AND p.store_id = $3
+                     JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
+            WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3 AND si.store_id = $3
             GROUP BY p.name
             ORDER BY revenue DESC
             LIMIT 10;
@@ -70,9 +70,9 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         const topProductsQuantityQuery = `
             SELECT p.name, SUM(si.quantity) as quantity
             FROM sale_items si
-                     JOIN products p ON si.product_id = p.id
-                     JOIN sales s ON si.sale_id = s.transaction_id
-            WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3
+                     JOIN products p ON si.product_id = p.id AND p.store_id = $3
+                     JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
+            WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3 AND si.store_id = $3
             GROUP BY p.name
             ORDER BY quantity DESC
             LIMIT 10;
@@ -83,10 +83,10 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         const salesByCategoryQuery = `
             SELECT c.name, SUM(si.price_at_sale * si.quantity) as revenue
             FROM sale_items si
-                     JOIN products p ON si.product_id = p.id
-                     JOIN categories c ON p.category_id = c.id
-                     JOIN sales s ON si.sale_id = s.transaction_id
-            WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3
+                     JOIN products p ON si.product_id = p.id AND p.store_id = $3
+                     JOIN categories c ON p.category_id = c.id AND c.store_id = $3
+                     JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
+            WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3 AND si.store_id = $3
             GROUP BY c.name
             ORDER BY revenue DESC;
         `;
@@ -248,9 +248,9 @@ export const getDailySalesWithProducts = async (req: express.Request, res: expre
                 SUM(si.quantity) as quantity,
                 SUM(si.price_at_sale * si.quantity) as revenue
             FROM sale_items si
-            JOIN products p ON si.product_id = p.id
-            JOIN sales s ON si.sale_id = s.transaction_id
-            WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3
+            JOIN products p ON si.product_id = p.id AND p.store_id = $3
+            JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
+            WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3 AND si.store_id = $3
             GROUP BY DATE(s.timestamp), p.name
             ORDER BY DATE(s.timestamp) ASC, revenue DESC;
         `;
