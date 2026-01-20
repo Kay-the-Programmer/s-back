@@ -242,3 +242,85 @@ export const initialAccountsData = [
     { number: '6010', name: 'Rent Expense', type: 'expense', isDebitNormal: true, description: 'Monthly rent for the store premises.' },
     { number: '6020', name: 'Inventory Adjustment Expense', type: 'expense', subType: 'inventory_adjustment', isDebitNormal: true, description: 'Expense from inventory shrinkage, damage, or adjustments.' },
 ];
+
+export interface BusinessType {
+    id: string;
+    label: string;
+    description?: string;
+    categories: string[]; // List of top-level category names to include
+}
+
+export const BUSINESS_TYPES: BusinessType[] = [
+    {
+        id: 'retail_grocery',
+        label: 'Grocery & Supermarket',
+        description: 'Food, beverages, household essentials, produce',
+        categories: [
+            "Food & Beverages",
+            "Grocery & Household Essentials",
+            "Fresh Produce",
+            "Health, Beauty & Personal Care",
+            "Home, Furniture & Appliances"
+        ]
+    },
+    {
+        id: 'retail_fashion',
+        label: 'Fashion & Apparel',
+        description: 'Clothing, shoes, accessories, jewelry',
+        categories: [
+            "Clothing, Fashion & Accessories",
+            "Sports, Fitness & Outdoor",
+            "Health, Beauty & Personal Care"
+        ]
+    },
+    {
+        id: 'retail_electronics',
+        label: 'Electronics & Gadgets',
+        description: 'Computers, phones, appliances, digital goods',
+        categories: [
+            "Electronics & Technology",
+            "Home, Furniture & Appliances",
+            "Digital Products",
+            "Stationery, Books & Office Supplies"
+        ]
+    },
+    {
+        id: 'food_beverage',
+        label: 'Restaurant / Cafe',
+        description: 'Prepared food, drinks, hospitality',
+        categories: [
+            "Food & Beverages",
+            "Hospitality & Events",
+            "Services (Non-Inventory)"
+        ]
+    },
+    {
+        id: 'pharmacy',
+        label: 'Pharmacy & Health',
+        description: 'Medicines, supplements, personal care',
+        categories: [
+            "Health, Beauty & Personal Care",
+            "Food & Beverages" // Often sell drinks/snacks
+        ]
+    },
+    {
+        id: 'hardware',
+        label: 'Hardware & Auto',
+        description: 'Tools, construction, automotive parts',
+        categories: [
+            "Hardware, Tools & Construction",
+            "Automotive & Transport",
+            "Electronics & Technology",
+            "Agriculture & Livestock"
+        ]
+    },
+    {
+        id: 'other',
+        label: 'General / Other',
+        description: 'Other types of retail or services',
+        categories: [] // Logic will be: if empty or 'all', seed everything? Or let user pick manual?
+        // Let's decide: 'other' -> seed "Grocery & Household" as a safe fallback + "Services".
+        // Or just seed everything.
+        // For simplicity now: if 'other' is selected (or nothing matching), we might seed a broad default.
+    }
+];
