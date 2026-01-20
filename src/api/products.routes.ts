@@ -7,6 +7,7 @@ import {
     deleteProduct,
     adjustStock,
     archiveProduct,
+    lookupExternalProduct,
 } from '../controllers/products.controller';
 import { protect, canManageInventory } from '../middleware/auth.middleware';
 import upload from '../middleware/upload.middleware';
@@ -24,5 +25,6 @@ router.route('/:id')
 
 router.patch('/:id/stock', protect, canManageInventory, adjustStock);
 router.patch('/:id/archive', protect, canManageInventory, archiveProduct);
+router.get('/external-lookup/:barcode', protect, lookupExternalProduct);
 
 export default router;

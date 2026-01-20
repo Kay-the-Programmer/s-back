@@ -21,6 +21,7 @@ import marketplaceRoutes from './marketplace.routes';
 import notificationRoutes from './notifications.routes';
 import pushRoutes from './push.routes';
 import expenseRoutes from './expenses.routes';
+import onboardingRoutes from './onboarding.routes';
 
 
 const router = express.Router();
@@ -48,6 +49,7 @@ router.use('/marketplace', marketplaceRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/push', pushRoutes);
 router.use('/expenses', expenseRoutes);
+router.use('/onboarding', onboardingRoutes);
 
 
 // A simple health check endpoint

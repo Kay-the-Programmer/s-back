@@ -38,6 +38,11 @@ async function initializeDatabase() {
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='phone') THEN
                     ALTER TABLE users ADD COLUMN phone TEXT;
                 END IF;
+                
+                -- Add onboarding_state column if missing
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='onboarding_state') THEN
+                    ALTER TABLE users ADD COLUMN onboarding_state JSONB DEFAULT '{"completedActions":[],"dismissedHelpers":[],"lastUpdated":null}'::jsonb;
+                END IF;
             END $$;`
         );
         // Seed a default admin user if none exists (safe, idempotent)

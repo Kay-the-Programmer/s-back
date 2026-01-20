@@ -13,6 +13,7 @@
   "dependencies": {
     "@google/genai": "^1.11.0",
     "@types/multer": "^2.0.0",
+    "axios": "^1.13.2",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",

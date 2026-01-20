@@ -525,3 +525,25 @@ export const adjustStock = async (req: express.Request, res: express.Response) =
         res.status(500).json({ message: 'Error adjusting stock' });
     }
 };
+
+import { externalProductService } from '../services/externalProduct.service';
+
+export const lookupExternalProduct = async (req: express.Request, res: express.Response) => {
+    const { barcode } = req.params;
+    try {
+        if (!barcode) {
+            return res.status(400).json({ message: 'Barcode is required' });
+        }
+
+        const productData = await externalProductService.lookupByBarcode(barcode);
+
+        if (!productData) {
+            return res.status(404).json({ message: 'Product not found externally' });
+        }
+
+        res.status(200).json(productData);
+    } catch (error) {
+        console.error(`Error looking up external product ${barcode}:`, error);
+        res.status(500).json({ message: 'Error performing external lookup' });
+    }
+};
