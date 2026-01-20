@@ -77,9 +77,33 @@ export const createReturn = async (req: express.Request, res: express.Response) 
         }
 
         // 4. Update original sale's refund status
-        // This is complex and requires checking all items. For now, we'll just mark as partially refunded.
-        // A more robust solution would be a stored procedure or more complex query logic.
-        await db.query("UPDATE sales SET refund_status = 'partially_refunded' WHERE transaction_id = $1 AND store_id = $2", [originalSaleId, storeId]);
+        // Calculate total amount refunded so far (including this one)
+        const previousRefundsResult = await db.query('SELECT SUM(refund_amount) as total_refunded FROM returns WHERE original_sale_id = $1 AND store_id = $2', [originalSaleId, storeId]);
+        const previousRefunds = Number(previousRefundsResult.rows[0]?.total_refunded || 0);
+        // Note: this query might not include the current transaction if isolation level is read committed and not visible yet, 
+        // but we are in the same function. Actually `returns` insert happened above. 
+        // Postgres sees its own writes in the same transaction usually, but here we are not using a transaction block explicitly in the code 
+        // (the code has a comment "// This should be a database transaction" but doesn't start one). 
+        // However, we just inserted the return above.
+
+        // Let's refine: The insert above (step 1) is done. 
+        // So `previousRefundsResult` SHOULD include the refund we just made if we query the table.
+        // Let's verify if we need to account for it manually or if the query catches it. 
+        // Since `db.query` are separate calls and likely auto-commit if no transaction object is passed (DB client dependent), 
+        // checking the code: line 30 says "This should be a database transaction" implies it isn't one yet.
+        // So the INSERT committed. The SELECT should see it.
+
+        const totalRefunded = Number(previousRefundsResult.rows[0]?.total_refunded || 0);
+        const originalTotal = Number(originalSale.total);
+
+        let newStatus = 'partially_returned';
+
+        // Allow for small float differences
+        if (totalRefunded >= originalTotal - 0.01) {
+            newStatus = 'returned';
+        }
+
+        await db.query("UPDATE sales SET refund_status = $1 WHERE transaction_id = $2 AND store_id = $3", [newStatus, originalSaleId, storeId]);
 
         auditService.log(req.user!, 'Return Processed', `For Sale ID: ${originalSaleId}, Amount: ${refundAmount.toFixed(2)}`);
 

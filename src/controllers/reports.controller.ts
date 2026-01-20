@@ -17,41 +17,128 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             return res.status(400).json({ message: 'Store context required' });
         }
         // --- Sales Calculations ---
-        const salesQuery = `
+        // --- Sales Calculations ---
+        // 1. Gross Sales & Transactions (Directly from sales table to avoid join duplication)
+        const grossSalesQuery = `
             SELECT
-                COALESCE(SUM(s.total), 0) AS "totalRevenue",
-                COALESCE(SUM(s.total) - SUM(si.cost_at_sale * si.quantity), 0) AS "totalProfit",
-                COALESCE(SUM(si.cost_at_sale * si.quantity), 0) AS "totalCogs",
-                COUNT(DISTINCT s.transaction_id) AS "totalTransactions"
-            FROM sales s
-            JOIN sale_items si ON s.transaction_id = si.sale_id AND si.store_id = $3
-            WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3;
+                COALESCE(SUM(total), 0) AS "grossRevenue",
+                COUNT(transaction_id) AS "totalTransactions"
+            FROM sales
+            WHERE timestamp BETWEEN $1 AND $2 AND payment_status = 'paid' AND store_id = $3;
         `;
-        const salesResult = await db.query(salesQuery, [startDate, adjustedEndDate, storeId]);
-        const salesData = salesResult.rows[0] || {
-            totalRevenue: 0,
-            totalProfit: 0,
-            totalCogs: 0,
-            totalTransactions: 0
+        const grossSalesResult = await db.query(grossSalesQuery, [startDate, adjustedEndDate, storeId]);
+
+        // 2. COGS (From items)
+        const cogsQuery = `
+            SELECT
+                COALESCE(SUM(si.cost_at_sale * si.quantity), 0) AS "totalCogs"
+            FROM sale_items si
+            JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
+            WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND si.store_id = $3;
+        `;
+        const cogsResult = await db.query(cogsQuery, [startDate, adjustedEndDate, storeId]);
+
+        // 3. Refunds (From returns table)
+        const refundsQuery = `
+            SELECT
+                COALESCE(SUM(refund_amount), 0) AS "totalRefunds"
+            FROM returns
+            WHERE timestamp BETWEEN $1 AND $2 AND store_id = $3;
+        `;
+        const refundsResult = await db.query(refundsQuery, [startDate, adjustedEndDate, storeId]);
+
+        const grossRevenue = parseFloat(grossSalesResult.rows[0]?.grossRevenue || 0);
+        const totalTransactions = parseInt(grossSalesResult.rows[0]?.totalTransactions || 0, 10);
+        const totalCogs = parseFloat(cogsResult.rows[0]?.totalCogs || 0);
+        const totalRefunds = parseFloat(refundsResult.rows[0]?.totalRefunds || 0);
+
+        const netRevenue = grossRevenue - totalRefunds;
+        const totalProfit = netRevenue - totalCogs;
+        // Note: This is simplified. Ideally CoGS should decrease when items are returned to stock?
+        // But typically Refund is a contra-revenue. If we put item back in stock, we regain the asset, 
+        // but the validation of "Profit on Sales" usually implies (Sales - Returns) - Cost of Goods Sold *that are gone*.
+        // If item came back, ensuring CoGS is credited is correct only if we track that specific return's cost reversal.
+        // For now, Net Revenue - COGS (of original sales) is a conservative profit estimate (lower bound if stock returned).
+        // Since we are fixing the "Misinterpretation", showing Net Revenue is the key.
+
+        const salesData = {
+            totalRevenue: netRevenue, // Display Net Revenue
+            totalProfit: totalProfit,
+            totalCogs: totalCogs,
+            totalTransactions: totalTransactions
         };
 
         // --- Sales Trend ---
-        const trendQuery = `
+        // --- Sales Trend ---
+        // 1. Daily Gross Sales
+        const trendGrossQuery = `
+            SELECT
+                DATE(timestamp)::text as date,
+                COALESCE(SUM(total), 0) as gross_revenue
+            FROM sales
+            WHERE timestamp BETWEEN $1 AND $2 AND payment_status = 'paid' AND store_id = $3
+            GROUP BY DATE(timestamp)
+            ORDER BY date ASC;
+        `;
+        const trendGrossResult = await db.query(trendGrossQuery, [startDate, adjustedEndDate, storeId]);
+
+        // 2. Daily COGS
+        const trendCogsQuery = `
             SELECT
                 DATE(s.timestamp)::text as date,
-                SUM(s.total) as revenue,
-                SUM(s.total) - SUM(si.cost_at_sale * si.quantity) as profit
-            FROM sales s
-            JOIN sale_items si ON s.transaction_id = si.sale_id AND si.store_id = $3
-            WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3 AND si.store_id = $3
+                COALESCE(SUM(si.cost_at_sale * si.quantity), 0) as cogs
+            FROM sale_items si
+            JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
+            WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND si.store_id = $3
             GROUP BY DATE(s.timestamp)
             ORDER BY date ASC;
         `;
-        const trendResult = await db.query(trendQuery, [startDate, adjustedEndDate, storeId]);
-        const salesTrend = trendResult.rows.reduce((acc, row) => {
-            acc[row.date] = { revenue: parseFloat(row.revenue), profit: parseFloat(row.profit) };
-            return acc;
-        }, {});
+        const trendCogsResult = await db.query(trendCogsQuery, [startDate, adjustedEndDate, storeId]);
+
+        // 3. Daily Refunds
+        const trendRefundsQuery = `
+            SELECT
+                DATE(timestamp)::text as date,
+                COALESCE(SUM(refund_amount), 0) as refunds
+            FROM returns
+            WHERE timestamp BETWEEN $1 AND $2 AND store_id = $3
+            GROUP BY DATE(timestamp)
+            ORDER BY date ASC;
+        `;
+        const trendRefundsResult = await db.query(trendRefundsQuery, [startDate, adjustedEndDate, storeId]);
+
+        // Merge Data
+        const trendMap: Record<string, { revenue: number, profit: number }> = {};
+
+        // Helper to init date entry
+        const getOrInit = (date: string) => {
+            if (!trendMap[date]) trendMap[date] = { revenue: 0, profit: 0 };
+            return trendMap[date];
+        };
+
+        // Add Gross
+        trendGrossResult.rows.forEach(row => {
+            const entry = getOrInit(row.date);
+            entry.revenue += parseFloat(row.gross_revenue);
+            entry.profit += parseFloat(row.gross_revenue); // Start profit as revenue
+        });
+
+        // Subtract Refunds from Revenue and Profit
+        trendRefundsResult.rows.forEach(row => {
+            const entry = getOrInit(row.date);
+            const ref = parseFloat(row.refunds);
+            entry.revenue -= ref;
+            entry.profit -= ref;
+        });
+
+        // Subtract COGS from Profit only
+        trendCogsResult.rows.forEach(row => {
+            const entry = getOrInit(row.date);
+            const cogs = parseFloat(row.cogs);
+            entry.profit -= cogs;
+        });
+
+        const salesTrend = trendMap;
 
         // --- Top Products by Revenue ---
         const topProductsRevenueQuery = `
@@ -176,12 +263,12 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         // --- Final Report Object ---
         const report = {
             sales: {
-                totalRevenue: parseFloat(salesData.totalRevenue || 0),
-                totalProfit: parseFloat(salesData.totalProfit || 0),
-                totalCogs: parseFloat(salesData.totalCogs || 0),
-                totalTransactions: parseInt(salesData.totalTransactions || 0, 10),
-                avgSaleValue: (parseInt(salesData.totalTransactions || 0, 10)) > 0 ? (parseFloat(salesData.totalRevenue || 0) / parseInt(salesData.totalTransactions, 10)) : 0,
-                grossMargin: (parseFloat(salesData.totalRevenue || 0)) > 0 ? ((parseFloat(salesData.totalProfit || 0) / parseFloat(salesData.totalRevenue)) * 100) : 0,
+                totalRevenue: salesData.totalRevenue,
+                totalProfit: salesData.totalProfit,
+                totalCogs: salesData.totalCogs,
+                totalTransactions: salesData.totalTransactions,
+                avgSaleValue: salesData.totalTransactions > 0 ? (salesData.totalRevenue / salesData.totalTransactions) : 0,
+                grossMargin: salesData.totalRevenue > 0 ? ((salesData.totalProfit / salesData.totalRevenue) * 100) : 0,
                 salesTrend: salesTrend,
                 salesByChannel: salesByChannelResult.rows.map(row => ({
                     channel: row.channel || 'pos',
@@ -209,8 +296,8 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
                 totalUnits: parseInt(invData.totalUnits || 0, 10),
             },
             customers: {
-                totalCustomers: parseInt(customerData.totalCustomers || 0, 10),
-                totalStoreCreditOwed: parseFloat(customerData.totalStoreCreditOwed || 0),
+                totalCustomers: parseInt(String(customerData.totalCustomers || 0), 10),
+                totalStoreCreditOwed: parseFloat(String(customerData.totalStoreCreditOwed || 0)),
                 activeCustomersInPeriod: activeCustomers,
                 newCustomersInPeriod: newCustomers,
             },
