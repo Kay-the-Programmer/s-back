@@ -28,7 +28,7 @@ export class StoreInitService {
             email: '',
             website: '',
             taxRate: 0,
-            currency: { symbol: '$', code: 'USD', position: 'before' },
+            currency: { symbol: 'K', code: 'ZMW', position: 'before' },
             receiptMessage: '',
             lowStockThreshold: 5,
             skuPrefix: 'SKU-',
