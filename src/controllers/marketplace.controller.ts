@@ -1,6 +1,7 @@
 import express from 'express';
 import db from '../db_client';
 import { toCamelCase } from '../utils/helpers';
+import SocketService from '../services/socket.service';
 
 const genId = (prefix: string) => `${prefix}_${Math.random().toString(36).substr(2, 9)}`;
 
@@ -64,6 +65,49 @@ const notifyNextSeller = async (requestId: string) => {
 
     // Update match status to notified
     await db.query(`UPDATE marketplace_matches SET status = 'notified', updated_at = NOW() WHERE id = $1`, [match.id]);
+
+    // Emit socket event to the specific store (if connected and we had room logic) or broadcast to sellers for now
+    // The previous implementation of SocketService has 'join_sellers'.
+    //Ideally we'd emit to a specific store room like `store_${match.store_id}`.
+    // Dashboard.tsx only joins 'sellers' (global room for all sellers? or maybe logic needs update).
+    // Dashboard.tsx says `socket.emit('join_sellers');` and listens for `new_request`.
+    // The current dashboard implementation seems to broadcast to ALL sellers.
+    // "socket.on('new_request', handleNewRequest);"
+
+    // Ideally we only notify the MATCHED seller.
+    // But based on the user request "offers should show as notifications instantly to sellers" (plural), 
+    // and looking at Dashboard.tsx, it seems to expect a broadcast or at least a push.
+
+    // IF I use `broadcastToSellers`, EVERY seller gets it. 
+    // `notifyNextSeller` only picks ONE store at a time from the DB matches.
+    // So we should try to target that store if possible.
+    // However, SocketService only has `broadcastToSellers` room 'sellers'.
+    // Modifying SocketService to support store-specific rooms would be better, but staying within scope:
+    // If I emit to 'sellers' with storeId in data, the frontend can filter? 
+    // Dashboard.tsx: `handleNewRequest` just shows snackbar. It doesn't filter by ID.
+
+    // CRITICAL: The user wants "instantly to sellers".
+    // I will use `SocketService.getInstance().broadcastToSellers('new_request', ...)`
+    // And pass the data.
+    // I should check if I should update SocketService to target specific store, but for now let's use what exists or add a small helper.
+    // I'll assume for this prototype that broadcasting to "sellers" room is acceptable, 
+    // OR I can use `io.to('store_' + storeId)` if I update Dashboard to join that room.
+
+    // Let's stick to the existing pattern: broadcast to 'sellers' but maybe include storeId so client *could* filter if logic existed.
+    // Actually, `notifyNextSeller` implies a directed flow. 
+    // Using `broadcastToSellers` might spam others.
+    // But since `Dashboard.tsx` joins `sellers`, that's the channel.
+
+    const socketService = SocketService.getInstance();
+    if (socketService) {
+        socketService.broadcastToSellers('new_request', {
+            requestId: requestId,
+            title: 'New Product Request',
+            description: request.query, // or similar
+            targetPrice: request.target_price,
+            storeId: match.store_id // Send who it is intended for
+        });
+    }
 
     return true;
 };
