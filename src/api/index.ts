@@ -22,6 +22,7 @@ import notificationRoutes from './notifications.routes';
 import pushRoutes from './push.routes';
 import expenseRoutes from './expenses.routes';
 import onboardingRoutes from './onboarding.routes';
+import subscriptionRoutes from './subscription.routes';
 
 
 const router = express.Router();
@@ -50,6 +51,7 @@ router.use('/notifications', notificationRoutes);
 router.use('/push', pushRoutes);
 router.use('/expenses', expenseRoutes);
 router.use('/onboarding', onboardingRoutes);
+router.use('/subscriptions', subscriptionRoutes);
 
 
 // A simple health check endpoint
