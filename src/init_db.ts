@@ -671,8 +671,43 @@ async function initializeDatabase() {
         await client.query(`CREATE INDEX IF NOT EXISTS idx_po_reception_items_store_id ON po_reception_items(store_id);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_po_reception_items_store_id_reception_id ON po_reception_items(store_id, reception_id);`);
 
-        // Phase B: Seed minimal demo data on empty database (idempotent inserts)
-        // Note: store_settings are now per-store and will be created on-demand when a store saves settings.
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_po_reception_items_store_id_reception_id ON po_reception_items(store_id, reception_id);`);
+
+        // Offers (Location-based)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS offers (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id),
+                title TEXT NOT NULL,
+                description TEXT,
+                latitude DECIMAL(10, 8) NOT NULL,
+                longitude DECIMAL(11, 8) NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'accepted', 'completed', 'cancelled')),
+                accepted_by TEXT REFERENCES users(id),
+                store_id TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_offers_user_id ON offers(user_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_offers_status ON offers(status);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_offers_accepted_by ON offers(accepted_by);`);
+
+        // Offer Messages (Chat)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS offer_messages (
+                id TEXT PRIMARY KEY,
+                offer_id TEXT NOT NULL REFERENCES offers(id) ON DELETE CASCADE,
+                sender_id TEXT NOT NULL REFERENCES users(id),
+                content TEXT,
+                image_url TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_offer_messages_offer_id ON offer_messages(offer_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_offer_messages_sender_id ON offer_messages(sender_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_offer_messages_created_at ON offer_messages(created_at);`);
+
+        // Phase B: Seed minimal demo data on empty database (idempotent inserts)        // Note: store_settings are now per-store and will be created on-demand when a store saves settings.
         // Seeding of settings is skipped here to avoid coupling to a specific store_id.
         // If needed, settings seeding can be performed in seed.ts where a store_id context may be available.
 

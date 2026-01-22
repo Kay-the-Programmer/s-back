@@ -2,12 +2,15 @@ import dotenv from 'dotenv';
 dotenv.config();
 import express from 'express';
 import cors from 'cors';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
 import apiRoutes from './api';
 import { errorMiddleware } from './middleware/error.middleware';
 import './types/request';
 import initializeDatabase from './init_db';
 import seedDatabase from './seed';
 import path from 'path';
+import SocketService from './services/socket.service';
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -65,11 +68,22 @@ app.use('/images', express.static(path.join(__dirname, '../public/images')));
 // --- Error Handling ---
 app.use(errorMiddleware);
 
+const httpServer = createServer(app);
+const io = new Server(httpServer, {
+  cors: {
+    origin: '*', // Allow all for now, or use corsOptions if needed
+    methods: ['GET', 'POST']
+  }
+});
+// Initialize socket service
+new SocketService(io);
+
 const startServer = async () => {
   try {
     await initializeDatabase();
     await seedDatabase();
-    app.listen(port, () => {
+    // Use httpServer.listen instead of app.listen
+    httpServer.listen(port, () => {
       console.log(`[server]: Server is running at http://localhost:${port}`);
     });
   } catch (error) {

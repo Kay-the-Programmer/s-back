@@ -23,6 +23,8 @@ import pushRoutes from './push.routes';
 import expenseRoutes from './expenses.routes';
 import onboardingRoutes from './onboarding.routes';
 import subscriptionRoutes from './subscription.routes';
+import offerRoutes from './offers.routes';
+import messageRoutes from './messages.routes';
 
 
 const router = express.Router();
@@ -52,6 +54,8 @@ router.use('/push', pushRoutes);
 router.use('/expenses', expenseRoutes);
 router.use('/onboarding', onboardingRoutes);
 router.use('/subscriptions', subscriptionRoutes);
+router.use('/offers', offerRoutes);
+router.use('/messages', messageRoutes);
 
 
 // A simple health check endpoint
