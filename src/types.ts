@@ -1,5 +1,25 @@
 
 
+
+export interface VerificationDocument {
+  id: string;
+  name: string;
+  url: string;
+  uploadedAt: string;
+}
+
+export interface Store {
+  id: string;
+  name: string;
+  status: 'active' | 'inactive' | 'suspended';
+  subscriptionStatus: 'trial' | 'active' | 'past_due' | 'canceled';
+  subscriptionEndsAt?: string;
+  isVerified: boolean;
+  verificationDocuments: VerificationDocument[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Product {
   id: string;
   name: string;

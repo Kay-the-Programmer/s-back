@@ -79,6 +79,8 @@ async function initializeDatabase() {
                 status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','inactive','suspended')),
                 subscription_status TEXT NOT NULL DEFAULT 'active' CHECK (subscription_status IN ('trial','active','past_due','canceled')),
                 subscription_ends_at TIMESTAMPTZ,
+                is_verified BOOLEAN DEFAULT FALSE,
+                verification_documents JSONB DEFAULT '[]',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
@@ -90,7 +92,10 @@ async function initializeDatabase() {
                 ALTER TABLE stores ADD COLUMN IF NOT EXISTS status TEXT;
                 ALTER TABLE stores ADD COLUMN IF NOT EXISTS subscription_status TEXT;
                 ALTER TABLE stores ADD COLUMN IF NOT EXISTS subscription_ends_at TIMESTAMPTZ;
+                ALTER TABLE stores ADD COLUMN IF NOT EXISTS subscription_ends_at TIMESTAMPTZ;
                 ALTER TABLE stores ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
+                ALTER TABLE stores ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE;
+                ALTER TABLE stores ADD COLUMN IF NOT EXISTS verification_documents JSONB DEFAULT '[]';
                 -- Set defaults and checks if missing by re-adding constraints
                 IF EXISTS (
                     SELECT 1 FROM information_schema.columns WHERE table_name='stores' AND column_name='status'
