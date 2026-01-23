@@ -1,0 +1,52 @@
+﻿node.exe : C:\Users\omen\Downloads\salepil
+ot\salepilot-backend\node_modules\ts-node\
+src\index.ts:859
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" 
+"C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecifie 
+   d: (C:\Users\omen\D...rc\index.ts:859  
+  :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeComma 
+   ndError
+ 
+    return new TSError(diagnosticText, 
+diagnosticCodes, diagnostics);
+           ^
+TSError: Γ¿» Unable to compile TypeScript:
+src/scripts/verify_storage.ts(24,27): 
+error TS7006: Parameter 'file' implicitly 
+has an 'any' type.
+
+    at createTSError (C:\Users\omen\Downlo
+ads\salepilot\salepilot-backend\node_modul
+es\ts-node\src\index.ts:859:12)
+    at reportTSError (C:\Users\omen\Downlo
+ads\salepilot\salepilot-backend\node_modul
+es\ts-node\src\index.ts:863:19)
+    at getOutput (C:\Users\omen\Downloads\
+salepilot\salepilot-backend\node_modules\t
+s-node\src\index.ts:1077:36)
+    at Object.compile (C:\Users\omen\Downl
+oads\salepilot\salepilot-backend\node_modu
+les\ts-node\src\index.ts:1433:41)
+    at Module.m._compile (C:\Users\omen\Do
+wnloads\salepilot\salepilot-backend\node_m
+odules\ts-node\src\index.ts:1617:30)
+    at 
+node:internal/modules/cjs/loader:1839:10
+    at 
+Object.require.extensions.<computed> [as 
+.ts] (C:\Users\omen\Downloads\salepilot\sa
+lepilot-backend\node_modules\ts-node\src\i
+ndex.ts:1621:12)
+    at Module.load 
+(node:internal/modules/cjs/loader:1441:32)
+    at Function._load 
+(node:internal/modules/cjs/loader:1263:12)
+    at TracingChannel.traceSync 
+(node:diagnostics_channel:322:14) {
+  diagnosticCodes: [ 7006 ]
+}
