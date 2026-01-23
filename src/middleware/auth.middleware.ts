@@ -25,7 +25,7 @@ export const protect = async (req: express.Request, res: express.Response, next:
             if (!isFreshUserRequest && cacheEntry && cacheEntry.expires > now && cacheEntry.user && cacheEntry.user.current_store_id) {
                 dbUser = cacheEntry.user;
             } else {
-                const result = await db.query('SELECT id, name, email, role, phone, current_store_id FROM users WHERE id = $1', [decoded.id]);
+                const result = await db.query('SELECT id, name, email, role, phone, current_store_id, is_verified FROM users WHERE id = $1', [decoded.id]);
                 dbUser = result.rows[0] as any;
                 if (dbUser) {
                     // If TTL is 0 (disabled), do not cache
@@ -51,6 +51,7 @@ export const protect = async (req: express.Request, res: express.Response, next:
                 phone: dbUser.phone,
                 role: dbUser.role,
                 currentStoreId: dbUser.current_store_id || undefined,
+                isVerified: dbUser.is_verified,
             };
             req.user = user;
 
@@ -100,7 +101,7 @@ export const optionalProtect = async (req: express.Request, res: express.Respons
             }
             const decoded = jwt.verify(token, JWT_SECRET) as { id: string };
 
-            const result = await db.query('SELECT id, name, email, role, phone, current_store_id FROM users WHERE id = $1', [decoded.id]);
+            const result = await db.query('SELECT id, name, email, role, phone, current_store_id, is_verified FROM users WHERE id = $1', [decoded.id]);
             const dbUser = result.rows[0];
 
             if (dbUser) {
@@ -110,7 +111,8 @@ export const optionalProtect = async (req: express.Request, res: express.Respons
                     email: dbUser.email,
                     phone: dbUser.phone,
                     role: dbUser.role as any,
-                    currentStoreId: dbUser.current_store_id
+                    currentStoreId: dbUser.current_store_id,
+                    isVerified: dbUser.is_verified
                 };
             }
         } catch (error) {
@@ -147,6 +149,10 @@ export const canManageInventory = (req: express.Request, res: express.Response, 
 
 export const canPerformSales = (req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (req.user && (req.user.role === 'admin' || req.user.role === 'staff')) {
+        if (!req.user.isVerified && req.user.role !== 'admin') { // Admins can bypass? Maybe not. Let's block implies 'features to sale' so probably staff.
+            // Requirement: "if they dont verify the email after sometime they wont be allowed to use the features to sale products"
+            return res.status(403).json({ message: 'Forbidden: Email verification required to perform sales.', code: 'EMAIL_NOT_VERIFIED' });
+        }
         next();
     } else {
         res.status(403).json({ message: 'Forbidden: Sales access required' });

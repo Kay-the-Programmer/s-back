@@ -50,6 +50,7 @@ export interface User {
   phone?: string | null;
   role: 'superadmin' | 'admin' | 'staff' | 'inventory_manager' | 'customer';
   currentStoreId?: string; // Multi-tenant: currently selected store ID
+  isVerified?: boolean;
 }
 
 export interface CartItem {

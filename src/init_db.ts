@@ -43,6 +43,22 @@ async function initializeDatabase() {
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='onboarding_state') THEN
                     ALTER TABLE users ADD COLUMN onboarding_state JSONB DEFAULT '{"completedActions":[],"dismissedHelpers":[],"lastUpdated":null}'::jsonb;
                 END IF;
+
+                -- Add email verification columns
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='is_verified') THEN
+                    ALTER TABLE users ADD COLUMN is_verified BOOLEAN DEFAULT FALSE;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='verification_token') THEN
+                    ALTER TABLE users ADD COLUMN verification_token TEXT;
+                END IF;
+
+                -- Add password reset columns
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='reset_password_token') THEN
+                    ALTER TABLE users ADD COLUMN reset_password_token TEXT;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='reset_password_expires') THEN
+                    ALTER TABLE users ADD COLUMN reset_password_expires TIMESTAMPTZ;
+                END IF;
             END $$;`
         );
         // Seed a default admin user if none exists (safe, idempotent)

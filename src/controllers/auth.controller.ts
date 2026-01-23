@@ -17,6 +17,14 @@ const generateToken = (id: string) => {
     });
 };
 
+import crypto from 'crypto';
+import { sendVerificationEmail, sendPasswordResetEmail } from '../services/email.service';
+
+// Helper to generate random token
+const generateRandomToken = () => {
+    return crypto.randomBytes(32).toString('hex');
+};
+
 export const loginUser = async (req: express.Request, res: express.Response) => {
     const { email, password } = req.body || {};
     try {
@@ -35,6 +43,7 @@ export const loginUser = async (req: express.Request, res: express.Response) => 
                 role: user.role,
                 phone: user.phone,
                 current_store_id: user.current_store_id,
+                is_verified: user.is_verified, // Return verification status
                 token: generateToken(user.id),
             });
             return res.json(userResponse);
@@ -67,11 +76,22 @@ export const registerUser = async (req: express.Request, res: express.Response) 
         const id = generateId('user');
         const role = 'staff'; // Default role
 
+        // Generate verification token
+        const verificationToken = generateRandomToken();
+
         const insertResult = await db.query(
-            'INSERT INTO users(id, name, email, password_hash, role) VALUES($1, $2, $3, $4, $5) RETURNING id, name, email, role, phone',
-            [id, String(name), normEmail, password_hash, role]
+            'INSERT INTO users(id, name, email, password_hash, role, verification_token, is_verified) VALUES($1, $2, $3, $4, $5, $6, $7) RETURNING id, name, email, role, phone, is_verified',
+            [id, String(name), normEmail, password_hash, role, verificationToken, false]
         );
         const newUser = insertResult.rows[0];
+
+        // Send verification email
+        try {
+            await sendVerificationEmail(newUser.email, verificationToken);
+        } catch (emailError) {
+            console.error('Failed to send verification email:', emailError);
+            // Don't fail registration, just log it. User can request resend.
+        }
 
         const userResponse = toCamelCase({
             ...newUser,
@@ -81,7 +101,6 @@ export const registerUser = async (req: express.Request, res: express.Response) 
         return res.status(201).json(userResponse);
     } catch (error: any) {
         console.error('Registration error:', error);
-        // Uniqueness violation fallback
         const message = (error?.code === '23505') ? 'User already exists' : 'Server error during registration';
         const status = (error?.code === '23505') ? 409 : 500;
         return res.status(status).json({ message });
@@ -109,11 +128,19 @@ export const registerCustomer = async (req: express.Request, res: express.Respon
         const id = generateId('user');
         const role = 'customer'; // Set role to customer
 
+        // Verification logic
+        const verificationToken = generateRandomToken();
+
         const insertResult = await db.query(
-            'INSERT INTO users(id, name, email, password_hash, role, phone) VALUES($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role, phone',
-            [id, String(name), normEmail, password_hash, role, phone || null]
+            'INSERT INTO users(id, name, email, password_hash, role, phone, verification_token, is_verified) VALUES($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, name, email, role, phone, is_verified',
+            [id, String(name), normEmail, password_hash, role, phone || null, verificationToken, false]
         );
         const newUser = insertResult.rows[0];
+
+        // Send verification email
+        try {
+            await sendVerificationEmail(newUser.email, verificationToken);
+        } catch (e) { console.error('Email send failed', e); }
 
         const userResponse = toCamelCase({
             ...newUser,
@@ -150,11 +177,18 @@ export const registerSupplier = async (req: express.Request, res: express.Respon
         const id = generateId('user');
         const role = 'supplier';
 
+        // Verification logic
+        const verificationToken = generateRandomToken();
+
         const insertResult = await db.query(
-            'INSERT INTO users(id, name, email, password_hash, role, phone) VALUES($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role, phone',
-            [id, String(name), normEmail, password_hash, role, phone || null]
+            'INSERT INTO users(id, name, email, password_hash, role, phone, verification_token, is_verified) VALUES($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, name, email, role, phone, is_verified',
+            [id, String(name), normEmail, password_hash, role, phone || null, verificationToken, false]
         );
         const newUser = insertResult.rows[0];
+
+        try {
+            await sendVerificationEmail(newUser.email, verificationToken);
+        } catch (e) { console.error('Email send failed', e); }
 
         const userResponse = toCamelCase({
             ...newUser,
@@ -174,17 +208,114 @@ export const getCurrentUser = (req: express.Request, res: express.Response) => {
     res.status(200).json(toCamelCase(req.user));
 };
 
+export const verifyEmail = async (req: express.Request, res: express.Response) => {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ message: 'Token is required' });
+
+    try {
+        const result = await db.query('SELECT id, email FROM users WHERE verification_token = $1', [token]);
+        if (result.rowCount === 0) {
+            return res.status(400).json({ message: 'Invalid or expired verification token' });
+        }
+
+        const user = result.rows[0];
+
+        // Mark verified and clear token
+        await db.query('UPDATE users SET is_verified = TRUE, verification_token = NULL WHERE id = $1', [user.id]);
+
+        res.json({ message: 'Email verified successfully' });
+    } catch (error) {
+        console.error('Verification error:', error);
+        res.status(500).json({ message: 'Error verifying email' });
+    }
+};
+
+export const resendVerificationEmail = async (req: express.Request, res: express.Response) => {
+    // Requires auth usually, or email
+    const { email } = req.body;
+    // Or if logged in: const email = req.user?.email;
+
+    // Let's support both for flexibility, prioritizing req.user if protected
+    const targetEmail = (req as any).user?.email || email;
+
+    if (!targetEmail) return res.status(400).json({ message: 'Email is required' });
+
+    try {
+        const result = await db.query('SELECT id, is_verified FROM users WHERE email = $1', [targetEmail]);
+        if (result.rowCount === 0) return res.status(404).json({ message: 'User not found' });
+
+        const user = result.rows[0];
+        if (user.is_verified) return res.status(400).json({ message: 'Email already verified' });
+
+        const newToken = generateRandomToken();
+        await db.query('UPDATE users SET verification_token = $1 WHERE id = $2', [newToken, user.id]);
+
+        await sendVerificationEmail(targetEmail, newToken);
+        res.json({ message: 'Verification email sent' });
+    } catch (error) {
+        console.error('Resend error:', error);
+        res.status(500).json({ message: 'Error resending email' });
+    }
+};
+
 export const forgotPassword = async (req: express.Request, res: express.Response) => {
     const { email } = req.body;
-    const result = await db.query('SELECT id FROM users WHERE email = $1', [email.toLowerCase()]);
-    if ((result.rowCount ?? 0) > 0) {
-        // In a real app, you would generate a token and send an email
-        console.log(`Password reset link would be sent to ${email}`);
-    } else {
-        // We don't want to reveal if an email exists or not
-        console.log(`Password reset requested for non-existent email: ${email}`);
+    const normEmail = String(email).toLowerCase();
+
+    try {
+        const result = await db.query('SELECT id FROM users WHERE email = $1', [normEmail]);
+        if ((result.rowCount ?? 0) > 0) {
+            const user = result.rows[0];
+            const resetToken = generateRandomToken();
+            const expires = new Date(Date.now() + 3600000); // 1 hour
+
+            await db.query('UPDATE users SET reset_password_token = $1, reset_password_expires = $2 WHERE id = $3',
+                [resetToken, expires.toISOString(), user.id]);
+
+            await sendPasswordResetEmail(normEmail, resetToken);
+            console.log(`Password reset link sent to ${normEmail}`);
+        } else {
+            console.log(`Password reset requested for non-existent email: ${normEmail}`);
+        }
+        // Always return success to prevent enumeration
+        res.status(200).json({ message: 'If an account with that email exists, a password reset link has been sent.' });
+    } catch (error) {
+        console.error('Forgot password error:', error);
+        res.status(500).json({ message: 'Error processing request' });
     }
-    res.status(200).json({ message: 'If an account with that email exists, a password reset link has been sent.' });
+};
+
+export const resetPassword = async (req: express.Request, res: express.Response) => {
+    const { token, newPassword } = req.body;
+
+    if (!token || !newPassword || newPassword.length < 8) {
+        return res.status(400).json({ message: 'Invalid input. Password must be at least 8 chars.' });
+    }
+
+    try {
+        const result = await db.query(
+            'SELECT id FROM users WHERE reset_password_token = $1 AND reset_password_expires > NOW()',
+            [token]
+        );
+
+        if (result.rowCount === 0) {
+            return res.status(400).json({ message: 'Invalid or expired password reset token' });
+        }
+
+        const user = result.rows[0];
+        const salt = await bcrypt.genSalt(10);
+        const password_hash = await bcrypt.hash(newPassword, salt);
+
+        await db.query(
+            'UPDATE users SET password_hash = $1, reset_password_token = NULL, reset_password_expires = NULL WHERE id = $2',
+            [password_hash, user.id]
+        );
+
+        res.json({ message: 'Password has been reset successfully' });
+    } catch (error) {
+        console.error('Reset password error:', error);
+        res.status(500).json({ message: 'Error resetting password' });
+    }
 };
 
 export const changePassword = async (req: express.Request, res: express.Response) => {
