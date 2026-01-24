@@ -18,7 +18,7 @@ async function initializeDatabase() {
                 name TEXT NOT NULL,
                 email TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
-                role TEXT NOT NULL CHECK (role IN ('superadmin','admin','staff','inventory_manager','customer')),
+                role TEXT NOT NULL CHECK (role IN ('superadmin','admin','staff','inventory_manager','customer','supplier')),
                 phone TEXT
             );
         `);
@@ -32,7 +32,7 @@ async function initializeDatabase() {
                 ) THEN
                     ALTER TABLE users DROP CONSTRAINT users_role_check;
                 END IF;
-                ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('superadmin','admin','staff','inventory_manager','customer'));
+                ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('superadmin','admin','staff','inventory_manager','customer','supplier'));
                 
                 -- Add phone column if missing
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='phone') THEN
@@ -1132,6 +1132,46 @@ async function initializeDatabase() {
             );
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_id ON push_subscriptions(user_id);`);
+
+
+        // Logistics (Couriers & Shipments)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS couriers (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                type TEXT NOT NULL CHECK (type IN ('courier', 'bus', 'private_fleet')),
+                contact_person TEXT,
+                phone TEXT,
+                email TEXT,
+                vehicle_details JSONB, -- For bus/fleet: license plate, route info
+                is_active BOOLEAN DEFAULT TRUE,
+                store_id TEXT
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_couriers_store_id ON couriers(store_id);`);
+
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS shipments (
+                id TEXT PRIMARY KEY,
+                tracking_number TEXT NOT NULL,
+                courier_id TEXT REFERENCES couriers(id),
+                sale_id TEXT REFERENCES sales(transaction_id),
+                status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'shipped', 'in_transit', 'delivered', 'failed', 'returned')),
+                recipient_details JSONB NOT NULL, -- { name, phone, address, instructions }
+                shipping_cost DECIMAL(10,2) NOT NULL DEFAULT 0,
+                image_url TEXT,
+                notes TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                store_id TEXT
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_shipments_store_id ON shipments(store_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_shipments_tracking_number ON shipments(tracking_number);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_shipments_status ON shipments(status);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_shipments_sale_id ON shipments(sale_id);`);
+
+        console.log('✅ Logistics tables (couriers, shipments) verified/created');
 
         console.log('✅ Database schema verified/updated successfully');
     } catch (error) {

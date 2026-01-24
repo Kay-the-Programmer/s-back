@@ -260,6 +260,18 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         `;
         const salesByChannelResult = await db.query(salesByChannelQuery, [startDate, adjustedEndDate, storeId]);
 
+        // --- Recent Orders ---
+
+        const recentOrdersQuery = `
+            SELECT s.transaction_id, s.timestamp, s.total, s.payment_status, s.channel, c.name as customer_name
+            FROM sales s
+            LEFT JOIN customers c ON s.customer_id = c.id
+            WHERE s.store_id = $1
+            ORDER BY s.timestamp DESC
+            LIMIT 20;
+        `;
+        const recentOrdersResult = await db.query(recentOrdersQuery, [storeId]);
+
         // --- Final Report Object ---
         const report = {
             sales: {
@@ -287,6 +299,14 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
                 salesByCategory: salesByCategoryResult.rows.map(row => ({
                     name: row.name,
                     revenue: parseFloat(row.revenue)
+                })),
+                recentOrders: recentOrdersResult.rows.map(row => ({
+                    transactionId: row.transaction_id,
+                    timestamp: row.timestamp,
+                    total: parseFloat(row.total),
+                    paymentStatus: row.payment_status,
+                    customerName: row.customer_name,
+                    channel: row.channel
                 })),
             },
             inventory: {
@@ -329,11 +349,11 @@ export const getDailySalesWithProducts = async (req: express.Request, res: expre
             return res.status(400).json({ message: 'Store context required' });
         }
         const dailyItemsQuery = `
-            SELECT
-                DATE(s.timestamp)::text as date,
-                p.name as product_name,
-                SUM(si.quantity) as quantity,
-                SUM(si.price_at_sale * si.quantity) as revenue
+        SELECT
+        DATE(s.timestamp):: text as date,
+            p.name as product_name,
+            SUM(si.quantity) as quantity,
+            SUM(si.price_at_sale * si.quantity) as revenue
             FROM sale_items si
             JOIN products p ON si.product_id = p.id AND p.store_id = $3
             JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
