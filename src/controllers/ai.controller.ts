@@ -53,6 +53,47 @@ export const generateDescription = async (req: express.Request, res: express.Res
     }
 };
 
+// Helper function to analyze if query is about business strategy
+function analyzeStrategyIntent(query: string): {
+    isStrategyQuestion: boolean;
+    strategyType: 'general' | 'growth' | 'marketing' | 'operations' | 'customer' | 'financial' | 'competitive' | null;
+} {
+    const lowerQuery = query.toLowerCase();
+
+    // Strategy keywords
+    const strategyKeywords = ['strategy', 'strategies', 'improve', 'grow', 'growth', 'increase', 'boost', 'enhance', 'better', 'optimize', 'advice', 'recommend', 'suggestion', 'should i', 'how can i', 'how do i', 'ways to', 'tips', 'best practice'];
+    const marketingKeywords = ['market', 'marketing', 'advertise', 'advertising', 'promote', 'promotion', 'campaign', 'social media', 'brand', 'attract customers', 'reach'];
+    const operationsKeywords = ['operation', 'efficiency', 'process', 'streamline', 'automate', 'reduce cost', 'waste', 'productivity'];
+    const customerKeywords = ['retention', 'loyalty', 'engage', 'engagement', 'customer service', 'experience', 'satisfaction', 'repeat customer'];
+    const financialKeywords = ['pricing', 'price', 'profit', 'revenue', 'cash flow', 'financial', 'reduce expenses'];
+    const competitiveKeywords = ['compete', 'competition', 'competitive', 'advantage', 'differentiate', 'stand out'];
+    const growthKeywords = ['expand', 'expansion', 'scale', 'new market', 'diversify', 'opportunity', 'opportunities'];
+
+    const isStrategyQuestion = strategyKeywords.some(kw => lowerQuery.includes(kw));
+
+    let strategyType: 'general' | 'growth' | 'marketing' | 'operations' | 'customer' | 'financial' | 'competitive' | null = null;
+
+    if (isStrategyQuestion) {
+        if (marketingKeywords.some(kw => lowerQuery.includes(kw))) {
+            strategyType = 'marketing';
+        } else if (operationsKeywords.some(kw => lowerQuery.includes(kw))) {
+            strategyType = 'operations';
+        } else if (customerKeywords.some(kw => lowerQuery.includes(kw))) {
+            strategyType = 'customer';
+        } else if (financialKeywords.some(kw => lowerQuery.includes(kw))) {
+            strategyType = 'financial';
+        } else if (competitiveKeywords.some(kw => lowerQuery.includes(kw))) {
+            strategyType = 'competitive';
+        } else if (growthKeywords.some(kw => lowerQuery.includes(kw))) {
+            strategyType = 'growth';
+        } else {
+            strategyType = 'general';
+        }
+    }
+
+    return { isStrategyQuestion, strategyType };
+}
+
 // Helper function to analyze query intent
 function analyzeQueryIntent(query: string): {
     needsSales: boolean;
@@ -384,6 +425,73 @@ async function getReturnsContext(storeId: string) {
     };
 }
 
+async function getBusinessStrategyContext(storeId: string) {
+    const today = new Date();
+    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0];
+    const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const threeMonthsAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    // Get recent sales trends
+    const recentSales = await db.query(
+        `SELECT COALESCE(SUM(total), 0) as total, COUNT(*) as count
+         FROM sales WHERE store_id = $1 AND DATE("timestamp") >= $2`,
+        [storeId, monthAgo]
+    );
+
+    // Get three-month sales for trend analysis
+    const threeMonthSales = await db.query(
+        `SELECT COALESCE(SUM(total), 0) as total FROM sales 
+         WHERE store_id = $1 AND DATE("timestamp") >= $2`,
+        [storeId, threeMonthsAgo]
+    );
+
+    // Top products
+    const topProducts = await db.query(
+        `SELECT p.name, COALESCE(SUM(si.quantity), 0) as units_sold
+         FROM sale_items si
+         JOIN products p ON si.product_id = p.id
+         JOIN sales s ON si.sale_id = s.transaction_id
+         WHERE si.store_id = $1 AND DATE(s."timestamp") >= $2
+         GROUP BY p.id, p.name
+         ORDER BY units_sold DESC LIMIT 3`,
+        [storeId, monthAgo]
+    );
+
+    // Inventory health
+    const inventoryHealth = await db.query(
+        `SELECT 
+            COUNT(CASE WHEN stock <= COALESCE(reorder_point, 10) THEN 1 END) as low_stock_count,
+            COUNT(*) as total_products,
+            COALESCE(AVG(stock), 0) as avg_stock
+         FROM products WHERE store_id = $1 AND status = 'active'`,
+        [storeId]
+    );
+
+    // Customer growth
+    const customerGrowth = await db.query(
+        `SELECT COUNT(*) as new_customers FROM customers 
+         WHERE store_id = $1 AND DATE(created_at) >= $2`,
+        [storeId, monthAgo]
+    );
+
+    // Calculate trends
+    const monthRevenue = parseFloat(recentSales.rows[0].total || 0);
+    const threeMonthRevenue = parseFloat(threeMonthSales.rows[0].total || 0);
+    const avgMonthlyRevenue = threeMonthRevenue / 3;
+    const revenueGrowth = avgMonthlyRevenue > 0 ? ((monthRevenue - avgMonthlyRevenue) / avgMonthlyRevenue * 100) : 0;
+
+    return {
+        recentPerformance: {
+            monthRevenue,
+            transactionCount: recentSales.rows[0].count,
+            revenueGrowth: revenueGrowth.toFixed(1)
+        },
+        topProducts: topProducts.rows,
+        inventoryHealth: inventoryHealth.rows[0],
+        customerGrowth: customerGrowth.rows[0].new_customers
+    };
+}
+
 async function getProjectionContext(storeId: string, goalAmount?: number) {
     const today = new Date();
     const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0];
@@ -499,7 +607,53 @@ export const handleChat = async (req: express.Request, res: express.Response) =>
             return res.status(500).json({ message: 'AI service is not configured on the server.' });
         }
 
-        // Analyze what data the user is asking for
+        // Check if this is a strategy question first
+        const strategyIntent = analyzeStrategyIntent(query);
+
+        if (strategyIntent.isStrategyQuestion) {
+            // Handle business strategy questions
+            const strategyContext = await getBusinessStrategyContext(storeId);
+
+            const strategyPrompt = `You are "Salepilot Business Advisor", an expert business consultant helping ${user?.name} improve their retail business.
+
+Current Date: ${new Date().toISOString().split('T')[0]}
+
+BUSINESS CONTEXT:
+- Recent Performance: $${strategyContext.recentPerformance.monthRevenue.toFixed(2)} revenue this month (${strategyContext.recentPerformance.transactionCount} transactions)
+- Revenue Trend: ${parseFloat(strategyContext.recentPerformance.revenueGrowth) > 0 ? '+' : ''}${strategyContext.recentPerformance.revenueGrowth}% vs 3-month average
+- Top Selling Products: ${strategyContext.topProducts.map(p => p.name).join(', ') || 'No data'}
+- Inventory Health: ${strategyContext.inventoryHealth.low_stock_count} low stock items out of ${strategyContext.inventoryHealth.total_products} total products
+- New Customers: ${strategyContext.customerGrowth} acquired this month
+
+USER QUESTION: "${query}"
+QUESTION TYPE: ${strategyIntent.strategyType}
+
+INSTRUCTIONS:
+- Provide 3-5 specific, actionable business strategies tailored to their situation
+- Use their actual business data to personalize recommendations when relevant
+- Focus on practical tactics they can implement immediately
+- Consider their current performance trends in your advice
+- For general improvement questions, cover: customer acquisition, retention, operations, and revenue optimization
+- For specific strategy types (${strategyIntent.strategyType}), focus deeply on that area
+- Be conversational but professional
+- Use bullet points or numbered lists for clarity
+- Include both quick wins and longer-term strategies
+- If their revenue is growing, suggest scaling strategies; if declining, focus on turnaround tactics
+- End with encouragement and offer to dive deeper into any specific strategy`;
+
+            const model = genAI.getGenerativeModel({
+                model: "gemini-2.5-flash",
+                generationConfig: {
+                    temperature: 0.8,
+                    maxOutputTokens: 800,
+                }
+            });
+
+            const result = await model.generateContent(strategyPrompt);
+            return res.json({ response: result.response.text() });
+        }
+
+        // Analyze what data the user is asking for (original data-specific queries)
         const intent = analyzeQueryIntent(query);
 
         // Gather only the necessary context based on query intent
