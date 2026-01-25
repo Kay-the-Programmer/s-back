@@ -61,6 +61,8 @@ function analyzeQueryIntent(query: string): {
     needsFinancial: boolean;
     needsOrders: boolean;
     needsReturns: boolean;
+    needsProjection: boolean;
+    goalAmount?: number;
     timeframe: 'today' | 'week' | 'month' | 'all';
 } {
     const lowerQuery = query.toLowerCase();
@@ -72,6 +74,7 @@ function analyzeQueryIntent(query: string): {
     const financialKeywords = ['profit', 'expense', 'cost', 'margin', 'receivable', 'payable', 'financial', 'money'];
     const orderKeywords = ['purchase order', 'po', 'supplier', 'order', 'pending'];
     const returnKeywords = ['return', 'refund', 'returned'];
+    const projectionKeywords = ['million', 'reach', 'goal', 'how long', 'forecast', 'projection', 'estimate', 'predict', 'when will', 'how much will', 'project', 'make'];
 
     // Timeframe detection
     let timeframe: 'today' | 'week' | 'month' | 'all' = 'today';
@@ -79,13 +82,35 @@ function analyzeQueryIntent(query: string): {
     else if (lowerQuery.includes('month') || lowerQuery.includes('30 day')) timeframe = 'month';
     else if (lowerQuery.includes('overview') || lowerQuery.includes('snapshot') || lowerQuery.includes('everything')) timeframe = 'all';
 
+    // Goal amount detection
+    let goalAmount: number | undefined;
+    if (lowerQuery.includes('million')) {
+        const millionMatch = lowerQuery.match(/(\d+(?:\.\d+)?)\s*million/);
+        goalAmount = millionMatch ? parseFloat(millionMatch[1]) * 1000000 : 1000000;
+    } else {
+        // Try to extract specific dollar amounts like "$10,000" or "10000"
+        const dollarMatch = query.match(/\$([\d,]+(?:\.\d+)?)/);
+        if (dollarMatch) {
+            goalAmount = parseFloat(dollarMatch[1].replace(/,/g, ''));
+        } else {
+            const numberMatch = lowerQuery.match(/(\d+(?:,\d+)*(?:\.\d+)?)/);
+            if (numberMatch && projectionKeywords.some(kw => lowerQuery.includes(kw))) {
+                goalAmount = parseFloat(numberMatch[1].replace(/,/g, ''));
+            }
+        }
+    }
+
+    const needsProjection = projectionKeywords.some(kw => lowerQuery.includes(kw));
+
     return {
-        needsSales: salesKeywords.some(kw => lowerQuery.includes(kw)) || lowerQuery.includes('overview') || lowerQuery.includes('snapshot'),
+        needsSales: salesKeywords.some(kw => lowerQuery.includes(kw)) || lowerQuery.includes('overview') || lowerQuery.includes('snapshot') || needsProjection,
         needsInventory: inventoryKeywords.some(kw => lowerQuery.includes(kw)) || lowerQuery.includes('overview') || lowerQuery.includes('snapshot'),
         needsCustomers: customerKeywords.some(kw => lowerQuery.includes(kw)),
         needsFinancial: financialKeywords.some(kw => lowerQuery.includes(kw)),
         needsOrders: orderKeywords.some(kw => lowerQuery.includes(kw)),
         needsReturns: returnKeywords.some(kw => lowerQuery.includes(kw)),
+        needsProjection,
+        goalAmount,
         timeframe
     };
 }
@@ -95,6 +120,10 @@ async function getSalesContext(storeId: string, timeframe: string) {
     const today = new Date().toISOString().split('T')[0];
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    // Month-to-date calculation
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
 
     // Today's sales
     const todaySales = await db.query(
@@ -117,6 +146,28 @@ async function getSalesContext(storeId: string, timeframe: string) {
          FROM sales 
          WHERE store_id = $1 AND DATE("timestamp") >= $2`,
         [storeId, weekAgo]
+    );
+
+    // Month-to-date sales
+    const monthSales = await db.query(
+        `SELECT 
+            COALESCE(SUM(total), 0) as total,
+            COUNT(*) as count
+         FROM sales 
+         WHERE store_id = $1 AND DATE("timestamp") >= $2`,
+        [storeId, monthStart]
+    );
+
+    // Previous month for comparison
+    const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().split('T')[0];
+    const prevMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0).toISOString().split('T')[0];
+    const prevMonthSales = await db.query(
+        `SELECT 
+            COALESCE(SUM(total), 0) as total,
+            COUNT(*) as count
+         FROM sales 
+         WHERE store_id = $1 AND DATE("timestamp") >= $2 AND DATE("timestamp") <= $3`,
+        [storeId, prevMonthStart, prevMonthEnd]
     );
 
     // Top products by revenue
@@ -150,6 +201,8 @@ async function getSalesContext(storeId: string, timeframe: string) {
     return {
         today: todaySales.rows[0],
         week: weekSales.rows[0],
+        month: monthSales.rows[0],
+        prevMonth: prevMonthSales.rows[0],
         topProducts: topProducts.rows,
         paymentMethods: paymentMethods.rows
     };
@@ -331,6 +384,108 @@ async function getReturnsContext(storeId: string) {
     };
 }
 
+async function getProjectionContext(storeId: string, goalAmount?: number) {
+    const today = new Date();
+    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0];
+    const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    // Get month-to-date sales
+    const monthSales = await db.query(
+        `SELECT 
+            COALESCE(SUM(total), 0) as total,
+            COUNT(*) as count
+         FROM sales 
+         WHERE store_id = $1 AND DATE("timestamp") >= $2`,
+        [storeId, monthStart]
+    );
+
+    // Get last 30 days for comparison
+    const last30Days = await db.query(
+        `SELECT 
+            COALESCE(SUM(total), 0) as total,
+            COUNT(*) as count
+         FROM sales 
+         WHERE store_id = $1 AND DATE("timestamp") >= $2`,
+        [storeId, monthAgo]
+    );
+
+    // Get last 7 days
+    const last7Days = await db.query(
+        `SELECT 
+            COALESCE(SUM(total), 0) as total,
+            COUNT(*) as count
+         FROM sales 
+         WHERE store_id = $1 AND DATE("timestamp") >= $2`,
+        [storeId, weekAgo]
+    );
+
+    // Calculate averages
+    const daysInMonth = Math.max(1, Math.ceil((today.getTime() - new Date(monthStart).getTime()) / (1000 * 60 * 60 * 24)));
+    const monthTotal = parseFloat(monthSales.rows[0].total || 0);
+    const last30Total = parseFloat(last30Days.rows[0].total || 0);
+    const last7Total = parseFloat(last7Days.rows[0].total || 0);
+
+    const avgDailyRevenue = daysInMonth > 0 ? monthTotal / daysInMonth : 0;
+    const avgDailyRevenue30 = last30Total / 30;
+    const avgDailyRevenue7 = last7Total / 7;
+    const avgWeeklyRevenue = avgDailyRevenue7 * 7;
+    const avgMonthlyRevenue = avgDailyRevenue30 * 30;
+
+    // Calculate growth rate (comparing recent 7 days vs previous 23 days)
+    const prev23DaysStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const prev23DaysEnd = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const prev23Days = await db.query(
+        `SELECT COALESCE(SUM(total), 0) as total
+         FROM sales 
+         WHERE store_id = $1 AND DATE("timestamp") >= $2 AND DATE("timestamp") < $3`,
+        [storeId, prev23DaysStart, prev23DaysEnd]
+    );
+    const prev23Total = parseFloat(prev23Days.rows[0].total || 0);
+    const avgPrev23 = prev23Total / 23;
+    const growthRate = avgPrev23 > 0 ? ((avgDailyRevenue7 - avgPrev23) / avgPrev23) * 100 : 0;
+
+    // Project month-end revenue
+    const daysInCurrentMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+    const remainingDays = daysInCurrentMonth - daysInMonth;
+    const projectedMonthEnd = monthTotal + (avgDailyRevenue * remainingDays);
+
+    // Calculate time to goal if goal amount is provided
+    let daysToGoal: number | null = null;
+    let weeksToGoal: number | null = null;
+    let monthsToGoal: number | null = null;
+    if (goalAmount && avgDailyRevenue > 0) {
+        daysToGoal = Math.ceil(goalAmount / avgDailyRevenue);
+        weeksToGoal = Math.ceil(daysToGoal / 7);
+        monthsToGoal = Math.ceil(daysToGoal / 30);
+    }
+
+    return {
+        monthToDate: {
+            total: monthTotal,
+            count: monthSales.rows[0].count,
+            daysElapsed: daysInMonth,
+            avgDaily: avgDailyRevenue
+        },
+        averages: {
+            daily: avgDailyRevenue,
+            daily7: avgDailyRevenue7,
+            daily30: avgDailyRevenue30,
+            weekly: avgWeeklyRevenue,
+            monthly: avgMonthlyRevenue
+        },
+        growthRate: growthRate,
+        projectedMonthEnd: projectedMonthEnd,
+        goalProjection: goalAmount ? {
+            goalAmount,
+            daysToGoal,
+            weeksToGoal,
+            monthsToGoal,
+            estimatedDate: daysToGoal ? new Date(Date.now() + daysToGoal * 24 * 60 * 60 * 1000).toISOString().split('T')[0] : null
+        } : null
+    };
+}
+
 export const handleChat = async (req: express.Request, res: express.Response) => {
     try {
         const { query } = req.body;
@@ -356,10 +511,31 @@ export const handleChat = async (req: express.Request, res: express.Response) =>
 SALES DATA:
 - Today: $${parseFloat(salesData.today.total || 0).toFixed(2)} from ${salesData.today.count} transactions (avg: $${parseFloat(salesData.today.avg_value || 0).toFixed(2)})
 - This Week: $${parseFloat(salesData.week.total || 0).toFixed(2)} from ${salesData.week.count} transactions
+- This Month: $${parseFloat(salesData.month.total || 0).toFixed(2)} from ${salesData.month.count} transactions
+- Previous Month: $${parseFloat(salesData.prevMonth.total || 0).toFixed(2)} from ${salesData.prevMonth.count} transactions
 - Channel Split: Online $${parseFloat(salesData.today.online_total || 0).toFixed(2)} | POS $${parseFloat(salesData.today.pos_total || 0).toFixed(2)}
 - Top Products: ${salesData.topProducts.map(p => `${p.name} ($${parseFloat(p.revenue).toFixed(2)}, ${p.units_sold} units)`).join(', ') || 'No sales data'}
 - Payment Methods: ${salesData.paymentMethods.map(pm => `${pm.method}: $${parseFloat(pm.total).toFixed(2)}`).join(', ') || 'No payment data'}
             `);
+        }
+
+        if (intent.needsProjection) {
+            const projectionData = await getProjectionContext(storeId, intent.goalAmount);
+            let projectionText = `
+SALES PROJECTIONS & FORECASTS:
+- Month-to-Date: $${projectionData.monthToDate.total.toFixed(2)} (${projectionData.monthToDate.daysElapsed} days elapsed)
+- Average Daily Revenue: $${projectionData.averages.daily.toFixed(2)} (this month) | $${projectionData.averages.daily7.toFixed(2)} (last 7 days) | $${projectionData.averages.daily30.toFixed(2)} (last 30 days)
+- Average Weekly Revenue: $${projectionData.averages.weekly.toFixed(2)}
+- Average Monthly Revenue: $${projectionData.averages.monthly.toFixed(2)}
+- Projected Month-End Revenue: $${projectionData.projectedMonthEnd.toFixed(2)}
+- Growth Rate: ${projectionData.growthRate > 0 ? '+' : ''}${projectionData.growthRate.toFixed(1)}% (7-day vs previous 23-day average)`;
+
+            if (projectionData.goalProjection) {
+                projectionText += `\n- Goal: $${projectionData.goalProjection.goalAmount.toLocaleString()}
+- Time to Reach Goal: ${projectionData.goalProjection.daysToGoal} days (${projectionData.goalProjection.weeksToGoal} weeks / ${projectionData.goalProjection.monthsToGoal} months)
+- Estimated Date: ${projectionData.goalProjection.estimatedDate}`;
+            }
+            contextParts.push(projectionText);
         }
 
         if (intent.needsInventory) {
@@ -443,10 +619,14 @@ INSTRUCTIONS:
 - Use specific numbers and metrics from the data
 - If asked about trends, compare current vs historical data when available
 - Highlight important insights (e.g., best sellers, low stock alerts, profit margins)
+- For projection questions, explain the calculation methodology briefly (e.g., "Based on your current month's average daily revenue of $X...")
+- When providing timelines, give multiple formats (days, weeks, months) for clarity
+- If growth rate is positive/negative, mention it and how it affects projections
 - Be concise but informative (2-4 sentences unless detailed analysis is requested)
 - Use business terminology appropriately
-- If data is missing or zero, acknowledge it naturally
-- Format numbers clearly with $ for currency
+- If data is missing or zero, acknowledge it naturally and explain limitations
+- Format numbers clearly with $ for currency and use thousands separators for large numbers
+- For projections with limited data, mention the confidence level or recommend collecting more data
 - End with a helpful suggestion or next action if appropriate`;
 
         // Call AI with enhanced context
