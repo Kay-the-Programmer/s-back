@@ -4,6 +4,7 @@ import { Sale, Payment } from '../types';
 import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { accountingService } from '../services/accounting.service';
+import LencoService from '../services/lenco.service';
 
 export const getSales = async (req: express.Request, res: express.Response) => {
     const { startDate, endDate, customerId, paymentStatus } = req.query as { [key: string]: string };
@@ -137,6 +138,18 @@ export const createSale = async (req: express.Request, res: express.Response) =>
         const finalPayments = [] as any[];
         if (payments) {
             for (const payment of payments) {
+                // Server-side double-check for Lenco payments
+                if (payment.method.toLowerCase().includes('lenco') && payment.reference?.startsWith('ref-')) {
+                    try {
+                        const verification = await LencoService.verifyTransaction(payment.reference);
+                        if (!verification.status || verification.data.status !== 'successful') {
+                            throw new Error(`Lenco verification failed for ${payment.reference}`);
+                        }
+                    } catch (err: any) {
+                        throw new Error(`Payment verification failed: ${err.message}`);
+                    }
+                }
+
                 const paymentId = generateId('pay');
                 const pResult = await client.query(
                     'INSERT INTO payments(id, sale_id, date, amount, method, reference, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
