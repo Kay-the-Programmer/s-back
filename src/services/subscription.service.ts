@@ -6,8 +6,10 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const LENCO_SECRET_KEY = process.env.LENCO_SECRET_KEY;
-const LENCO_API_BASE_URL = process.env.LENCO_API_BASE_URL || 'https://api.lenco.co/access/v2';
+const getLencoConfig = () => ({
+    secretKey: process.env.LENCO_SECRET_KEY,
+    baseUrl: (process.env.LENCO_API_BASE_URL || 'https://api.lenco.co/access/v2').replace(/\/+$/, '')
+});
 
 export interface SubscriptionPlan {
     id: string;
@@ -101,9 +103,10 @@ export const initiatePayment = async (storeId: string, planId: string, method: s
 
 export const verifyPayment = async (reference: string) => {
     try {
-        const response = await axios.get(`${LENCO_API_BASE_URL}/collections/status/${reference}`, {
+        const { secretKey, baseUrl } = getLencoConfig();
+        const response = await axios.get(`${baseUrl}/collections/status/${reference}`, {
             headers: {
-                'Authorization': `Bearer ${LENCO_SECRET_KEY}`
+                'Authorization': `Bearer ${secretKey}`
             }
         });
 
