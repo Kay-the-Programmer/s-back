@@ -20,21 +20,25 @@ export const createPayment = async (req: Request, res: Response) => {
         }
 
         const result = await subscriptionService.initiatePayment(storeId, planId, method, phoneNumber);
-
-        // For the mock flow, we will immediately "process" it successfully to simulate a completed payment
-        // In a real app, this would happen via webhook or a separate confirmation step
-        try {
-            await subscriptionService.processMockPayment(result.paymentId);
-            result.status = 'completed';
-            result.message = 'Payment successful (Mock)';
-        } catch (processError) {
-            console.error('Mock processing failed:', processError);
-            // Keep it pending if mock processing fails
-        }
-
         res.json(result);
     } catch (error) {
         console.error('Error creating payment:', error);
         res.status(500).json({ error: 'Failed to initiate payment' });
+    }
+};
+
+export const verifyPayment = async (req: Request, res: Response) => {
+    try {
+        const { reference } = req.params;
+
+        if (!reference) {
+            return res.status(400).json({ error: 'Reference is required' });
+        }
+
+        const result = await subscriptionService.verifyPayment(reference);
+        res.json(result);
+    } catch (error) {
+        console.error('Error verifying payment:', error);
+        res.status(500).json({ error: 'Failed to verify payment' });
     }
 };

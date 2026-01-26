@@ -6,6 +6,7 @@ const router = Router();
 
 // Public or Protected? Plans can be public, but payments need auth/store context
 router.get('/plans', subscriptionController.getPlans);
-router.post('/pay', subscriptionController.createPayment);
+router.post('/pay', protect, subscriptionController.createPayment);
+router.get('/verify/:reference', protect, subscriptionController.verifyPayment);
 
 export default router;
