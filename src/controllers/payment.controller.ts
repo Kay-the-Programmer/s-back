@@ -38,8 +38,23 @@ export const verifyPayment = async (req: Request, res: Response, next: NextFunct
             });
         }
     } catch (error: any) {
-        console.error(`Lenco verification ERROR: ${reference}`, error.message);
-        next(error);
+        console.error(`Lenco verification ERROR: ${reference}`, error);
+
+        // If the error has a status: false (from LencoService throwing error.response.data)
+        if (error.status === false) {
+            res.status(200).json({
+                status: false,
+                message: error.message || 'Lenco verification failed',
+                data: error.data || null,
+                errorCode: error.errorCode
+            });
+            return;
+        }
+
+        res.status(400).json({
+            status: false,
+            message: error.message || 'An unexpected error occurred during verification'
+        });
     }
 };
 
