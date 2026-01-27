@@ -233,6 +233,14 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         const customerResult = await db.query(customerQuery, [storeId]);
         const customerData = customerResult.rows[0] || { totalCustomers: '0', totalStoreCreditOwed: '0' };
 
+        // --- Supplier Calculation ---
+        const supplierQuery = `
+            SELECT COUNT(*) as "totalSuppliers"
+            FROM suppliers WHERE store_id = $1
+        `;
+        const supplierResult = await db.query(supplierQuery, [storeId]);
+        const totalSuppliers = parseInt(supplierResult.rows[0]?.totalSuppliers || 0, 10);
+
         // --- Active Customers in Period ---
         const activeCustomersQuery = `
             SELECT COUNT(DISTINCT customer_id) as "activeCustomers"
@@ -317,6 +325,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             },
             customers: {
                 totalCustomers: parseInt(String(customerData.totalCustomers || 0), 10),
+                totalSuppliers: totalSuppliers,
                 totalStoreCreditOwed: parseFloat(String(customerData.totalStoreCreditOwed || 0)),
                 activeCustomersInPeriod: activeCustomers,
                 newCustomersInPeriod: newCustomers,
