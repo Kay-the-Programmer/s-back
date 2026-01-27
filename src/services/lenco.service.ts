@@ -7,7 +7,19 @@ class LencoService {
 
   private get baseUrl(): string {
     if (!this._baseUrl) {
-      this._baseUrl = (process.env.LENCO_API_BASE_URL || 'https://api.lenco.co/access/v2').replace(/\/+$/, '');
+      const envUrl = process.env.LENCO_API_BASE_URL;
+      const key = this.secretKey;
+
+      if (envUrl) {
+        this._baseUrl = envUrl.replace(/\/+$/, '');
+      } else {
+        // Auto-detect based on key
+        if (key.startsWith('sk_test') || key.startsWith('851685')) { // Known sandbox prefix for this user
+          this._baseUrl = 'https://sandbox.lenco.co/access/v2';
+        } else {
+          this._baseUrl = 'https://api.lenco.co/access/v2';
+        }
+      }
     }
     return this._baseUrl;
   }
@@ -25,15 +37,20 @@ class LencoService {
 
     const key = this.secretKey;
     const maskedKey = key ? `${key.substring(0, 6)}...${key.substring(key.length - 4)}` : 'NOT SET';
-    console.log(`[LencoService] Initialized with BaseURL: ${this.baseUrl} and Masked Key: ${maskedKey}`);
+    const currentBaseUrl = this.baseUrl;
+
+    console.log(`[LencoService] Initialized with BaseURL: ${currentBaseUrl} and Masked Key: ${maskedKey}`);
 
     if (!key) {
       console.warn('⚠️ LENCO_SECRET_KEY is not set in environment variables.');
     }
 
-    if (this.baseUrl.includes('sandbox') && key.startsWith('sk_live')) {
-      console.warn('⚠️ Environment Mismatch: Using Sandbox Base URL with a Live Secret Key!');
-    } else if (!this.baseUrl.includes('sandbox') && key.startsWith('sk_test')) {
+    const isSandboxUrl = currentBaseUrl.includes('sandbox');
+    const isTestKey = key.startsWith('sk_test') || key.startsWith('851685');
+
+    if (isSandboxUrl && !isTestKey) {
+      console.warn('⚠️ Environment Mismatch: Using Sandbox Base URL with what looks like a Live Secret Key!');
+    } else if (!isSandboxUrl && isTestKey) {
       console.warn('⚠️ Environment Mismatch: Using Live Base URL with a Test/Sandbox Secret Key!');
     }
   }
@@ -50,13 +67,15 @@ class LencoService {
       const response = await axios.get(url, {
         headers: {
           Authorization: `Bearer ${this.secretKey}`,
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
         },
       });
 
       return response.data;
     } catch (error: any) {
       if (error.response) {
-        console.error('Lenco API Error:', error.response.data);
+        console.error('Lenco API Error Response:', JSON.stringify(error.response.data, null, 2));
         // Throw the data object so the controller can handle it
         throw error.response.data;
       }

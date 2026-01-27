@@ -10,6 +10,10 @@ const JWT_SECRET = process.env.JWT_SECRET || 'CHANGE_ME_DEV_ONLY';
 const USER_CACHE_TTL_MS = parseInt(process.env.AUTH_USER_CACHE_TTL_MS || '60000', 10); // default 60s
 const userCache = new Map<string, { user: any; expires: number }>();
 
+export const invalidateUserCache = (userId: string) => {
+    userCache.delete(userId);
+};
+
 export const protect = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
     let token;
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {

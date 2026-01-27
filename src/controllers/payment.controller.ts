@@ -22,7 +22,7 @@ export const verifyPayment = async (req: Request, res: Response, next: NextFunct
         console.log(`Verifying Lenco payment: ${reference}`);
         const transaction = await LencoService.verifyTransaction(reference);
 
-        if (transaction.status && transaction.data.status === 'successful') {
+        if (transaction.status && transaction.data?.status === 'successful') {
             console.log(`Lenco payment SUCCESS: ${reference}`);
             res.status(200).json({
                 status: true,
@@ -33,8 +33,9 @@ export const verifyPayment = async (req: Request, res: Response, next: NextFunct
             console.warn(`Lenco payment NOT successful: ${reference}`, transaction);
             res.status(200).json({
                 status: false,
-                message: transaction.message || 'Payment not successful',
+                message: transaction.message || (transaction.data?.reasonForFailure) || 'Payment not successful',
                 data: transaction.data,
+                errorCode: transaction.errorCode
             });
         }
     } catch (error: any) {

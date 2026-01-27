@@ -2,6 +2,7 @@ import express from 'express';
 import db from '../db_client';
 import { generateId, toCamelCase } from '../utils/helpers';
 import { storeInitService } from '../services/store-init.service';
+import { invalidateUserCache } from '../middleware/auth.middleware';
 
 export const registerStore = async (req: express.Request, res: express.Response) => {
   try {
@@ -23,6 +24,8 @@ export const registerStore = async (req: express.Request, res: express.Response)
       await db.query("INSERT INTO stores (id, name, status, subscription_status) VALUES ($1, $2, 'active', 'active')", [storeId, String(name).trim()]);
       // Make the registering user an admin for now (global role) and set current store
       await db.query('UPDATE users SET role = $1, current_store_id = $2 WHERE id = $3', ['admin', storeId, user.id]);
+
+      invalidateUserCache(user.id);
 
       // Initialize the new store with defaults (categories, settings, accounts)
       const businessTypes = req.body.businessTypes || [];

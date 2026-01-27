@@ -3,6 +3,7 @@ import db from '../db_client';
 import { User } from '../types';
 import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
+import { invalidateUserCache } from '../middleware/auth.middleware';
 import bcrypt from 'bcryptjs';
 
 // Helper: determine if requester is superadmin
@@ -210,6 +211,10 @@ export const setCurrentStore = async (req: express.Request, res: express.Respons
         }
         // Update current user's store selection
         await db.query('UPDATE users SET current_store_id = $1 WHERE id = $2', [storeId, req.user!.id]);
+
+        // Invalidate cache so next request sees new store immediately
+        invalidateUserCache(req.user!.id);
+
         await auditService.log(req.user!, 'Set Current Store', `Selected store: ${storeId}`);
         return res.status(200).json({ currentStoreId: storeId });
     } catch (error) {
