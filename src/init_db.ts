@@ -1181,31 +1181,51 @@ async function initializeDatabase() {
 
 
         // Logistics (Couriers & Shipments)
+        // Logistics (Couriers, Buses, Shipments)
         await client.query(`
             CREATE TABLE IF NOT EXISTS couriers (
                 id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                type TEXT NOT NULL CHECK (type IN ('courier', 'bus', 'private_fleet')),
-                contact_person TEXT,
-                phone TEXT,
-                email TEXT,
-                vehicle_details JSONB, -- For bus/fleet: license plate, route info
+                company_name TEXT NOT NULL,
+                contact_details TEXT, -- phone/email
+                receipt_details TEXT, -- account info etc?
                 is_active BOOLEAN DEFAULT TRUE,
-                store_id TEXT
+                store_id TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
             );
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_couriers_store_id ON couriers(store_id);`);
 
         await client.query(`
+            CREATE TABLE IF NOT EXISTS buses (
+                id TEXT PRIMARY KEY,
+                driver_name TEXT NOT NULL,
+                vehicle_name TEXT,
+                number_plate TEXT NOT NULL,
+                contact_phone TEXT,
+                is_active BOOLEAN DEFAULT TRUE,
+                store_id TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_buses_store_id ON buses(store_id);`);
+
+        await client.query(`
             CREATE TABLE IF NOT EXISTS shipments (
                 id TEXT PRIMARY KEY,
                 tracking_number TEXT NOT NULL,
+                method TEXT NOT NULL CHECK (method IN ('courier', 'bus')),
                 courier_id TEXT REFERENCES couriers(id),
+                bus_id TEXT REFERENCES buses(id),
                 sale_id TEXT REFERENCES sales(transaction_id),
                 status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'shipped', 'in_transit', 'delivered', 'failed', 'returned')),
-                recipient_details JSONB NOT NULL, -- { name, phone, address, instructions }
+                recipient_name TEXT,
+                recipient_phone TEXT,
+                recipient_address TEXT,
+                destination TEXT,
                 shipping_cost DECIMAL(10,2) NOT NULL DEFAULT 0,
-                image_url TEXT,
+                image_urls TEXT[],
                 notes TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1216,6 +1236,96 @@ async function initializeDatabase() {
         await client.query(`CREATE INDEX IF NOT EXISTS idx_shipments_tracking_number ON shipments(tracking_number);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_shipments_status ON shipments(status);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_shipments_sale_id ON shipments(sale_id);`);
+        // Migrations to support previous schema (drop old columns or tables if empty?)
+        // For dev environment, we assume we can just ensure new tables.
+        // If old 'couriers' table exists with different columns, we might need a migration DO block.
+        await client.query(`
+            DO $$
+            BEGIN
+                -- Migration for couriers table if it exists from previous version (rename/add columns)
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'couriers') THEN
+                    -- Check if 'company_name' exists, if not, it might be the old schema
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'couriers' AND column_name = 'company_name') THEN
+                        -- Rename name to company_name
+                        ALTER TABLE couriers RENAME COLUMN name TO company_name;
+                    END IF;
+                    -- Add new columns if missing
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'couriers' AND column_name = 'receipt_details') THEN
+                        ALTER TABLE couriers ADD COLUMN receipt_details TEXT;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'couriers' AND column_name = 'contact_details') THEN
+                        ALTER TABLE couriers ADD COLUMN contact_details TEXT;
+                    END IF;
+                    -- Drop old columns that are no longer needed
+                    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'couriers' AND column_name = 'type') THEN
+                        ALTER TABLE couriers DROP COLUMN type;
+                    END IF;
+                    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'couriers' AND column_name = 'contact_person') THEN
+                        ALTER TABLE couriers DROP COLUMN contact_person;
+                    END IF;
+                    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'couriers' AND column_name = 'phone') THEN
+                        ALTER TABLE couriers DROP COLUMN phone;
+                    END IF;
+                    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'couriers' AND column_name = 'email') THEN
+                        ALTER TABLE couriers DROP COLUMN email;
+                    END IF;
+                    -- Add timestamp columns if missing
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'couriers' AND column_name = 'created_at') THEN
+                        ALTER TABLE couriers ADD COLUMN created_at TIMESTAMPTZ DEFAULT NOW();
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'couriers' AND column_name = 'updated_at') THEN
+                        ALTER TABLE couriers ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW();
+                    END IF;
+                END IF;
+
+                -- Add timestamp columns to buses if missing
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'buses') THEN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'buses' AND column_name = 'created_at') THEN
+                        ALTER TABLE buses ADD COLUMN created_at TIMESTAMPTZ DEFAULT NOW();
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'buses' AND column_name = 'updated_at') THEN
+                        ALTER TABLE buses ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW();
+                    END IF;
+                END IF;
+
+                -- Migration for shipments table
+                 IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'shipments') THEN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'shipments' AND column_name = 'method') THEN
+                        ALTER TABLE shipments ADD COLUMN method TEXT CHECK (method IN ('courier', 'bus'));
+                        UPDATE shipments SET method = 'courier' WHERE method IS NULL;
+                        ALTER TABLE shipments ALTER COLUMN method SET NOT NULL;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'shipments' AND column_name = 'bus_id') THEN
+                        ALTER TABLE shipments ADD COLUMN bus_id TEXT REFERENCES buses(id);
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'shipments' AND column_name = 'destination') THEN
+                        ALTER TABLE shipments ADD COLUMN destination TEXT;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'shipments' AND column_name = 'recipient_name') THEN
+                        ALTER TABLE shipments ADD COLUMN recipient_name TEXT;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'shipments' AND column_name = 'recipient_phone') THEN
+                        ALTER TABLE shipments ADD COLUMN recipient_phone TEXT;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'shipments' AND column_name = 'recipient_address') THEN
+                        ALTER TABLE shipments ADD COLUMN recipient_address TEXT;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'shipments' AND column_name = 'image_urls') THEN
+                        ALTER TABLE shipments ADD COLUMN image_urls TEXT[];
+                    END IF;
+                    -- Drop legacy recipient_details column if it exists (replaced by individual columns)
+                    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'shipments' AND column_name = 'recipient_details') THEN
+                        ALTER TABLE shipments DROP COLUMN recipient_details;
+                    END IF;
+                    -- Drop legacy sender_details column if it exists
+                    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'shipments' AND column_name = 'sender_details') THEN
+                        ALTER TABLE shipments DROP COLUMN sender_details;
+                    END IF;
+                 END IF;
+            END $$;
+        `);
+
+        console.log('✅ Logistics tables (couriers, buses, shipments) verified/created');
 
         console.log('✅ Logistics tables (couriers, shipments) verified/created');
 

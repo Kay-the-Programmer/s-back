@@ -26,8 +26,10 @@ import subscriptionRoutes from './subscription.routes';
 import offerRoutes from './offers.routes';
 import messageRoutes from './messages.routes';
 import verificationRoutes from './verification.routes';
+
 import paymentRoutes from './payments.routes';
 import recurringExpenseRoutes from './recurring-expenses.routes';
+import logisticsRoutes from './logistics.routes';
 
 
 const router = express.Router();
@@ -62,6 +64,7 @@ router.use('/messages', messageRoutes);
 router.use('/verification', verificationRoutes);
 router.use('/payments', paymentRoutes);
 router.use('/recurring-expenses', recurringExpenseRoutes);
+router.use('/logistics', logisticsRoutes);
 
 
 // A simple health check endpoint
