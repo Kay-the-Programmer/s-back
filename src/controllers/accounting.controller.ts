@@ -270,44 +270,66 @@ export const updateSupplierInvoice = async (req: express.Request, res: express.R
 export const recordSupplierPayment = async (req: express.Request, res: express.Response) => {
     const { id: invoiceId } = req.params;
     const paymentData: Omit<SupplierPayment, 'id'> = req.body;
-    try {
-        const invoiceRes = await db.query('SELECT amount, amount_paid FROM supplier_invoices WHERE id = $1', [invoiceId]);
-        if (invoiceRes.rowCount === 0) return res.status(404).json({ message: 'Invoice not found' });
+    const client = await (db as any)._pool.connect();
 
-        const invoice = invoiceRes.rows[0];
+    try {
+        const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
+        if (!storeId) return res.status(400).json({ message: 'No active store selected.' });
+
+        await client.query('BEGIN');
+
+        const invoiceRes = await client.query('SELECT * FROM supplier_invoices WHERE id = $1 AND store_id = $2', [invoiceId, storeId]);
+        if (invoiceRes.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ message: 'Invoice not found' });
+        }
+
+        const invoice = toCamelCase(invoiceRes.rows[0]);
 
         // Work in cents to avoid floating point rounding errors
         const amountCents = Math.round(invoice.amount * 100);
-        const paidCents = Math.round(invoice.amount_paid * 100);
+        const paidCents = Math.round(invoice.amountPaid * 100);
         const remainingCents = Math.max(0, amountCents - paidCents);
         const paymentCents = Math.round(paymentData.amount * 100);
 
         // Block payments when invoice is already fully paid
         if (remainingCents <= 0) {
+            await client.query('ROLLBACK');
             return res.status(400).json({ message: 'Invoice is already fully paid. No additional payments are allowed.' });
         }
         // Prevent overpayments beyond the remaining balance
         if (paymentCents > remainingCents) {
+            await client.query('ROLLBACK');
             return res.status(400).json({ message: `Payment exceeds remaining balance. Remaining due is ${(remainingCents / 100).toFixed(2)}.` });
         }
 
         const newPaidCents = paidCents + paymentCents;
         const newStatus: SupplierInvoice['status'] = newPaidCents >= amountCents ? 'paid' : 'partially_paid';
         const newAmountPaid = newPaidCents / 100;
+        const paymentId = generateId('spay');
 
-        await db.query(
-            'INSERT INTO supplier_payments (id, supplier_invoice_id, date, amount, method, reference) VALUES ($1, $2, $3, $4, $5, $6)',
-            [generateId('spay'), invoiceId, paymentData.date, paymentData.amount, paymentData.method, paymentData.reference]
+        await client.query(
+            'INSERT INTO supplier_payments (id, supplier_invoice_id, date, amount, method, reference, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+            [paymentId, invoiceId, paymentData.date, paymentData.amount, paymentData.method, paymentData.reference, storeId]
         );
 
-        const updatedInvoice = await db.query(
-            'UPDATE supplier_invoices SET amount_paid = $1, status = $2 WHERE id = $3 RETURNING *',
-            [newAmountPaid, newStatus, invoiceId]
+        await client.query(
+            'UPDATE supplier_invoices SET amount_paid = $1, status = $2 WHERE id = $3 AND store_id = $4',
+            [newAmountPaid, newStatus, invoiceId, storeId]
         );
+
+        // Record the financial transaction in the journal
+        await accountingService.recordSupplierPayment(invoice, { ...paymentData, id: paymentId }, client, storeId);
+
+        await client.query('COMMIT');
 
         auditService.log(req.user!, 'Supplier Payment Recorded', `For Invoice ID: ${invoiceId}, Amount: ${paymentData.amount.toFixed(2)}`);
-        res.status(200).json(toCamelCase(updatedInvoice.rows[0]));
+        res.status(200).json({ ...invoice, amountPaid: newAmountPaid, status: newStatus });
     } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Error recording supplier payment:', error);
         res.status(500).json({ message: 'Error recording supplier payment' });
+    } finally {
+        client.release();
     }
 };

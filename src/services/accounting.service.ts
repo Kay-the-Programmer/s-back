@@ -1,4 +1,4 @@
-import { Account, Sale, Product, Category, JournalEntry, JournalEntryLine, Return, Payment, SupplierPayment, SupplierInvoice, StoreSettings } from '../types';
+import { Account, Sale, Product, Category, JournalEntry, JournalEntryLine, Return, Payment, SupplierPayment, SupplierInvoice, StoreSettings, PurchaseOrder } from '../types';
 import db from '../db_client';
 import { generateId } from '../utils/helpers';
 
@@ -526,4 +526,24 @@ export const accountingService = {
     voidSale,
     recordExpense,
     reverseExpense,
+    ensureSupplierInvoiceForPO: async (po: PurchaseOrder, client?: DBClient, storeIdParam?: string) => {
+        const dbClient = client || db;
+        const storeId = storeIdParam || (po as any).store_id;
+        if (!storeId) return;
+
+        // Check if invoice already exists
+        const check = await dbClient.query('SELECT id FROM supplier_invoices WHERE purchase_order_id = $1 AND store_id = $2', [po.id, storeId]);
+        if (check.rowCount > 0) return;
+
+        const id = generateId('inv-sup');
+        const invoiceNumber = `INV-${po.poNumber}`;
+        const invoiceDate = po.orderedAt || new Date().toISOString().split('T')[0];
+        // Default due date to 30 days if not set
+        const dueDate = po.expectedAt || new Date(new Date().getTime() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+        await dbClient.query(
+            'INSERT INTO supplier_invoices (id, invoice_number, supplier_id, supplier_name, purchase_order_id, po_number, invoice_date, due_date, amount, amount_paid, status, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, \'unpaid\', $10)',
+            [id, invoiceNumber, po.supplierId, po.supplierName, po.id, po.poNumber, invoiceDate, dueDate, po.total, storeId]
+        );
+    }
 };

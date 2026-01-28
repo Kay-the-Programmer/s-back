@@ -188,11 +188,34 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             FROM journal_entries je
                      JOIN journal_entry_lines jel ON je.id = jel.journal_entry_id
                      JOIN accounts a ON jel.account_id = a.id
-            WHERE je.date BETWEEN $1 AND $2 AND a.sub_type IN ('cash', 'accounts_receivable')
+            WHERE je.date BETWEEN $1 AND $2 
+              AND a.sub_type IN ('cash', 'accounts_receivable')
+              AND je.store_id = $3
             GROUP BY DATE(je.date)
             ORDER BY date ASC;
         `;
-        const cashflowResult = await db.query(cashflowQuery, [startDate, adjustedEndDate]);
+        const cashflowResult = await db.query(cashflowQuery, [startDate, adjustedEndDate, storeId]);
+
+        // New query to see "where is the money going"
+        const outflowBreakdownQuery = `
+            SELECT
+                a_dest.name as category,
+                SUM(jel_dest.amount) as amount
+            FROM journal_entry_lines jel_source
+            JOIN journal_entries je ON jel_source.journal_entry_id = je.id
+            JOIN journal_entry_lines jel_dest ON je.id = jel_dest.journal_entry_id
+            JOIN accounts a_source ON jel_source.account_id = a_source.id
+            JOIN accounts a_dest ON jel_dest.account_id = a_dest.id
+            WHERE je.store_id = $3
+              AND je.date BETWEEN $1 AND $2
+              AND jel_source.type = 'credit'
+              AND a_source.sub_type IN ('cash', 'accounts_receivable')
+              AND jel_dest.type = 'debit'
+              AND a_dest.sub_type NOT IN ('cash', 'accounts_receivable')
+            GROUP BY a_dest.name
+            ORDER BY amount DESC;
+        `;
+        const outflowBreakdownResult = await db.query(outflowBreakdownQuery, [startDate, adjustedEndDate, storeId]);
 
         const cashflowTrend = cashflowResult.rows.reduce((acc, row) => {
             acc[row.date] = {
@@ -201,6 +224,11 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             };
             return acc;
         }, {});
+
+        const outflowBreakdown = outflowBreakdownResult.rows.map(row => ({
+            category: row.category,
+            amount: parseFloat(row.amount)
+        }));
 
         const totalCashflow = cashflowResult.rows.reduce((acc, row) => {
             acc.totalInflow += parseFloat(row.inflow);
@@ -335,6 +363,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
                 totalOutflow: totalCashflow.totalOutflow,
                 netCashflow: totalCashflow.totalInflow - totalCashflow.totalOutflow,
                 cashflowTrend: cashflowTrend,
+                outflowBreakdown: outflowBreakdown,
             }
         };
 
