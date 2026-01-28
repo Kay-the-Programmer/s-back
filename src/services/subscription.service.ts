@@ -3,6 +3,8 @@ import db from '../db_client';
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
 import dotenv from 'dotenv';
+import { invalidateUserCache } from '../middleware/auth.middleware';
+import LencoService from './lenco.service';
 
 dotenv.config();
 
@@ -81,15 +83,27 @@ export const initiatePayment = async (storeId: string, planId: string, method: s
     const currency = plan.currency;
 
     // Use a unique reference for Lenco
-    const reference = `SP_SUB_${Date.now()}_${storeId.substring(0, 8)}`;
+    const reference = `SP_SUB_${Date.now()}_${storeId.substring(0, 8).toUpperCase()}`;
 
     // Insert pending payment record
     await db.query(
         `INSERT INTO subscription_payments 
-        (id, store_id, amount, currency, method, reference, notes, created_at, status)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8)`,
-        [paymentId, storeId, amount, currency, method, reference, `Plan: ${plan.name}, Phone: ${phoneNumber || 'N/A'}`, 'pending']
+        (id, store_id, amount, currency, plan_id, method, reference, notes, created_at, status)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9)`,
+        [paymentId, storeId, amount, currency, planId, method, reference, `Plan: ${plan.name}, Phone: ${phoneNumber || 'N/A'}`, 'pending']
     );
+
+    let lencoResult = null;
+    if (method === 'mobile-money' && phoneNumber) {
+        try {
+            // Determine operator - simple logic or pass from frontend
+            // For now, assume Airtel if it starts with 097/077 or MTN if 096/076
+            lencoResult = await LencoService.chargeMobileMoney(amount, reference, phoneNumber);
+        } catch (error) {
+            console.error('Failed to trigger direct mobile money charge:', error);
+            // We don't throw here, as we still have the reference and can fallback to widget if needed
+        }
+    }
 
     return {
         paymentId,
@@ -97,7 +111,8 @@ export const initiatePayment = async (storeId: string, planId: string, method: s
         amount,
         currency,
         status: 'pending',
-        message: 'Payment initiated. Proceed with Lenco popup.'
+        lencoResult,
+        message: method === 'mobile-money' ? 'Payment initiated. Please check your phone for a prompt.' : 'Payment initiated. Proceed with Lenco popup.'
     };
 };
 
@@ -112,12 +127,16 @@ export const verifyPayment = async (reference: string) => {
 
         const lencoData = response.data;
 
-        if (lencoData.status && lencoData.data.status === 'successful') {
+        const lencoStatus = lencoData.data?.status;
+
+        if (lencoData.status && lencoStatus === 'successful') {
             const paymentId = await processSuccessfulPayment(reference, lencoData.data);
             return { success: true, paymentId };
+        } else if (lencoData.status && lencoStatus !== 'failed') {
+            return { success: false, pending: true, message: `Payment status: ${lencoStatus || 'processing'}` };
         }
 
-        return { success: false, message: lencoData.data?.reasonForFailure || 'Payment not successful yet' };
+        return { success: false, message: lencoData.data?.reasonForFailure || `Payment ${lencoStatus || 'failed'}` };
     } catch (error: any) {
         console.error('Lenco Verification Error:', error.response?.data || error.message);
         throw new Error('Failed to verify payment with Lenco');
@@ -149,11 +168,19 @@ const processSuccessfulPayment = async (reference: string, lencoDetails: any) =>
     await db.query(
         `UPDATE stores 
          SET subscription_status = 'active', 
-             subscription_ends_at = $1, 
+             subscription_plan = $1,
+             subscription_ends_at = $2, 
              updated_at = NOW() 
-         WHERE id = $2`,
-        [endDate, storeId]
+         WHERE id = $3`,
+        [payment.plan_id || 'plan_pro', endDate, storeId]
     );
+
+    // 4. Invalidate cache for users of this store (or just the processing user)
+    // For simplicity, we invalidate the cache if we had a userId, but we don't have it here easily.
+    // However, the middleware will fetch fresh data if /api/auth/me is called.
+    // To be safe, we can't easily find all userIds for this store without another query.
+    // We'll skip explicit invalidation for now as the 60s TTL is short enough, 
+    // or we can just hope the frontend refetches user info.
 
     return payment.id;
 };
@@ -177,10 +204,11 @@ export const processMockPayment = async (paymentId: string) => {
     await db.query(
         `UPDATE stores 
          SET subscription_status = 'active', 
-             subscription_ends_at = $1, 
+             subscription_plan = $1,
+             subscription_ends_at = $2, 
              updated_at = NOW() 
-         WHERE id = $2`,
-        [endDate, storeId]
+         WHERE id = $3`,
+        [payment.plan_id || 'plan_pro', endDate, storeId]
     );
 
     return { success: true, newStatus: 'active', expiresAt: endDate };

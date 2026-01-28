@@ -93,7 +93,8 @@ async function initializeDatabase() {
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','inactive','suspended')),
-                subscription_status TEXT NOT NULL DEFAULT 'active' CHECK (subscription_status IN ('trial','active','past_due','canceled')),
+                subscription_status TEXT NOT NULL DEFAULT 'trial' CHECK (subscription_status IN ('trial','active','past_due','canceled')),
+                subscription_plan TEXT,
                 subscription_ends_at TIMESTAMPTZ,
                 is_verified BOOLEAN DEFAULT FALSE,
                 verification_documents JSONB DEFAULT '[]',
@@ -107,7 +108,7 @@ async function initializeDatabase() {
             BEGIN
                 ALTER TABLE stores ADD COLUMN IF NOT EXISTS status TEXT;
                 ALTER TABLE stores ADD COLUMN IF NOT EXISTS subscription_status TEXT;
-                ALTER TABLE stores ADD COLUMN IF NOT EXISTS subscription_ends_at TIMESTAMPTZ;
+                ALTER TABLE stores ADD COLUMN IF NOT EXISTS subscription_plan TEXT;
                 ALTER TABLE stores ADD COLUMN IF NOT EXISTS subscription_ends_at TIMESTAMPTZ;
                 ALTER TABLE stores ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
                 ALTER TABLE stores ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE;
@@ -121,7 +122,7 @@ async function initializeDatabase() {
                 IF EXISTS (
                     SELECT 1 FROM information_schema.columns WHERE table_name='stores' AND column_name='subscription_status'
                 ) THEN
-                    UPDATE stores SET subscription_status = COALESCE(subscription_status, 'active');
+                    UPDATE stores SET subscription_status = COALESCE(subscription_status, 'trial');
                 END IF;
             END $$;`
         );
@@ -520,14 +521,34 @@ async function initializeDatabase() {
                 store_id TEXT NOT NULL REFERENCES stores(id),
                 amount DECIMAL(10,2) NOT NULL,
                 currency TEXT NOT NULL,
+                plan_id TEXT,
                 period_start TIMESTAMPTZ,
                 period_end TIMESTAMPTZ,
                 paid_at TIMESTAMPTZ,
                 method TEXT,
                 reference TEXT,
+                transaction_id TEXT,
+                status TEXT DEFAULT 'pending',
                 notes TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
+        `);
+        // Migration for existing subscription_payments table
+        await client.query(`
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'subscription_payments') THEN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'subscription_payments' AND column_name = 'plan_id') THEN
+                        ALTER TABLE subscription_payments ADD COLUMN plan_id TEXT;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'subscription_payments' AND column_name = 'transaction_id') THEN
+                        ALTER TABLE subscription_payments ADD COLUMN transaction_id TEXT;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'subscription_payments' AND column_name = 'status') THEN
+                        ALTER TABLE subscription_payments ADD COLUMN status TEXT DEFAULT 'pending';
+                    END IF;
+                END IF;
+            END $$;
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_subscription_payments_store_id ON subscription_payments(store_id);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_subscription_payments_paid_created ON subscription_payments(COALESCE(paid_at, created_at));`);

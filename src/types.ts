@@ -14,6 +14,7 @@ export interface Store {
   status: 'active' | 'inactive' | 'suspended';
   subscriptionStatus: 'trial' | 'active' | 'past_due' | 'canceled';
   subscriptionEndsAt?: string;
+  subscriptionPlan?: string;
   isVerified: boolean;
   verificationDocuments: VerificationDocument[];
   createdAt: string;
@@ -51,6 +52,9 @@ export interface User {
   role: 'superadmin' | 'admin' | 'staff' | 'inventory_manager' | 'customer';
   currentStoreId?: string; // Multi-tenant: currently selected store ID
   isVerified?: boolean;
+  subscriptionStatus?: 'trial' | 'active' | 'past_due' | 'canceled';
+  subscriptionEndsAt?: string;
+  subscriptionPlan?: string;
 }
 
 export interface CartItem {

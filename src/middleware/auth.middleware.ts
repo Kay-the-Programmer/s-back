@@ -29,7 +29,13 @@ export const protect = async (req: express.Request, res: express.Response, next:
             if (!isFreshUserRequest && cacheEntry && cacheEntry.expires > now && cacheEntry.user && cacheEntry.user.current_store_id) {
                 dbUser = cacheEntry.user;
             } else {
-                const result = await db.query('SELECT id, name, email, role, phone, current_store_id, is_verified FROM users WHERE id = $1', [decoded.id]);
+                const result = await db.query(`
+                    SELECT u.id, u.name, u.email, u.role, u.phone, u.current_store_id, u.is_verified,
+                           s.subscription_status, s.subscription_ends_at, s.subscription_plan
+                    FROM users u
+                    LEFT JOIN stores s ON u.current_store_id = s.id
+                    WHERE u.id = $1
+                `, [decoded.id]);
                 dbUser = result.rows[0] as any;
                 if (dbUser) {
                     // If TTL is 0 (disabled), do not cache
@@ -56,6 +62,9 @@ export const protect = async (req: express.Request, res: express.Response, next:
                 role: dbUser.role,
                 currentStoreId: dbUser.current_store_id || undefined,
                 isVerified: dbUser.is_verified,
+                subscriptionStatus: dbUser.subscription_status,
+                subscriptionEndsAt: dbUser.subscription_ends_at,
+                subscriptionPlan: dbUser.subscription_plan,
             };
             req.user = user;
 
@@ -105,7 +114,13 @@ export const optionalProtect = async (req: express.Request, res: express.Respons
             }
             const decoded = jwt.verify(token, JWT_SECRET) as { id: string };
 
-            const result = await db.query('SELECT id, name, email, role, phone, current_store_id, is_verified FROM users WHERE id = $1', [decoded.id]);
+            const result = await db.query(`
+                SELECT u.id, u.name, u.email, u.role, u.phone, u.current_store_id, u.is_verified,
+                       s.subscription_status, s.subscription_ends_at, s.subscription_plan
+                FROM users u
+                LEFT JOIN stores s ON u.current_store_id = s.id
+                WHERE u.id = $1
+            `, [decoded.id]);
             const dbUser = result.rows[0];
 
             if (dbUser) {
@@ -116,8 +131,11 @@ export const optionalProtect = async (req: express.Request, res: express.Respons
                     phone: dbUser.phone,
                     role: dbUser.role as any,
                     currentStoreId: dbUser.current_store_id,
-                    isVerified: dbUser.is_verified
-                };
+                    isVerified: dbUser.is_verified,
+                    subscriptionStatus: dbUser.subscription_status,
+                    subscriptionEndsAt: dbUser.subscription_ends_at,
+                    subscriptionPlan: dbUser.subscription_plan
+                } as any;
             }
         } catch (error) {
             console.error('Optional auth failed:', error);

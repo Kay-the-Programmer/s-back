@@ -59,6 +59,86 @@ class LencoService {
    * Verify a transaction by its reference.
    * @param reference The unique reference generated during payment initiation.
    */
+  generateReference(prefix: string = 'SP') {
+    return `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+  }
+
+  /**
+   * Normalizes a phone number to Zambian format (e.g., 097... or 077...)
+   * Handles formats like +260..., 260..., 9..., 09...
+   */
+  normalizePhone(phone: string): string {
+    // Remove all non-numeric characters
+    let cleaned = phone.replace(/\D/g, '');
+
+    // Handle 260 prefix
+    if (cleaned.startsWith('260')) {
+      cleaned = cleaned.substring(3);
+    }
+
+    // Ensure it starts with 0 (Lenco expects 09... or 07... for Zambia)
+    if (!cleaned.startsWith('0')) {
+      cleaned = '0' + cleaned;
+    }
+
+    return cleaned;
+  }
+
+  /**
+   * Detects the mobile money operator based on the normalized phone number
+   */
+  detectOperator(phone: string): string {
+    const normalized = this.normalizePhone(phone);
+
+    // Airtel prefixes: 097, 077
+    if (normalized.startsWith('097') || normalized.startsWith('077')) {
+      return 'airtel';
+    }
+
+    // MTN prefixes: 096, 076
+    if (normalized.startsWith('096') || normalized.startsWith('076')) {
+      return 'mtn';
+    }
+
+    // Default to airtel if unknown, or we could throw an error
+    return 'airtel';
+  }
+
+  async chargeMobileMoney(amount: number, reference: string, phone: string, operator?: string, country: string = 'zm') {
+    this.logEnvOnce();
+    try {
+      const normalizedPhone = this.normalizePhone(phone);
+      const detectedOperator = operator || this.detectOperator(normalizedPhone);
+
+      const url = `${this.baseUrl}/collections/mobile-money`;
+      console.log(`Lenco charging mobile money: ${normalizedPhone} (${detectedOperator}) URL: ${url}`);
+
+      const response = await axios.post(url, {
+        amount,
+        reference,
+        phone: normalizedPhone,
+        operator: detectedOperator,
+        country,
+        bearer: 'merchant' // Default to merchant bearing the fee
+      }, {
+        headers: {
+          Authorization: `Bearer ${this.secretKey}`,
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+      });
+
+      return response.data;
+    } catch (error: any) {
+      if (error.response) {
+        console.error('Lenco Mobile Money Charge API Error:', JSON.stringify(error.response.data, null, 2));
+        throw error.response.data;
+      }
+      console.error('Lenco Network Error:', error.message);
+      throw new Error(error.message || 'Failed to initiate mobile money collection');
+    }
+  }
+
   async verifyTransaction(reference: string) {
     this.logEnvOnce();
     try {

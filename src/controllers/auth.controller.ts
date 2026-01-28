@@ -32,7 +32,12 @@ export const loginUser = async (req: express.Request, res: express.Response) => 
             return res.status(400).json({ message: 'Email and password are required' });
         }
         const normEmail = String(email).toLowerCase();
-        const result = await db.query('SELECT * FROM users WHERE email = $1', [normEmail]);
+        const result = await db.query(`
+            SELECT u.*, s.subscription_status, s.subscription_ends_at, s.subscription_plan 
+            FROM users u 
+            LEFT JOIN stores s ON u.current_store_id = s.id 
+            WHERE u.email = $1
+        `, [normEmail]);
         const user = result.rows[0];
 
         if (user && user.password_hash && (await bcrypt.compare(String(password), user.password_hash))) {
@@ -43,7 +48,10 @@ export const loginUser = async (req: express.Request, res: express.Response) => 
                 role: user.role,
                 phone: user.phone,
                 current_store_id: user.current_store_id,
-                is_verified: user.is_verified, // Return verification status
+                is_verified: user.is_verified,
+                subscription_status: user.subscription_status,
+                subscription_ends_at: user.subscription_ends_at,
+                subscription_plan: user.subscription_plan,
                 token: generateToken(user.id),
             });
             return res.json(userResponse);
@@ -386,7 +394,12 @@ export const googleLogin = async (req: express.Request, res: express.Response) =
         const normEmail = String(email).toLowerCase();
 
         // Check if user exists
-        const result = await db.query('SELECT * FROM users WHERE email = $1', [normEmail]);
+        const result = await db.query(`
+            SELECT u.*, s.subscription_status, s.subscription_ends_at, s.subscription_plan 
+            FROM users u 
+            LEFT JOIN stores s ON u.current_store_id = s.id 
+            WHERE u.email = $1
+        `, [normEmail]);
         let user = result.rows[0];
 
         if (!user) {

@@ -22,18 +22,29 @@ export const verifyPayment = async (req: Request, res: Response, next: NextFunct
         console.log(`Verifying Lenco payment: ${reference}`);
         const transaction = await LencoService.verifyTransaction(reference);
 
-        if (transaction.status && transaction.data?.status === 'successful') {
+        const lencoStatus = transaction.data?.status;
+
+        if (transaction.status && lencoStatus === 'successful') {
             console.log(`Lenco payment SUCCESS: ${reference}`);
             res.status(200).json({
                 status: true,
                 message: 'Payment verified successfully',
                 data: transaction.data,
             });
+        } else if (transaction.status && lencoStatus !== 'failed') {
+            // Treat everything else (pending, sent, initiated, accepted, otp-required) as pending
+            console.log(`Lenco payment PENDING (${lencoStatus}): ${reference}`);
+            res.status(200).json({
+                status: true,
+                pending: true,
+                message: `Payment status: ${lencoStatus || 'processing'}`,
+                data: transaction.data,
+            });
         } else {
-            console.warn(`Lenco payment NOT successful: ${reference}`, transaction);
+            console.warn(`Lenco payment FAILED or NOT FOUND: ${reference}`, transaction);
             res.status(200).json({
                 status: false,
-                message: transaction.message || (transaction.data?.reasonForFailure) || 'Payment not successful',
+                message: transaction.message || (transaction.data?.reasonForFailure) || `Payment ${lencoStatus || 'failed'}`,
                 data: transaction.data,
                 errorCode: transaction.errorCode
             });
@@ -138,5 +149,57 @@ export const handleLencoWebhook = async (req: Request, res: Response, next: Next
         res.status(500).json({ status: false, message: 'Webhook processing failed' });
     } finally {
         if (client) client.release();
+    }
+};
+
+/**
+ * Initiate a Lenco payment (Generate reference)
+ * POST /api/payments/lenco/initiate
+ * Body: { prefix: string }
+ */
+export const initiatePayment = async (req: Request, res: Response) => {
+    try {
+        const { prefix } = req.body;
+        const reference = LencoService.generateReference(prefix || 'SP');
+
+        res.status(200).json({
+            status: true,
+            data: { reference }
+        });
+    } catch (error: any) {
+        res.status(500).json({
+            status: false,
+            message: error.message || 'Failed to initiate payment reference'
+        });
+    }
+};
+
+/**
+ * Charge Mobile Money directly
+ * POST /api/payments/lenco/charge-mobile-money
+ * Body: { amount: number, reference: string, phone: string, operator: string }
+ */
+export const chargeMobileMoney = async (req: Request, res: Response) => {
+    try {
+        const { amount, reference, phone, operator } = req.body;
+
+        if (!amount || !reference || !phone || !operator) {
+            res.status(400).json({
+                status: false,
+                message: 'amount, reference, phone, and operator are required'
+            });
+            return;
+        }
+
+        const result = await LencoService.chargeMobileMoney(amount, reference, phone, operator);
+
+        res.status(200).json(result);
+    } catch (error: any) {
+        console.error('Charge Mobile Money Error:', error);
+        res.status(200).json({
+            status: false,
+            message: error.message || 'Failed to initiate mobile money collection',
+            data: error
+        });
     }
 };
