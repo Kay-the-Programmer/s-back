@@ -78,10 +78,25 @@ const io = new Server(httpServer, {
 // Initialize socket service
 new SocketService(io);
 
+import { runRecurringExpenses } from './controllers/recurring-expenses.controller';
+
 const startServer = async () => {
   try {
     await initializeDatabase();
     await seedDatabase();
+
+    // Process recurring expenses on startup
+    runRecurringExpenses().then(count => {
+      if (count > 0) console.log(`[recurring] Processed ${count} expenses on startup`);
+    }).catch(err => console.error('[recurring] Error on startup processing:', err));
+
+    // Run every hour
+    setInterval(() => {
+      runRecurringExpenses().then(count => {
+        if (count > 0) console.log(`[recurring] Processed ${count} expenses`);
+      }).catch(err => console.error('[recurring] Error in interval processing:', err));
+    }, 60 * 60 * 1000);
+
     // Use httpServer.listen instead of app.listen
     httpServer.listen(port, () => {
       console.log(`[server]: Server is running at http://localhost:${port}`);

@@ -934,6 +934,31 @@ async function initializeDatabase() {
         await client.query(`CREATE INDEX IF NOT EXISTS idx_expenses_store_date ON expenses(store_id, date DESC);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_expenses_store_account ON expenses(store_id, expense_account_id);`);
 
+        // --- Recurring Expenses table ---
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS recurring_expenses (
+                id VARCHAR(50) PRIMARY KEY,
+                store_id TEXT NOT NULL,
+                description TEXT NOT NULL,
+                amount DECIMAL(12, 2) NOT NULL,
+                expense_account_id VARCHAR(50) NOT NULL,
+                expense_account_name VARCHAR(255) NOT NULL,
+                payment_account_id VARCHAR(50) NOT NULL,
+                payment_account_name VARCHAR(255) NOT NULL,
+                category VARCHAR(100),
+                reference VARCHAR(100),
+                frequency VARCHAR(20) NOT NULL, -- 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'
+                start_date DATE NOT NULL,
+                next_run_date DATE NOT NULL,
+                status VARCHAR(20) DEFAULT 'active', -- 'active', 'paused', 'cancelled'
+                created_by VARCHAR(50) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_recurring_expenses_store ON recurring_expenses(store_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_recurring_expenses_next_run ON recurring_expenses(next_run_date);`);
+
         // --- Stock Takes tables ---
         await client.query(`
             CREATE TABLE IF NOT EXISTS stock_takes (

@@ -325,6 +325,25 @@ export interface Expense {
   createdAt: string;
 }
 
+export interface RecurringExpense {
+  id: string;
+  description: string;
+  amount: number;
+  expenseAccountId: string;
+  expenseAccountName: string;
+  paymentAccountId: string;
+  paymentAccountName: string;
+  category?: string;
+  reference?: string;
+  frequency: 'daily' | 'weekly' | 'monthly' | 'quarterly' | 'yearly';
+  startDate: string;
+  nextRunDate: string;
+  status: 'active' | 'paused' | 'cancelled';
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 
 // --- System Types ---
 
