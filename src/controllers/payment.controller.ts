@@ -203,3 +203,36 @@ export const chargeMobileMoney = async (req: Request, res: Response) => {
         });
     }
 };
+
+/**
+ * Cancel a Lenco payment
+ * POST /api/payments/lenco/cancel
+ * Body: { reference: string }
+ */
+export const cancelPayment = async (req: Request, res: Response) => {
+    try {
+        const { reference } = req.body;
+
+        if (!reference) {
+            return res.status(400).json({
+                status: false,
+                message: 'Reference is required'
+            });
+        }
+
+        console.log(`Lenco payment reference cancelled by user: ${reference}`);
+
+        // Note: For regular sales, we don't store pending references in the DB yet,
+        // so we simply acknowledge the cancellation for the frontend to update its state.
+
+        res.status(200).json({
+            status: true,
+            message: 'Transaction cancelled successfully'
+        });
+    } catch (error: any) {
+        res.status(500).json({
+            status: false,
+            message: error.message || 'Failed to cancel payment'
+        });
+    }
+};

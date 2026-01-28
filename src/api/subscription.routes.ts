@@ -8,5 +8,6 @@ const router = Router();
 router.get('/plans', subscriptionController.getPlans);
 router.post('/pay', protect, subscriptionController.createPayment);
 router.get('/verify/:reference', protect, subscriptionController.verifyPayment);
+router.post('/cancel/:reference', protect, subscriptionController.cancelPayment);
 
 export default router;

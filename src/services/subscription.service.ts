@@ -185,6 +185,17 @@ const processSuccessfulPayment = async (reference: string, lencoDetails: any) =>
     return payment.id;
 };
 
+export const cancelPayment = async (reference: string) => {
+    const result = await db.query(
+        'UPDATE subscription_payments SET status = $1 WHERE reference = $2 AND status = $3 RETURNING *',
+        ['cancelled', reference, 'pending']
+    );
+    if (result.rowCount === 0) {
+        throw new Error('Payment not found or already processed');
+    }
+    return result.rows[0];
+};
+
 export const processMockPayment = async (paymentId: string) => {
     // This remains for backward compatibility or direct mock testing
     const paymentRes = await db.query('SELECT * FROM subscription_payments WHERE id = $1', [paymentId]);

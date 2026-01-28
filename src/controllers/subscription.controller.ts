@@ -42,3 +42,19 @@ export const verifyPayment = async (req: Request, res: Response) => {
         res.status(500).json({ error: 'Failed to verify payment' });
     }
 };
+
+export const cancelPayment = async (req: Request, res: Response) => {
+    try {
+        const { reference } = req.params;
+
+        if (!reference) {
+            return res.status(400).json({ error: 'Reference is required' });
+        }
+
+        const result = await subscriptionService.cancelPayment(reference);
+        res.json({ success: true, data: result });
+    } catch (error: any) {
+        console.error('Error cancelling payment:', error);
+        res.status(400).json({ message: error.message || 'Failed to cancel payment' });
+    }
+};
