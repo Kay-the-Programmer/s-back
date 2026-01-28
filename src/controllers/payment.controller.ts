@@ -225,6 +225,9 @@ export const cancelPayment = async (req: Request, res: Response) => {
         // Note: For regular sales, we don't store pending references in the DB yet,
         // so we simply acknowledge the cancellation for the frontend to update its state.
 
+        // Best effort to notify Lenco
+        await LencoService.cancelTransaction(reference);
+
         res.status(200).json({
             status: true,
             message: 'Transaction cancelled successfully'

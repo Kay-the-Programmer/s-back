@@ -165,6 +165,35 @@ class LencoService {
   }
 
   /**
+   * Attempt to cancel a transaction (Best effort)
+   * @param reference The transaction reference
+   */
+  async cancelTransaction(reference: string) {
+    this.logEnvOnce();
+    try {
+      // Note: Lenco public API doesn't explicitly document a cancellation endpoint for mobile money.
+      // This is a best-effort attempt to notify them if such an endpoint exists (un-documented/future-proof).
+      // We also log it so we can track if users are cancelling frequently.
+      console.log(`[LencoService] Cancellation requested for reference: ${reference}`);
+
+      const url = `${this.baseUrl}/collections/status/${reference}/cancel`;
+      await axios.post(url, {}, {
+        headers: {
+          Authorization: `Bearer ${this.secretKey}`,
+          'Accept': 'application/json',
+        },
+      }).catch(err => {
+        // Silently fail if not supported - 404/405 is expected if undocumented
+        if (err.response?.status !== 404 && err.response?.status !== 405) {
+          console.warn(`[LencoService] Unexpected error during cancellation attempt for ${reference}:`, err.message);
+        }
+      });
+    } catch (error: any) {
+      console.error('[LencoService] Error in cancelTransaction:', error.message);
+    }
+  }
+
+  /**
    * Get banks list
    * @param country country code i.e zm
    */

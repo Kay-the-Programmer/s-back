@@ -193,6 +193,10 @@ export const cancelPayment = async (reference: string) => {
     if (result.rowCount === 0) {
         throw new Error('Payment not found or already processed');
     }
+
+    // Best effort to notify Lenco
+    await LencoService.cancelTransaction(reference);
+
     return result.rows[0];
 };
 
