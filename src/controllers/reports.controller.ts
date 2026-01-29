@@ -31,7 +31,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         // 2. COGS (From items)
         const cogsQuery = `
             SELECT
-                COALESCE(SUM(si.cost_at_sale * si.quantity), 0) AS "totalCogs"
+                COALESCE(SUM(si.cost_at_sale * (si.quantity - si.returned_quantity)), 0) AS "totalCogs"
             FROM sale_items si
             JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
             WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND si.store_id = $3;
@@ -86,7 +86,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         const trendCogsQuery = `
             SELECT
                 DATE(s.timestamp)::text as date,
-                COALESCE(SUM(si.cost_at_sale * si.quantity), 0) as cogs
+                COALESCE(SUM(si.cost_at_sale * (si.quantity - si.returned_quantity)), 0) as cogs
             FROM sale_items si
             JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
             WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND si.store_id = $3
@@ -142,12 +142,13 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
 
         // --- Top Products by Revenue ---
         const topProductsRevenueQuery = `
-            SELECT p.name, SUM(si.quantity) as quantity, SUM(si.price_at_sale * si.quantity) as revenue
+            SELECT p.name, SUM(si.quantity - si.returned_quantity) as quantity, SUM(si.price_at_sale * (si.quantity - si.returned_quantity)) as revenue
             FROM sale_items si
                      JOIN products p ON si.product_id = p.id AND p.store_id = $3
                      JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
             WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3 AND si.store_id = $3
             GROUP BY p.name
+            HAVING SUM(si.quantity - si.returned_quantity) > 0
             ORDER BY revenue DESC
             LIMIT 10;
         `;
@@ -155,12 +156,13 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
 
         // --- Top Products by Quantity ---
         const topProductsQuantityQuery = `
-            SELECT p.name, SUM(si.quantity) as quantity
+            SELECT p.name, SUM(si.quantity - si.returned_quantity) as quantity
             FROM sale_items si
                      JOIN products p ON si.product_id = p.id AND p.store_id = $3
                      JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
             WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3 AND si.store_id = $3
             GROUP BY p.name
+            HAVING SUM(si.quantity - si.returned_quantity) > 0
             ORDER BY quantity DESC
             LIMIT 10;
         `;
@@ -168,13 +170,14 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
 
         // --- Sales by Category ---
         const salesByCategoryQuery = `
-            SELECT c.name, SUM(si.price_at_sale * si.quantity) as revenue
+            SELECT c.name, SUM(si.price_at_sale * (si.quantity - si.returned_quantity)) as revenue
             FROM sale_items si
                      JOIN products p ON si.product_id = p.id AND p.store_id = $3
                      JOIN categories c ON p.category_id = c.id AND c.store_id = $3
                      JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
             WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3 AND si.store_id = $3
             GROUP BY c.name
+            HAVING SUM(si.quantity - si.returned_quantity) > 0
             ORDER BY revenue DESC;
         `;
         const salesByCategoryResult = await db.query(salesByCategoryQuery, [startDate, adjustedEndDate, storeId]);
@@ -390,13 +393,14 @@ export const getDailySalesWithProducts = async (req: express.Request, res: expre
         SELECT
         DATE(s.timestamp):: text as date,
             p.name as product_name,
-            SUM(si.quantity) as quantity,
-            SUM(si.price_at_sale * si.quantity) as revenue
+            SUM(si.quantity - si.returned_quantity) as quantity,
+            SUM(si.price_at_sale * (si.quantity - si.returned_quantity)) as revenue
             FROM sale_items si
             JOIN products p ON si.product_id = p.id AND p.store_id = $3
             JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
             WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3 AND si.store_id = $3
             GROUP BY DATE(s.timestamp), p.name
+            HAVING SUM(si.quantity - si.returned_quantity) > 0
             ORDER BY DATE(s.timestamp) ASC, revenue DESC;
         `;
         const result = await db.query(dailyItemsQuery, [startDate, adjustedEndDate, storeId]);

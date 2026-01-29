@@ -422,6 +422,7 @@ async function initializeDatabase() {
                 quantity DECIMAL(10,3) NOT NULL,
                 price_at_sale DECIMAL(10,2) NOT NULL,
                 cost_at_sale DECIMAL(10,2),
+                returned_quantity DECIMAL(10,3) NOT NULL DEFAULT 0,
                 store_id TEXT
             );
         `);
@@ -1320,6 +1321,13 @@ async function initializeDatabase() {
                     -- Drop legacy sender_details column if it exists
                     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'shipments' AND column_name = 'sender_details') THEN
                         ALTER TABLE shipments DROP COLUMN sender_details;
+                    END IF;
+                 END IF;
+
+                 -- Migration for returns: Add returned_quantity to sale_items if missing
+                 IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'sale_items') THEN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'sale_items' AND column_name = 'returned_quantity') THEN
+                        ALTER TABLE sale_items ADD COLUMN returned_quantity DECIMAL(10,3) NOT NULL DEFAULT 0;
                     END IF;
                  END IF;
             END $$;

@@ -342,10 +342,139 @@ const recordConsolidatedStockAdjustment = async (totalAdjustmentCost: number, de
     }
 }
 
-const recordReturn = async (returnInfo: Return, originalSale: Sale, storeSettings: StoreSettings, client?: DBClient) => {
-    // Implementation would be similar to recordSale, but reversed, and would also require fetching products/categories/accounts.
-    // This is a complex function and will be left as a simplified placeholder for now to fix the compilation error.
-    console.log("Recording return to journal...", returnInfo);
+const recordReturn = async (returnInfo: Return, originalSale: Sale, client?: DBClient, storeIdParam?: string) => {
+    const dbClient = client || db;
+    const storeId = storeIdParam || (returnInfo as any).store_id || (originalSale as any).store_id;
+    if (!storeId) {
+        console.warn('recordReturn: Missing store_id; aborting journal entry.');
+        return;
+    }
+
+    await ensureCoreAccounts(storeId, dbClient);
+
+    const productIds = returnInfo.returnedItems.map(i => i.productId);
+    if (productIds.length === 0) return;
+
+    const allProductsResult = await dbClient.query('SELECT * FROM products WHERE id = ANY($1::text[]) AND store_id = $2', [productIds, storeId]);
+    const allProducts: Product[] = allProductsResult.rows;
+
+    const allCategoriesResult = await dbClient.query('SELECT * FROM categories WHERE store_id = $1', [storeId]);
+    const allCategories: Category[] = allCategoriesResult.rows;
+
+    const revenueByAccount = new Map<string, { account: Account, amount: number }>();
+    const cogsByAccount = new Map<string, { account: Account, amount: number }>();
+
+    const defaultRevenueAccount = await findAccount('sales_revenue', storeId, dbClient);
+    const defaultCogsAccount = await findAccount('cogs', storeId, dbClient);
+    const inventoryAccount = await findAccount('inventory', storeId, dbClient);
+    const taxAccount = await findAccount('sales_tax_payable', storeId, dbClient);
+    const cashAccount = await findAccount('cash', storeId, dbClient);
+    const arAccount = await findAccount('accounts_receivable', storeId, dbClient);
+    const storeCreditAccount = await findAccount('store_credit_payable', storeId, dbClient);
+
+    if (!inventoryAccount || !taxAccount || !cashAccount || !defaultRevenueAccount || !defaultCogsAccount || !arAccount) {
+        console.error("Accounting Error: Core accounts for returns are not configured", storeId);
+        return;
+    }
+
+    // Determine primary asset/liability for refund
+    let refundAssetAccount = cashAccount;
+    if (returnInfo.refundMethod === 'accounts_receivable' || returnInfo.refundMethod === 'on_account') {
+        refundAssetAccount = arAccount;
+    } else if (returnInfo.refundMethod === 'store_credit' && storeCreditAccount) {
+        refundAssetAccount = storeCreditAccount;
+    }
+
+    const productMap = new Map(allProducts.map(p => [p.id, p]));
+    const categoryMap = new Map(allCategories.map(c => [c.id, c]));
+    const accountsMap = new Map<string, Account>();
+
+    // Calculate original discount ratio to apply to returned items revenue
+    const totalOriginalCartValue = originalSale.cart.reduce((acc, item) => acc + item.price * item.quantity, 0);
+    const originalDiscountRatio = totalOriginalCartValue > 0 ? (originalSale.subtotal) / totalOriginalCartValue : 1;
+
+    // Calculate total returned value and tax ratio
+    const returnedItemsValue = returnInfo.returnedItems.reduce((acc, item) => {
+        const saleItem = originalSale.cart.find(si => si.productId === item.productId);
+        const price = saleItem ? saleItem.price : (productMap.get(item.productId)?.price || 0);
+        return acc + price * item.quantity;
+    }, 0);
+
+    const taxRatio = originalSale.total > 0 ? originalSale.tax / originalSale.total : 0;
+    const returnedTax = returnInfo.refundAmount * taxRatio;
+    const returnedRevenueTotal = returnInfo.refundAmount - returnedTax;
+
+    for (const item of returnInfo.returnedItems) {
+        const product = productMap.get(item.productId);
+        if (!product) continue;
+
+        const saleItem = originalSale.cart.find(si => si.productId === item.productId);
+        const price = saleItem ? saleItem.price : (product.price || 0);
+        const itemRevenue = (price * item.quantity) * originalDiscountRatio;
+
+        let revenueAccount = defaultRevenueAccount;
+        if (product.categoryId) {
+            const category = categoryMap.get(product.categoryId);
+            if (category?.revenueAccountId) {
+                if (!accountsMap.has(category.revenueAccountId)) {
+                    const accountResult = await dbClient.query('SELECT * FROM accounts WHERE id = $1 AND store_id = $2', [category.revenueAccountId, storeId]);
+                    if (accountResult.rowCount > 0) accountsMap.set(category.revenueAccountId, accountResult.rows[0]);
+                }
+                revenueAccount = accountsMap.get(category.revenueAccountId) || defaultRevenueAccount;
+            }
+        }
+
+        const currentRevenue = revenueByAccount.get(revenueAccount.id) || { account: revenueAccount, amount: 0 };
+        currentRevenue.amount += itemRevenue;
+        revenueByAccount.set(revenueAccount.id, currentRevenue);
+
+        if (item.addToStock) {
+            let cogsAccount = defaultCogsAccount;
+            if (product.categoryId) {
+                const category = categoryMap.get(product.categoryId);
+                if (category?.cogsAccountId) {
+                    if (!accountsMap.has(category.cogsAccountId)) {
+                        const accountResult = await dbClient.query('SELECT * FROM accounts WHERE id = $1 AND store_id = $2', [category.cogsAccountId, storeId]);
+                        if (accountResult.rowCount > 0) accountsMap.set(category.cogsAccountId, accountResult.rows[0]);
+                    }
+                    cogsAccount = accountsMap.get(category.cogsAccountId) || defaultCogsAccount;
+                }
+            }
+            const itemCogs = (product.costPrice || 0) * item.quantity;
+            const currentCogs = cogsByAccount.get(cogsAccount.id) || { account: cogsAccount, amount: 0 };
+            currentCogs.amount += itemCogs;
+            cogsByAccount.set(cogsAccount.id, currentCogs);
+        }
+    }
+
+    const totalCogsReversed = Array.from(cogsByAccount.values()).reduce((sum, item) => sum + item.amount, 0);
+
+    const journalLines: JournalEntryLine[] = [
+        { accountId: refundAssetAccount.id, accountName: refundAssetAccount.name, type: 'credit', amount: returnInfo.refundAmount },
+        { accountId: taxAccount.id, accountName: taxAccount.name, type: 'debit', amount: returnedTax },
+    ];
+
+    if (totalCogsReversed > 0) {
+        journalLines.push({ accountId: inventoryAccount.id, accountName: inventoryAccount.name, type: 'debit', amount: totalCogsReversed });
+    }
+
+    revenueByAccount.forEach(({ account, amount }) => {
+        // We use the calculated proportional revenue for each account
+        // Note: the sum might slightly differ from returnedRevenueTotal due to rounding or manual refundAmount entry,
+        // so we could proportionally adjust them to match returnedRevenueTotal exactly if needed.
+        journalLines.push({ accountId: account.id, accountName: account.name, type: 'debit', amount: amount });
+    });
+
+    cogsByAccount.forEach(({ account, amount }) => {
+        journalLines.push({ accountId: account.id, accountName: account.name, type: 'credit', amount: amount });
+    });
+
+    await addJournalEntry({
+        date: returnInfo.timestamp,
+        description: `Return for Sale ID ${originalSale.transactionId}`,
+        source: { type: 'sale', id: returnInfo.id },
+        lines: journalLines.filter(line => line.amount > 0.001)
+    }, storeId, dbClient);
 };
 
 const recordPurchaseOrderReception = async (poId: string, poNumber: string, receivedItems: { productId: string, quantity: number, costPrice: number }[], client?: DBClient, storeId?: string) => {

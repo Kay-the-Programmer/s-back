@@ -27,7 +27,6 @@ export const getReturns = async (req: express.Request, res: express.Response) =>
 };
 
 export const createReturn = async (req: express.Request, res: express.Response) => {
-    // This should be a database transaction
     const returnData: Omit<Return, 'id' | 'timestamp'> = req.body;
     const { originalSaleId, returnedItems, refundAmount, refundMethod } = returnData;
     const id = generateId('ret');
@@ -38,79 +37,85 @@ export const createReturn = async (req: express.Request, res: express.Response) 
         return res.status(400).json({ message: 'Store context required' });
     }
 
+    const client = await db._pool.connect();
     try {
-        const saleResult = await db.query('SELECT * FROM sales WHERE transaction_id = $1 AND store_id = $2', [originalSaleId, storeId]);
+        await client.query('BEGIN');
+
+        const saleResult = await client.query('SELECT * FROM sales WHERE transaction_id = $1 AND store_id = $2', [originalSaleId, storeId]);
         if (saleResult.rowCount === 0) {
+            await client.query('ROLLBACK');
             return res.status(404).json({ message: 'Original sale not found' });
         }
-        const originalSale = saleResult.rows[0];
+        const originalSale = toCamelCase(saleResult.rows[0]);
 
         // 1. Create the return record
-        const returnResult = await db.query(
+        const returnResult = await client.query(
             'INSERT INTO returns (id, original_sale_id, "timestamp", refund_amount, refund_method, store_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
             [id, originalSaleId, timestamp, refundAmount, refundMethod, storeId]
         );
-        const newReturn = returnResult.rows[0];
+        const newReturn = toCamelCase(returnResult.rows[0]);
 
         // 2. Process each returned item
         for (const item of returnedItems) {
-            await db.query(
+            await client.query(
                 'INSERT INTO return_items (return_id, product_id, product_name, quantity, reason, add_to_stock, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7)',
                 [id, item.productId, item.productName, item.quantity, item.reason, item.addToStock, storeId]
             );
 
             if (item.addToStock) {
-                // This is a simplified stock/cost update. A real system might use FIFO/LIFO.
-                await db.query(
+                await client.query(
                     'UPDATE products SET stock = stock + $1 WHERE id = $2 AND store_id = $3',
                     [item.quantity, item.productId, storeId]
                 );
             }
+
+            // Update sale_items to track returned quantity
+            await client.query(
+                'UPDATE sale_items SET returned_quantity = returned_quantity + $1 WHERE sale_id = $2 AND product_id = $3 AND store_id = $4',
+                [item.quantity, originalSaleId, item.productId, storeId]
+            );
         }
 
         // 3. Update customer store credit if applicable
         if (refundMethod === 'store_credit') {
-            if (!originalSale.customer_id) {
+            if (!originalSale.customerId) {
+                await client.query('ROLLBACK');
                 return res.status(400).json({ message: 'Cannot refund to store credit: no customer on original sale.' });
             }
-            await db.query('UPDATE customers SET store_credit = store_credit + $1 WHERE id = $2 AND store_id = $3', [refundAmount, originalSale.customer_id, storeId]);
+            await client.query('UPDATE customers SET store_credit = store_credit + $1 WHERE id = $2 AND store_id = $3', [refundAmount, originalSale.customerId, storeId]);
         }
 
         // 4. Update original sale's refund status
-        // Calculate total amount refunded so far (including this one)
-        const previousRefundsResult = await db.query('SELECT SUM(refund_amount) as total_refunded FROM returns WHERE original_sale_id = $1 AND store_id = $2', [originalSaleId, storeId]);
-        const previousRefunds = Number(previousRefundsResult.rows[0]?.total_refunded || 0);
-        // Note: this query might not include the current transaction if isolation level is read committed and not visible yet, 
-        // but we are in the same function. Actually `returns` insert happened above. 
-        // Postgres sees its own writes in the same transaction usually, but here we are not using a transaction block explicitly in the code 
-        // (the code has a comment "// This should be a database transaction" but doesn't start one). 
-        // However, we just inserted the return above.
+        const totalRefundedResult = await client.query('SELECT SUM(refund_amount) as total_refunded FROM returns WHERE original_sale_id = $1 AND store_id = $2', [originalSaleId, storeId]);
+        const totalRefundedSum = Number(totalRefundedResult.rows[0]?.total_refunded || 0);
 
-        // Let's refine: The insert above (step 1) is done. 
-        // So `previousRefundsResult` SHOULD include the refund we just made if we query the table.
-        // Let's verify if we need to account for it manually or if the query catches it. 
-        // Since `db.query` are separate calls and likely auto-commit if no transaction object is passed (DB client dependent), 
-        // checking the code: line 30 says "This should be a database transaction" implies it isn't one yet.
-        // So the INSERT committed. The SELECT should see it.
-
-        const totalRefunded = Number(previousRefundsResult.rows[0]?.total_refunded || 0);
-        const originalTotal = Number(originalSale.total);
-
+        const originalBaseTotal = Number(originalSale.total);
         let newStatus = 'partially_returned';
-
-        // Allow for small float differences
-        if (totalRefunded >= originalTotal - 0.01) {
+        if (totalRefundedSum >= originalBaseTotal - 0.01) {
             newStatus = 'returned';
         }
 
-        await db.query("UPDATE sales SET refund_status = $1 WHERE transaction_id = $2 AND store_id = $3", [newStatus, originalSaleId, storeId]);
+        await client.query(
+            "UPDATE sales SET refund_status = $1 WHERE transaction_id = $2 AND store_id = $3",
+            [newStatus, originalSaleId, storeId]
+        );
 
-        auditService.log(req.user!, 'Return Processed', `For Sale ID: ${originalSaleId}, Amount: ${refundAmount.toFixed(2)}`);
+        // 5. Accounting and Auditing
+        // Fetch cart items for the sale to pass to accounting (needed for price levels)
+        const cartResult = await client.query('SELECT * FROM sale_items WHERE sale_id = $1 AND store_id = $2', [originalSaleId, storeId]);
+        const enrichedSale = { ...originalSale, cart: toCamelCase(cartResult.rows) };
 
-        res.status(201).json(toCamelCase({ ...newReturn, returnedItems }));
+        await accountingService.recordReturn({ ...newReturn, returnedItems }, enrichedSale, client, storeId);
+        await auditService.log(req.user!, 'Return Processed', `For Sale ID: ${originalSaleId}, Amount: ${refundAmount.toFixed(2)}`, client);
+
+        await client.query('COMMIT');
+        res.status(201).json({ ...newReturn, returnedItems });
 
     } catch (error) {
+        await client.query('ROLLBACK');
         console.error('Error creating return:', error);
         res.status(500).json({ message: 'Error processing return' });
+    } finally {
+        client.release();
     }
 };

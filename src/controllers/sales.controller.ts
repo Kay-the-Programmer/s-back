@@ -19,6 +19,12 @@ export const getSales = async (req: express.Request, res: express.Response) => {
 
     let baseQuery = `
         FROM sales s
+                 LEFT JOIN (
+                     SELECT original_sale_id, SUM(refund_amount) as total_refunded 
+                     FROM returns 
+                     WHERE store_id = $1 
+                     GROUP BY original_sale_id
+                 ) ret ON s.transaction_id = ret.original_sale_id
                  LEFT JOIN sale_items si ON s.transaction_id = si.sale_id AND si.store_id = s.store_id
                  LEFT JOIN products p ON si.product_id = p.id AND p.store_id = s.store_id
                  LEFT JOIN payments pay ON s.transaction_id = pay.sale_id AND pay.store_id = s.store_id
@@ -63,10 +69,14 @@ export const getSales = async (req: express.Request, res: express.Response) => {
 
     let selectQuery = `
         SELECT s.*,
-               COALESCE(json_agg(DISTINCT jsonb_build_object('productId', si.product_id, 'name', p.name, 'price', si.price_at_sale, 'quantity', si.quantity, 'stock', p.stock, 'costPrice', si.cost_at_sale, 'returnedQuantity', 0)) FILTER (WHERE si.id IS NOT NULL), '[]') as cart,
+               s.total as "originalTotal",
+               COALESCE(ret.total_refunded, 0) as "totalRefunded",
+               (s.total - COALESCE(ret.total_refunded, 0)) as total,
+               (s.amount_paid - COALESCE(ret.total_refunded, 0)) as amount_paid,
+               COALESCE(json_agg(DISTINCT jsonb_build_object('productId', si.product_id, 'name', p.name, 'price', si.price_at_sale, 'quantity', si.quantity, 'stock', p.stock, 'costPrice', si.cost_at_sale, 'returnedQuantity', si.returned_quantity)) FILTER (WHERE si.id IS NOT NULL), '[]') as cart,
                COALESCE(json_agg(DISTINCT pay.*) FILTER (WHERE pay.id IS NOT NULL), '[]') as payments
         ${baseQuery}
-        GROUP BY s.transaction_id
+        GROUP BY s.transaction_id, ret.total_refunded
         ORDER BY s.timestamp DESC
     `;
 
