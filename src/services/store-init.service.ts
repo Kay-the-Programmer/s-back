@@ -4,17 +4,17 @@ import { StoreSettings, Account, Category } from '../types';
 import { categoryHierarchy, initialAccountsData, BUSINESS_TYPES } from '../utils/initial-data';
 
 export class StoreInitService {
-    async initializeNewStore(storeId: string, storeName: string, businessTypes: string[] = []) {
+    async initializeNewStore(storeId: string, storeName: string, businessTypes: string[] = [], phone?: string, address?: string) {
         console.log(`Initializing store: ${storeName} (${storeId}) with types: ${businessTypes.join(', ')}`);
 
-        await this.seedSettings(storeId, storeName);
+        await this.seedSettings(storeId, storeName, phone, address);
         const accountsMap = await this.seedAccounts(storeId);
         await this.seedCategories(storeId, businessTypes);
 
         console.log(`✅ Store ${storeId} initialized successfully.`);
     }
 
-    private async seedSettings(storeId: string, storeName: string) {
+    private async seedSettings(storeId: string, storeName: string, phone?: string, address?: string) {
         const paymentMethods = [
             { id: 'cash', name: 'CASH' },
             { id: 'airtel', name: 'AIRTEL' },
@@ -23,8 +23,8 @@ export class StoreInitService {
 
         const defaults = {
             name: storeName,
-            address: '',
-            phone: '',
+            address: address || '',
+            phone: phone || '',
             email: '',
             website: '',
             taxRate: 0,

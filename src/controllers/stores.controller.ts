@@ -4,16 +4,37 @@ import { generateId, toCamelCase } from '../utils/helpers';
 import { storeInitService } from '../services/store-init.service';
 import { invalidateUserCache } from '../middleware/auth.middleware';
 
+export const checkStoreName = async (req: express.Request, res: express.Response) => {
+  try {
+    const { name } = req.query;
+    if (!name || String(name).trim().length < 2) {
+      return res.status(200).json({ exists: false });
+    }
+    const result = await db.query('SELECT id FROM stores WHERE LOWER(trim(name)) = LOWER($1) LIMIT 1', [String(name).trim()]);
+    return res.status(200).json({ exists: result.rows.length > 0 });
+  } catch (error) {
+    console.error('Error checking store name:', error);
+    return res.status(500).json({ message: 'Error checking store name' });
+  }
+};
+
 export const registerStore = async (req: express.Request, res: express.Response) => {
+
   try {
     const user = req.user!;
-    const { name } = req.body || {};
+    const { name, phone, address } = req.body || {};
 
     if (!user || !user.id) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
     if (!name || String(name).trim().length < 2) {
       return res.status(400).json({ message: 'Store name is required' });
+    }
+
+    // Check for uniqueness
+    const existing = await db.query('SELECT id FROM stores WHERE LOWER(trim(name)) = LOWER($1) LIMIT 1', [String(name).trim()]);
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ message: 'A store with this name already exists. Please choose a different name.' });
     }
 
     const storeId = generateId('store');
@@ -29,7 +50,7 @@ export const registerStore = async (req: express.Request, res: express.Response)
 
       // Initialize the new store with defaults (categories, settings, accounts)
       const businessTypes = req.body.businessTypes || [];
-      await storeInitService.initializeNewStore(storeId, String(name).trim(), businessTypes);
+      await storeInitService.initializeNewStore(storeId, String(name).trim(), businessTypes, phone, address);
 
       await db.query('COMMIT');
     } catch (err) {

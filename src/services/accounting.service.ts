@@ -390,17 +390,17 @@ const recordReturn = async (returnInfo: Return, originalSale: Sale, client?: DBC
     const accountsMap = new Map<string, Account>();
 
     // Calculate original discount ratio to apply to returned items revenue
-    const totalOriginalCartValue = originalSale.cart.reduce((acc, item) => acc + item.price * item.quantity, 0);
+    const totalOriginalCartValue = originalSale.cart.reduce((acc, item: any) => acc + (item.priceAtSale || item.price || 0) * item.quantity, 0);
     const originalDiscountRatio = totalOriginalCartValue > 0 ? (originalSale.subtotal) / totalOriginalCartValue : 1;
 
-    // Calculate total returned value and tax ratio
-    const returnedItemsValue = returnInfo.returnedItems.reduce((acc, item) => {
+    // Calculate total returned "nominal" value (before discount)
+    const nominalReturnedItemsValue = returnInfo.returnedItems.reduce((acc, item) => {
         const saleItem = originalSale.cart.find(si => si.productId === item.productId);
-        const price = saleItem ? saleItem.price : (productMap.get(item.productId)?.price || 0);
+        const price = saleItem ? ((saleItem as any).priceAtSale || (saleItem as any).price || 0) : (productMap.get(item.productId)?.price || 0);
         return acc + price * item.quantity;
     }, 0);
 
-    const taxRatio = originalSale.total > 0 ? originalSale.tax / originalSale.total : 0;
+    const taxRatio = originalSale.total > 0 ? (Number(originalSale.tax) / Number(originalSale.total)) : 0;
     const returnedTax = returnInfo.refundAmount * taxRatio;
     const returnedRevenueTotal = returnInfo.refundAmount - returnedTax;
 
@@ -409,8 +409,17 @@ const recordReturn = async (returnInfo: Return, originalSale: Sale, client?: DBC
         if (!product) continue;
 
         const saleItem = originalSale.cart.find(si => si.productId === item.productId);
-        const price = saleItem ? saleItem.price : (product.price || 0);
-        const itemRevenue = (price * item.quantity) * originalDiscountRatio;
+        const price = saleItem ? ((saleItem as any).priceAtSale || (saleItem as any).price || 0) : (product.price || 0);
+
+        // Calculate item's portion of the revenue reduction.
+        // We use the nominal value * original discount ratio, but then we might need to adjust
+        // if refundAmount differs from calculated value.
+        // For simplicity and balance, we'll calculate the item's weight.
+        const nominalItemValue = price * item.quantity;
+        const weight = nominalReturnedItemsValue > 0 ? (nominalItemValue / nominalReturnedItemsValue) : (1 / returnInfo.returnedItems.length);
+
+        // Amount to debit from this item's revenue account
+        const itemRevenueReduction = returnedRevenueTotal * weight;
 
         let revenueAccount = defaultRevenueAccount;
         if (product.categoryId) {
@@ -425,7 +434,7 @@ const recordReturn = async (returnInfo: Return, originalSale: Sale, client?: DBC
         }
 
         const currentRevenue = revenueByAccount.get(revenueAccount.id) || { account: revenueAccount, amount: 0 };
-        currentRevenue.amount += itemRevenue;
+        currentRevenue.amount += itemRevenueReduction;
         revenueByAccount.set(revenueAccount.id, currentRevenue);
 
         if (item.addToStock) {
@@ -440,7 +449,9 @@ const recordReturn = async (returnInfo: Return, originalSale: Sale, client?: DBC
                     cogsAccount = accountsMap.get(category.cogsAccountId) || defaultCogsAccount;
                 }
             }
-            const itemCogs = (product.costPrice || 0) * item.quantity;
+            // Use historical cost if available
+            const cost = saleItem ? ((saleItem as any).costAtSale || (saleItem as any).costPrice || 0) : (product.costPrice || 0);
+            const itemCogs = cost * item.quantity;
             const currentCogs = cogsByAccount.get(cogsAccount.id) || { account: cogsAccount, amount: 0 };
             currentCogs.amount += itemCogs;
             cogsByAccount.set(cogsAccount.id, currentCogs);
