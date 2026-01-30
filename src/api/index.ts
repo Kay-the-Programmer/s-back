@@ -32,6 +32,8 @@ import recurringExpenseRoutes from './recurring-expenses.routes';
 import logisticsRoutes from './logistics.routes';
 
 
+import whatsappRoutes from './whatsapp.routes';
+
 const router = express.Router();
 
 // --- API Route Definitions ---
@@ -65,6 +67,7 @@ router.use('/verification', verificationRoutes);
 router.use('/payments', paymentRoutes);
 router.use('/recurring-expenses', recurringExpenseRoutes);
 router.use('/logistics', logisticsRoutes);
+router.use('/whatsapp', whatsappRoutes);
 
 
 // A simple health check endpoint

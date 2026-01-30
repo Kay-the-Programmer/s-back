@@ -1337,6 +1337,59 @@ async function initializeDatabase() {
 
         console.log('✅ Logistics tables (couriers, shipments) verified/created');
 
+        // WhatsApp Integration Tables
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS whatsapp_config (
+                store_id TEXT PRIMARY KEY REFERENCES stores(id),
+                phone_number_id TEXT NOT NULL,
+                access_token TEXT NOT NULL,  -- Encrypted
+                business_account_id TEXT,
+                webhook_verify_token TEXT NOT NULL,
+                is_enabled BOOLEAN DEFAULT FALSE,
+                auto_reply_enabled BOOLEAN DEFAULT TRUE,
+                business_hours JSONB,
+                away_message TEXT,
+                greeting_message TEXT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        `);
+
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS whatsapp_conversations (
+                id TEXT PRIMARY KEY,
+                store_id TEXT NOT NULL REFERENCES stores(id),
+                customer_phone TEXT NOT NULL,
+                customer_name TEXT,
+                customer_id TEXT REFERENCES customers(id),
+                status TEXT DEFAULT 'active' CHECK (status IN ('active', 'closed', 'escalated')),
+                last_message_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                metadata JSONB
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_whatsapp_conversations_store_id ON whatsapp_conversations(store_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_whatsapp_conversations_phone ON whatsapp_conversations(customer_phone);`);
+
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS whatsapp_messages (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL REFERENCES whatsapp_conversations(id) ON DELETE CASCADE,
+                store_id TEXT NOT NULL,
+                direction TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound')),
+                message_type TEXT NOT NULL CHECK (message_type IN ('text', 'image', 'document', 'interactive', 'template')),
+                content TEXT,
+                media_url TEXT,
+                whatsapp_message_id TEXT,
+                status TEXT DEFAULT 'sent' CHECK (status IN ('sent', 'delivered', 'read', 'failed')),
+                is_ai_generated BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_conversation_id ON whatsapp_messages(conversation_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_store_id ON whatsapp_messages(store_id);`);
+
+        console.log('✅ WhatsApp integration tables verified/created');
         console.log('✅ Database schema verified/updated successfully');
     } catch (error) {
         console.error('❌ Error initializing database:', error);
