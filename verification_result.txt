@@ -1,0 +1,4 @@
+--- Verifying System Support Config ---
+✅ System store exists.
+✅ System whatsapp_config exists.
+Current Config: {"store_id":"system","phone_number_id":"system_dummy_id","access_token":"system_dummy_token","business_account_id":"system_dummy_biz_id","webhook_verify_token":"system_dummy_verify_token","is_enabled":true,"auto_reply_enabled":true,"business_hours":null,"away_message":null,"greeting_message":"Hello! Welcome to SalePilot Support. How can we help you today?","created_at":"2026-01-30T11:15:49.743Z","updated_at":"2026-01-30T11:15:49.743Z","display_phone_number":"+1234567890"}

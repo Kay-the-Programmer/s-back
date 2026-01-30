@@ -205,3 +205,52 @@ export const sendManualMessage = async (req: express.Request, res: express.Respo
         res.status(500).json({ message: error.message || 'Failed to send message' });
     }
 };
+
+export const getSupportContact = async (req: express.Request, res: express.Response) => {
+    try {
+        // Fetch config for the SYSTEM store (superadmin support)
+        const result = await db.query(
+            'SELECT display_phone_number, greeting_message FROM whatsapp_config WHERE store_id = $1',
+            ['system']
+        );
+
+        if (result.rows.length === 0 || !result.rows[0].display_phone_number) {
+            return res.status(404).json({ message: 'Support contact not configured' });
+        }
+
+        res.json({
+            phone: result.rows[0].display_phone_number,
+            message: result.rows[0].greeting_message
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to fetch support contact' });
+    }
+};
+
+export const updateSupportContact = async (req: express.Request, res: express.Response) => {
+    try {
+        if (req.user?.role !== 'superadmin') {
+            return res.status(403).json({ message: 'Only superadmins can configure support contact' });
+        }
+
+        const { phone, message } = req.body;
+
+        if (!phone) return res.status(400).json({ message: 'Phone number is required' });
+
+        await whatsAppService.updateStoreConfig('system', {
+            store_id: 'system',
+            display_phone_number: phone,
+            greeting_message: message,
+            phone_number_id: 'system_placeholder', // Required by schema constraint likely, but we can check service
+            webhook_verify_token: 'system',
+            access_token: 'system',
+            is_enabled: true,
+            auto_reply_enabled: false
+        });
+
+        res.json({ message: 'Support contact updated successfully' });
+    } catch (error) {
+        console.error('Update support contact error:', error);
+        res.status(500).json({ message: 'Failed to update support contact' });
+    }
+};

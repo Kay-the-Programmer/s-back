@@ -15,6 +15,7 @@ export interface WhatsAppConfig {
     auto_reply_enabled: boolean;
     business_hours?: any;
     away_message?: string;
+    display_phone_number?: string;
     greeting_message?: string;
 }
 
@@ -59,9 +60,9 @@ export class WhatsAppService {
         const query = `
             INSERT INTO whatsapp_config (
                 store_id, phone_number_id, access_token, business_account_id, webhook_verify_token, 
-                is_enabled, auto_reply_enabled, business_hours, away_message, greeting_message, updated_at
+                is_enabled, auto_reply_enabled, business_hours, away_message, greeting_message, display_phone_number, updated_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
             ON CONFLICT (store_id) DO UPDATE SET
                 phone_number_id = COALESCE(EXCLUDED.phone_number_id, whatsapp_config.phone_number_id),
                 access_token = COALESCE(EXCLUDED.access_token, whatsapp_config.access_token),
@@ -72,6 +73,7 @@ export class WhatsAppService {
                 business_hours = COALESCE(EXCLUDED.business_hours, whatsapp_config.business_hours),
                 away_message = COALESCE(EXCLUDED.away_message, whatsapp_config.away_message),
                 greeting_message = COALESCE(EXCLUDED.greeting_message, whatsapp_config.greeting_message),
+                display_phone_number = COALESCE(EXCLUDED.display_phone_number, whatsapp_config.display_phone_number),
                 updated_at = NOW()
         `;
 
@@ -96,6 +98,7 @@ export class WhatsAppService {
         if (config.business_hours) { fields.push(`business_hours = $${idx++}`); values.push(config.business_hours); }
         if (config.away_message !== undefined) { fields.push(`away_message = $${idx++}`); values.push(config.away_message); }
         if (config.greeting_message !== undefined) { fields.push(`greeting_message = $${idx++}`); values.push(config.greeting_message); }
+        if (config.display_phone_number !== undefined) { fields.push(`display_phone_number = $${idx++}`); values.push(config.display_phone_number); }
 
         if (fields.length === 0) return;
 
@@ -125,7 +128,8 @@ export class WhatsAppService {
                 config.auto_reply_enabled,
                 JSON.stringify(config.business_hours) || null,
                 config.away_message || null,
-                config.greeting_message || null
+                config.greeting_message || null,
+                config.display_phone_number || null
             ];
 
             // Note: pg driver treats undefined as null for parameters usually? No, it throws. We must ensure null.
@@ -134,9 +138,9 @@ export class WhatsAppService {
             await db.query(`
                 INSERT INTO whatsapp_config (
                     store_id, phone_number_id, access_token, business_account_id, webhook_verify_token, 
-                    is_enabled, auto_reply_enabled, business_hours, away_message, greeting_message, updated_at
+                    is_enabled, auto_reply_enabled, business_hours, away_message, greeting_message, display_phone_number, updated_at
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
                 ON CONFLICT (store_id) DO UPDATE SET
                     phone_number_id = COALESCE($2, whatsapp_config.phone_number_id),
                     access_token = COALESCE($3, whatsapp_config.access_token),
@@ -147,6 +151,7 @@ export class WhatsAppService {
                     business_hours = COALESCE($8, whatsapp_config.business_hours),
                     away_message = COALESCE($9, whatsapp_config.away_message),
                     greeting_message = COALESCE($10, whatsapp_config.greeting_message),
+                    display_phone_number = COALESCE($11, whatsapp_config.display_phone_number),
                     updated_at = NOW()
             `, cleanParams);
         } else {
