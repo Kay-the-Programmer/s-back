@@ -2,6 +2,7 @@ import express from 'express';
 import db from '../db_client';
 import { toCamelCase } from '../utils/helpers';
 import { accountingService } from '../services/accounting.service';
+import SocketService from '../services/socket.service';
 
 // Helper to filter product fields for public display
 const sanitizeProduct = (product: any) => {
@@ -318,12 +319,32 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
 
         await client.query('COMMIT');
 
-        res.status(201).json({
+        const orderResponse = {
             message: 'Order placed successfully',
             orderId: transactionId,
             total,
-            status: 'pending'
-        });
+            status: 'pending',
+            timestamp,
+            customerId,
+            customerName: customerDetails.name,
+            channel: 'online'
+        };
+
+        // Broadcast to store room for real-time updates in the dashboard
+        try {
+            SocketService.getInstance().emitToStore(storeId, 'new_order', {
+                ...orderResponse,
+                transactionId,
+                paymentStatus: 'unpaid',
+                fulfillmentStatus: 'pending',
+                cart: validItems,
+                customerDetails
+            });
+        } catch (socketError) {
+            console.error('Failed to broadcast new shop order via socket:', socketError);
+        }
+
+        res.status(201).json(orderResponse);
 
     } catch (error) {
         await client.query('ROLLBACK');

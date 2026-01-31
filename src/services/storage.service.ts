@@ -1,120 +1,101 @@
-import { storage, adminStorage } from '../firebase';
-import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import path from 'path';
+import fs from 'fs';
+import crypto from 'crypto';
+
+// Get the uploads directory path
+const UPLOADS_DIR = path.join(__dirname, '../../uploads');
+
+// Ensure uploads directory exists
+const ensureUploadsDirExists = (folder: string) => {
+    const fullPath = path.join(UPLOADS_DIR, folder);
+    if (!fs.existsSync(fullPath)) {
+        fs.mkdirSync(fullPath, { recursive: true });
+    }
+    return fullPath;
+};
 
 export const storageService = {
     async uploadFile(file: Express.Multer.File, folder: string = 'products'): Promise<string> {
-        // Try Admin SDK first (more reliable for backend)
-        if (adminStorage) {
-            try {
-                const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-                const ext = path.extname(file.originalname);
-                const name = path.basename(file.originalname, ext);
-                const filename = `${folder}/${name}-${uniqueSuffix}${ext}`;
-                const fileRef = adminStorage.file(filename);
-
-                await fileRef.save(file.buffer, {
-                    metadata: { contentType: file.mimetype },
-                    resumable: false
-                });
-
-                // Make the file public and get the public URL
-                await fileRef.makePublic();
-
-                // Return the public URL
-                // Note: encoding the filename might be needed if it has special chars, but for now we trust the constructed name.
-                // const publicUrl = `https://storage.googleapis.com/${adminStorage.name}/${filename}`;
-                // Or use the getPublicUrl() method if available, but constructing is reliable for GCS.
-                // Ensure filename is URL encoded for the path part if needed.
-                return `https://storage.googleapis.com/${adminStorage.name}/${encodeURI(filename)}`;
-
-            } catch (error) {
-                console.error('Error uploading file via Admin SDK:', error);
-                // If Admin SDK fails (e.g. bad creds), fall through to Client SDK? 
-                // Better to throw to avoid partial states, users should fix the creds.
-                // But for resilience during migration, let's fall through if it was just a config issue, 
-                // but usually if it's initialized it should work. 
-                // Let's fallback only if adminStorage was null, but here we cover errors too to be safe?
-                // No, let's rely on the Client SDK fallback ONLY if adminStorage is NOT initialized.
-                // If it IS initialized but fails, it's a real error.
-                throw new Error('Failed to upload file via Admin SDK');
-            }
-        }
-
         try {
-            const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+            // Ensure the folder exists
+            const uploadPath = ensureUploadsDirExists(folder);
+
+            // Generate unique filename
+            const uniqueSuffix = Date.now() + '-' + crypto.randomBytes(8).toString('hex');
             const ext = path.extname(file.originalname);
-            const name = path.basename(file.originalname, ext);
+            const name = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9-_]/g, '_');
             const filename = `${name}-${uniqueSuffix}${ext}`;
+            const filePath = path.join(uploadPath, filename);
 
-            const storageRef = ref(storage, `${folder}/${filename}`);
+            // Write the file buffer to disk
+            await fs.promises.writeFile(filePath, file.buffer);
 
-            const metadata = {
-                contentType: file.mimetype,
-            };
+            // Return the URL path that will be served by Express static middleware
+            // This assumes the backend serves /uploads as static files
+            const relativePath = `/uploads/${folder}/${filename}`;
 
-            await uploadBytes(storageRef, file.buffer, metadata);
-            const downloadURL = await getDownloadURL(storageRef);
-
-            return downloadURL;
+            console.log(`[Storage] File uploaded successfully: ${relativePath}`);
+            return relativePath;
         } catch (error) {
-            console.error('Error uploading file to Firebase Storage (Client SDK):', error);
+            console.error('Error uploading file to local storage:', error);
             throw new Error('Failed to upload file');
         }
     },
 
     async deleteFile(fileUrl: string): Promise<void> {
         try {
-            // Handle Google Cloud Storage URLs (Admin SDK)
-            if (fileUrl.includes('storage.googleapis.com')) {
-                // Format: https://storage.googleapis.com/BUCKET_NAME/folder/filename
-                const urlObj = new URL(fileUrl);
-                // pathname is /BUCKET_NAME/folder/filename
-                // We need to strip /BUCKET_NAME/ to get folder/filename
-                // But wait, adminStorage.name is the bucket name.
-
-                const pathParts = urlObj.pathname.split('/');
-                // pathParts[0] is empty, [1] is bucket, rest is path
-                if (pathParts.length >= 3) {
-                    const bucketName = pathParts[1];
-                    // Verify bucket matches? Maybe not necessary if we trust the URL.
-                    const storagePath = decodeURIComponent(pathParts.slice(2).join('/'));
-
-                    if (adminStorage) {
-                        await adminStorage.file(storagePath).delete();
-                        return;
-                    }
-                }
-            }
-
-            // Handle Firebase Storage URLs (Client SDK)
-            // fileUrl is like: https://firebasestorage.googleapis.com/v0/b/bucket-name/o/folder%2Ffilename?alt=...
-
-            const urlObj = new URL(fileUrl);
-            const pathName = urlObj.pathname; // /v0/b/bucket-name/o/folder%2Ffilename
-
-            // Decode the path
-            const decodedPath = decodeURIComponent(pathName);
-
-            // The path in storage starts after /o/
-            const parts = decodedPath.split('/o/');
-            if (parts.length < 2) return; // Not a standard firebase storage URL?
-
-            const storagePath = parts[1];
-
-            if (adminStorage) {
-                // We can use Admin SDK to delete this too!
-                await adminStorage.file(storagePath).delete();
-            } else {
-                const storageRef = ref(storage, storagePath);
-                await deleteObject(storageRef);
-            }
-        } catch (error: any) {
-            // Ignore if object not found
-            if (error.code === 'storage/object-not-found' || error.code === 404) {
+            // Handle empty or invalid URLs
+            if (!fileUrl || typeof fileUrl !== 'string') {
                 return;
             }
-            console.error('Error deleting file from Firebase Storage:', error);
+
+            // Skip URLs that are not local uploads (e.g., external URLs, base64)
+            if (fileUrl.startsWith('data:') || fileUrl.includes('://')) {
+                return;
+            }
+
+            // Protect static assets in checking public/images
+            if (fileUrl.startsWith('/images/')) {
+                console.log('[Storage] Skipping delete - preserving static asset:', fileUrl);
+                return;
+            }
+
+            // Only handle local uploads paths
+            if (!fileUrl.startsWith('/uploads/')) {
+                console.log('[Storage] Skipping delete - not a local upload path:', fileUrl);
+                return;
+            }
+
+            // Convert URL path to file system path
+            // Remove '/uploads/' prefix to get relative path within UPLOADS_DIR
+            const relativePath = fileUrl.replace(/^\/uploads\//, '');
+            // Prevent directory traversal attacks
+            const filePath = path.join(UPLOADS_DIR, relativePath);
+
+            // Verify the resolved path is still within UPLOADS_DIR
+            if (!filePath.startsWith(UPLOADS_DIR)) {
+                console.warn(`[Storage] Security Warning: Attempted directory traversal deletion: ${fileUrl}`);
+                return;
+            }
+
+            // Check if file exists before attempting to delete
+            // Using fs.stat to check existence and ensure it's a file
+            try {
+                const stats = await fs.promises.stat(filePath);
+                if (stats.isFile()) {
+                    await fs.promises.unlink(filePath);
+                    console.log(`[Storage] File deleted successfully: ${fileUrl}`);
+                }
+            } catch (err: any) {
+                if (err.code === 'ENOENT') {
+                    // File already gone, which is fine
+                    console.log(`[Storage] File not found or already deleted: ${fileUrl}`);
+                } else {
+                    throw err;
+                }
+            }
+        } catch (error: any) {
+            console.error('Error deleting file from local storage:', error);
             // Don't throw here to avoid blocking other operations
         }
     }

@@ -6,6 +6,8 @@ import { auditService } from '../services/audit.service';
 import { accountingService } from '../services/accounting.service';
 import LencoService from '../services/lenco.service';
 
+import SocketService from '../services/socket.service';
+
 export const getSales = async (req: express.Request, res: express.Response) => {
     const { startDate, endDate, customerId, paymentStatus } = req.query as { [key: string]: string };
     const pageNum = req.query.page ? parseInt(req.query.page as string, 10) : undefined;
@@ -194,7 +196,16 @@ export const createSale = async (req: express.Request, res: express.Response) =>
 
         await client.query('COMMIT');
 
-        res.status(201).json(toCamelCase({ ...newSale, cart: saleData.cart, payments: finalPayments }));
+        const saleResponse = toCamelCase({ ...newSale, cart: saleData.cart, payments: finalPayments });
+
+        // Broadcast to store room for real-time updates
+        try {
+            SocketService.getInstance().emitToStore(storeId, 'new_sale', saleResponse);
+        } catch (socketError) {
+            console.error('Failed to broadcast new sale via socket:', socketError);
+        }
+
+        res.status(201).json(saleResponse);
 
     } catch (error) {
         await client.query('ROLLBACK');

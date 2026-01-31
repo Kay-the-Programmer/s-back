@@ -34,6 +34,17 @@ class SocketService {
                 console.log(`User ${socket.id} joined sellers room`);
             });
 
+            // Join store room (for real-time updates within a store dashboard)
+            socket.on('join_store', (storeId: string) => {
+                socket.join(`store_${storeId}`);
+                console.log(`User ${socket.id} joined store_${storeId}`);
+            });
+
+            socket.on('leave_store', (storeId: string) => {
+                socket.leave(`store_${storeId}`);
+                console.log(`User ${socket.id} left store_${storeId}`);
+            });
+
             // Location update
             socket.on('send_location', (data: { offerId: string; userId: string; lat: number; lng: number }) => {
                 // Broadcast to everyone in the room except sender
@@ -53,6 +64,10 @@ class SocketService {
 
     public emitToOffer(offerId: string, event: string, data: any) {
         this.io.to(`offer_${offerId}`).emit(event, data);
+    }
+
+    public emitToStore(storeId: string, event: string, data: any) {
+        this.io.to(`store_${storeId}`).emit(event, data);
     }
 
     public broadcastToSellers(event: string, data: any) {
