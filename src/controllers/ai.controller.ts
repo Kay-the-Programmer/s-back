@@ -668,9 +668,11 @@ async function getProjectionContext(storeId: string, goalAmount?: number) {
 
 export const handleChat = async (req: express.Request, res: express.Response) => {
     try {
-        const { query } = req.body;
+        const { query, context } = req.body;
         const user = req.user;
         const storeId = user?.currentStoreId;
+        const currencySymbol = context?.currency?.symbol || '$';
+        const currencyCode = context?.currency?.code || 'USD';
 
         if (!query) return res.status(400).json({ message: 'Query is required' });
         if (!storeId) return res.status(400).json({ message: 'Store context is required' });
@@ -689,17 +691,18 @@ export const handleChat = async (req: express.Request, res: express.Response) =>
             const strategyPrompt = `You are "Salepilot Business Advisor", an elite business consultant helping ${user?.name} maximize their retail business performance.
             
 Current Date: ${new Date().toISOString().split('T')[0]}
+Store Currency: ${currencyCode} (${currencySymbol}) - All monetary values below are in this currency.
 
 DEEP BUSINESS METRICS:
 1. REVENUE HEALTH
-- Month-to-Date: $${strategyContext.recentPerformance.monthRevenue.toFixed(2)} (${strategyContext.recentPerformance.transactionCount} txns)
+- Month-to-Date: ${currencySymbol}${strategyContext.recentPerformance.monthRevenue.toFixed(2)} (${strategyContext.recentPerformance.transactionCount} txns)
 - Growth Trend: ${parseFloat(strategyContext.recentPerformance.revenueGrowth) > 0 ? '📈 UP' : '📉 DOWN'} ${strategyContext.recentPerformance.revenueGrowth}% vs 3-month avg
-- Average Order Value: $${strategyContext.recentPerformance.avgOrderValue} (Trend: ${strategyContext.recentPerformance.aovTrend})
+- Average Order Value: ${currencySymbol}${strategyContext.recentPerformance.avgOrderValue} (Trend: ${strategyContext.recentPerformance.aovTrend})
 
 2. PRODUCT & INVENTORY INTELLIGENCE
 - Best Sellers: ${strategyContext.topProducts.map(p => p.name).join(', ') || 'No data'}
 - Inventory Risk: ${strategyContext.inventoryHealth.low_stock_count} items critical, ${strategyContext.inventoryHealth.dead_stock_candidates} potential dead stock items (unsold > 90 days)
-- Stock Value Efficiency: $${parseFloat(strategyContext.inventoryHealth.inventory_value || '0').toFixed(2)} locked in inventory
+- Stock Value Efficiency: ${currencySymbol}${parseFloat(strategyContext.inventoryHealth.inventory_value || '0').toFixed(2)} locked in inventory
 
 3. CUSTOMER INSIGHTS
 - Acquisition: ${strategyContext.customerGrowth} new customers this month
@@ -712,6 +715,7 @@ QUESTION CATEGORY: ${strategyIntent.strategyType?.toUpperCase() || 'GENERAL STRA
 ADVISOR INSTRUCTIONS:
 - You are speaking to the business owner directly. Be professional, insightful, and encouraging.
 - DO NOT give generic advice. Use the specific metrics above to justify your recommendations.
+- ALWAYS use the store currency (${currencySymbol}) for all monetary figures in your response.
 - Structure your answer as follows:
   1. **Executive Summary**: Direct answer to their question with a key insight.
   2. **Data-Driven Analysis**: "I noticed your retention is..." or "Your average order value is..."
@@ -744,30 +748,30 @@ Your goal is to provide high-value, specific consulting advice that helps them m
         if (intent.needsSales) {
             const salesData = await getSalesContext(storeId, intent.timeframe);
             contextParts.push(`
-SALES DATA:
-- Today: $${parseFloat(salesData.today.total || 0).toFixed(2)} from ${salesData.today.count} transactions (avg: $${parseFloat(salesData.today.avg_value || 0).toFixed(2)})
-- This Week: $${parseFloat(salesData.week.total || 0).toFixed(2)} from ${salesData.week.count} transactions
-- This Month: $${parseFloat(salesData.month.total || 0).toFixed(2)} from ${salesData.month.count} transactions
-- Previous Month: $${parseFloat(salesData.prevMonth.total || 0).toFixed(2)} from ${salesData.prevMonth.count} transactions
-- Channel Split: Online $${parseFloat(salesData.today.online_total || 0).toFixed(2)} | POS $${parseFloat(salesData.today.pos_total || 0).toFixed(2)}
-- Top Products: ${salesData.topProducts.map(p => `${p.name} ($${parseFloat(p.revenue).toFixed(2)}, ${p.units_sold} units)`).join(', ') || 'No sales data'}
-- Payment Methods: ${salesData.paymentMethods.map(pm => `${pm.method}: $${parseFloat(pm.total).toFixed(2)}`).join(', ') || 'No payment data'}
+SALES DATA (Currency: ${currencyCode}):
+- Today: ${currencySymbol}${parseFloat(salesData.today.total || 0).toFixed(2)} from ${salesData.today.count} transactions (avg: ${currencySymbol}${parseFloat(salesData.today.avg_value || 0).toFixed(2)})
+- This Week: ${currencySymbol}${parseFloat(salesData.week.total || 0).toFixed(2)} from ${salesData.week.count} transactions
+- This Month: ${currencySymbol}${parseFloat(salesData.month.total || 0).toFixed(2)} from ${salesData.month.count} transactions
+- Previous Month: ${currencySymbol}${parseFloat(salesData.prevMonth.total || 0).toFixed(2)} from ${salesData.prevMonth.count} transactions
+- Channel Split: Online ${currencySymbol}${parseFloat(salesData.today.online_total || 0).toFixed(2)} | POS ${currencySymbol}${parseFloat(salesData.today.pos_total || 0).toFixed(2)}
+- Top Products: ${salesData.topProducts.map(p => `${p.name} (${currencySymbol}${parseFloat(p.revenue).toFixed(2)}, ${p.units_sold} units)`).join(', ') || 'No sales data'}
+- Payment Methods: ${salesData.paymentMethods.map(pm => `${pm.method}: ${currencySymbol}${parseFloat(pm.total).toFixed(2)}`).join(', ') || 'No payment data'}
             `);
         }
 
         if (intent.needsProjection) {
             const projectionData = await getProjectionContext(storeId, intent.goalAmount);
             let projectionText = `
-SALES PROJECTIONS & FORECASTS:
-- Month-to-Date: $${projectionData.monthToDate.total.toFixed(2)} (${projectionData.monthToDate.daysElapsed} days elapsed)
-- Average Daily Revenue: $${projectionData.averages.daily.toFixed(2)} (this month) | $${projectionData.averages.daily7.toFixed(2)} (last 7 days) | $${projectionData.averages.daily30.toFixed(2)} (last 30 days)
-- Average Weekly Revenue: $${projectionData.averages.weekly.toFixed(2)}
-- Average Monthly Revenue: $${projectionData.averages.monthly.toFixed(2)}
-- Projected Month-End Revenue: $${projectionData.projectedMonthEnd.toFixed(2)}
+SALES PROJECTIONS & FORECASTS (Currency: ${currencyCode}):
+- Month-to-Date: ${currencySymbol}${projectionData.monthToDate.total.toFixed(2)} (${projectionData.monthToDate.daysElapsed} days elapsed)
+- Average Daily Revenue: ${currencySymbol}${projectionData.averages.daily.toFixed(2)} (this month) | ${currencySymbol}${projectionData.averages.daily7.toFixed(2)} (last 7 days) | ${currencySymbol}${projectionData.averages.daily30.toFixed(2)} (last 30 days)
+- Average Weekly Revenue: ${currencySymbol}${projectionData.averages.weekly.toFixed(2)}
+- Average Monthly Revenue: ${currencySymbol}${projectionData.averages.monthly.toFixed(2)}
+- Projected Month-End Revenue: ${currencySymbol}${projectionData.projectedMonthEnd.toFixed(2)}
 - Growth Rate: ${projectionData.growthRate > 0 ? '+' : ''}${projectionData.growthRate.toFixed(1)}% (7-day vs previous 23-day average)`;
 
             if (projectionData.goalProjection) {
-                projectionText += `\n- Goal: $${projectionData.goalProjection.goalAmount.toLocaleString()}
+                projectionText += `\n- Goal: ${currencySymbol}${projectionData.goalProjection.goalAmount.toLocaleString()}
 - Time to Reach Goal: ${projectionData.goalProjection.daysToGoal} days (${projectionData.goalProjection.weeksToGoal} weeks / ${projectionData.goalProjection.monthsToGoal} months)
 - Estimated Date: ${projectionData.goalProjection.estimatedDate}`;
             }
@@ -779,7 +783,7 @@ SALES PROJECTIONS & FORECASTS:
             contextParts.push(`
 INVENTORY DATA:
 - Total Products: ${inventoryData.summary.total_products}
-- Inventory Value: $${parseFloat(inventoryData.summary.inventory_value || 0).toFixed(2)}
+- Inventory Value: ${currencySymbol}${parseFloat(inventoryData.summary.inventory_value || 0).toFixed(2)}
 - Total Units: ${parseFloat(inventoryData.summary.total_units || 0).toFixed(0)}
 - Low Stock Items: ${inventoryData.summary.low_stock_count} products
 - Out of Stock: ${inventoryData.summary.out_of_stock_count} products
@@ -793,8 +797,8 @@ INVENTORY DATA:
 CUSTOMER DATA:
 - Total Customers: ${customerData.summary.total_customers}
 - New Customers (30 days): ${customerData.newCustomersCount}
-- Total Store Credit Outstanding: $${parseFloat(customerData.summary.total_store_credit || 0).toFixed(2)}
-- Top Customers: ${customerData.topCustomers.map(c => `${c.name} ($${parseFloat(c.total_spent || 0).toFixed(2)}, ${c.purchase_count} purchases)`).join(', ') || 'No customer data'}
+- Total Store Credit Outstanding: ${currencySymbol}${parseFloat(customerData.summary.total_store_credit || 0).toFixed(2)}
+- Top Customers: ${customerData.topCustomers.map(c => `${c.name} (${currencySymbol}${parseFloat(c.total_spent || 0).toFixed(2)}, ${c.purchase_count} purchases)`).join(', ') || 'No customer data'}
             `);
         }
 
@@ -802,11 +806,11 @@ CUSTOMER DATA:
             const financialData = await getFinancialContext(storeId);
             contextParts.push(`
 FINANCIAL DATA (Last 30 Days):
-- Revenue: $${financialData.revenue.toFixed(2)}
-- COGS: $${financialData.cogs.toFixed(2)}
-- Gross Profit: $${financialData.grossProfit.toFixed(2)}
+- Revenue: ${currencySymbol}${financialData.revenue.toFixed(2)}
+- COGS: ${currencySymbol}${financialData.cogs.toFixed(2)}
+- Gross Profit: ${currencySymbol}${financialData.grossProfit.toFixed(2)}
 - Profit Margin: ${financialData.profitMargin}
-- Accounts Receivable: $${financialData.accountsReceivable.toFixed(2)}
+- Accounts Receivable: ${currencySymbol}${financialData.accountsReceivable.toFixed(2)}
             `);
         }
 
@@ -814,7 +818,7 @@ FINANCIAL DATA (Last 30 Days):
             const ordersData = await getOrdersContext(storeId);
             contextParts.push(`
 PURCHASE ORDERS:
-- Pending Orders: ${ordersData.pendingOrders.map(po => `PO ${po.po_number} - ${po.supplier_name} ($${parseFloat(po.total).toFixed(2)}, ${po.status})`).join(', ') || 'No pending orders'}
+- Pending Orders: ${ordersData.pendingOrders.map(po => `PO ${po.po_number} - ${po.supplier_name} (${currencySymbol}${parseFloat(po.total).toFixed(2)}, ${po.status})`).join(', ') || 'No pending orders'}
             `);
         }
 
@@ -823,7 +827,7 @@ PURCHASE ORDERS:
             contextParts.push(`
 RETURNS DATA (Last 30 Days):
 - Total Returns: ${returnsData.summary.return_count}
-- Total Refunded: $${parseFloat(returnsData.summary.total_refunded || 0).toFixed(2)}
+- Total Refunded: ${currencySymbol}${parseFloat(returnsData.summary.total_refunded || 0).toFixed(2)}
 - Most Returned: ${returnsData.topReturned.map(r => `${r.product_name} (${parseFloat(r.return_count).toFixed(0)}x)`).join(', ') || 'No returns'}
             `);
         }
@@ -833,8 +837,8 @@ RETURNS DATA (Last 30 Days):
             const salesData = await getSalesContext(storeId, 'today');
             const inventoryData = await getInventoryContext(storeId);
             contextParts.push(`
-QUICK OVERVIEW:
-- Today's Sales: $${parseFloat(salesData.today.total || 0).toFixed(2)} (${salesData.today.count} transactions)
+QUICK OVERVIEW (Currency: ${currencyCode}):
+- Today's Sales: ${currencySymbol}${parseFloat(salesData.today.total || 0).toFixed(2)} (${salesData.today.count} transactions)
 - Low Stock Items: ${inventoryData.summary.low_stock_count}
             `);
         }
@@ -861,7 +865,7 @@ INSTRUCTIONS:
 - Be concise but informative (2-4 sentences unless detailed analysis is requested)
 - Use business terminology appropriately
 - If data is missing or zero, acknowledge it naturally and explain limitations
-- Format numbers clearly with $ for currency and use thousands separators for large numbers
+- Format numbers clearly with ${currencySymbol} for currency and use thousands separators for large numbers
 - For projections with limited data, mention the confidence level or recommend collecting more data
 - End with a helpful suggestion or next action if appropriate`;
 
