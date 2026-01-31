@@ -977,15 +977,18 @@ CRITICAL TEXT ELEMENTS TO RENDER ACCURATELY:
 - Shop Name: "${displayShopName}" (large, prominent, 3D text)
 - Price: "${currencySymbol} ${price}" (clear, readable)
 ${offer ? `- Offer: "${offer}" (badge/banner style)` : ''}
-${customText ? `- Tagline: "${customText}"` : ''}`;
+${customText ? `- Tagline: "${customText}"` : ''}
+
+GENERATION PARAMETERS:
+- Aspect Ratio: ${format === 'portrait' ? "9:16" : "1:1"}
+- Number of Images: 1`;
 
             const result = await imageModel.generateContent({
                 contents: [{ role: 'user', parts: [{ text: enhancedImagePrompt }] }],
                 // @ts-ignore - GenerationConfig for image models
                 generationConfig: {
-                    aspect_ratio: format === 'portrait' ? "9:16" : "1:1",
-                    number_of_images: 1,
-                    // safe: true // Optional: ensuring safety settings are respected
+                    // aspect_ratio and number_of_images are not supported in GenerationConfig for this API version
+                    // relying on prompt instructions
                 } as any
             });
 
@@ -998,6 +1001,9 @@ ${customText ? `- Tagline: "${customText}"` : ''}`;
                 base64Image = `data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}`;
                 usedModel = "nano-banana-pro"; // Updated internal name reference
             }
+
+            // Log success for debugging
+            console.log("Imagen generation successful");
         } catch (imagenError: any) {
             console.warn("Imagen generation failed, using canvas fallback:", imagenError.message);
             // Continue to fallback - return visual prompt for canvas-based generation

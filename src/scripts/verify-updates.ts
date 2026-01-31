@@ -32,7 +32,7 @@ async function verifyUpdates() {
             generationConfig: {
                 aspectRatio: "1:1",
                 sampleCount: 1
-            }
+            } as any
         });
 
         const response = await imageResult.response;
