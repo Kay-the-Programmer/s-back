@@ -1,5 +1,6 @@
 import express from 'express';
 import { listStores, updateStore, createNotification, listSystemNotifications, getNotificationStatus, listRevenueSummary, listSubscriptionPayments, recordSubscriptionPayment, getStoreDetails, sendStoreNotification } from '../controllers/superadmin.controller';
+import { handleSuperAdminChat } from '../controllers/ai.controller';
 import { protect, superAdminOnly } from '../middleware/auth.middleware';
 
 const router = express.Router();
@@ -22,4 +23,8 @@ router.get('/revenue/summary', protect, superAdminOnly, listRevenueSummary);
 router.get('/revenue/payments', protect, superAdminOnly, listSubscriptionPayments);
 router.post('/revenue/payments', protect, superAdminOnly, recordSubscriptionPayment);
 
+// AI features
+router.post('/ai/chat', protect, superAdminOnly, handleSuperAdminChat);
+
 export default router;
+

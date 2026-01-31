@@ -666,6 +666,58 @@ async function getProjectionContext(storeId: string, goalAmount?: number) {
     };
 }
 
+
+// Helper for SuperAdmin Global Context
+async function getGlobalContext() {
+    const today = new Date();
+    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0];
+
+    // Platform Revenue (Subscriptions)
+    const subRevenue = await db.query(
+        `SELECT 
+            COALESCE(SUM(amount), 0) as total_revenue,
+            (SELECT COALESCE(SUM(amount), 0) FROM subscription_payments WHERE DATE(paid_at) >= $1) as month_revenue
+         FROM subscription_payments`,
+        [monthStart]
+    );
+
+    // Platform Metrics (Stores & Users)
+    const metrics = await db.query(`
+        SELECT 
+            (SELECT COUNT(*) FROM stores) as total_stores,
+            (SELECT COUNT(*) FROM stores WHERE status = 'active') as active_stores,
+            (SELECT COUNT(*) FROM users) as total_users,
+            (SELECT COUNT(*) FROM stores WHERE DATE(created_at) >= $1) as new_stores_month
+        `, [monthStart]
+    );
+
+    // Global GMV (All Stores Sales)
+    const gmv = await db.query(`
+        SELECT 
+            COALESCE(SUM(total), 0) as total_gmv,
+            (SELECT COALESCE(SUM(total), 0) FROM sales WHERE DATE("timestamp") >= $1) as month_gmv
+        FROM sales`,
+        [monthStart]
+    );
+
+    return {
+        revenue: {
+            total: parseFloat(subRevenue.rows[0].total_revenue || 0),
+            month: parseFloat(subRevenue.rows[0].month_revenue || 0)
+        },
+        platform: {
+            totalStores: parseInt(metrics.rows[0].total_stores || 0),
+            activeStores: parseInt(metrics.rows[0].active_stores || 0),
+            totalUsers: parseInt(metrics.rows[0].total_users || 0),
+            newStoresMonth: parseInt(metrics.rows[0].new_stores_month || 0)
+        },
+        gmv: {
+            total: parseFloat(gmv.rows[0].total_gmv || 0),
+            month: parseFloat(gmv.rows[0].month_gmv || 0)
+        }
+    };
+}
+
 export const handleChat = async (req: express.Request, res: express.Response) => {
     try {
         const { query, context } = req.body;
@@ -675,11 +727,58 @@ export const handleChat = async (req: express.Request, res: express.Response) =>
         const currencyCode = context?.currency?.code || 'USD';
 
         if (!query) return res.status(400).json({ message: 'Query is required' });
-        if (!storeId) return res.status(400).json({ message: 'Store context is required' });
+
+        // Allow SuperAdmin to proceed without storeId
+        if (!storeId && user?.role !== 'superadmin') {
+            return res.status(400).json({ message: 'Store context is required' });
+        }
 
         if (!process.env.API_KEY) {
             return res.status(500).json({ message: 'AI service is not configured on the server.' });
         }
+
+        // ==========================================
+        // SUPERADMIN / PLATFORM LEVEL CHAT
+        // ==========================================
+        if (user?.role === 'superadmin' && !storeId) {
+            const globalContext = await getGlobalContext();
+
+            const systemPrompt = `You are "SalePilot Core", the Central Intelligence for the SaaS Platform.
+            You are speaking to a SuperAdmin (${user.name}).
+            
+            PLATFORM STATUS (REAL-TIME):
+            - Active Stores: ${globalContext.platform.activeStores} / ${globalContext.platform.totalStores} Total
+            - Total Users: ${globalContext.platform.totalUsers}
+            - New Stores (This Month): ${globalContext.platform.newStoresMonth}
+            
+            FINANCIALS (SaaS Revenue):
+            - Total Revenue: $${globalContext.revenue.total.toFixed(2)}
+            - This Month: $${globalContext.revenue.month.toFixed(2)}
+            
+            GLOBAL GMV (Aggregate Merchants Sales):
+            - Total Processed: $${globalContext.gmv.total.toFixed(2)}
+            - This Month: $${globalContext.gmv.month.toFixed(2)}
+            
+            USER QUESTION: "${query}"
+            
+            INSTRUCTIONS:
+            - Provide high-level strategic insights about the platform's health.
+            - Focus on growth, revenue, and system scale.
+            - If asked about specific store details, advise them to switch to that store's context.
+            - Be concise, professional, data-driven, and "efficient".`;
+
+            const model = genAI.getGenerativeModel({
+                model: "gemini-3-flash-preview",
+                generationConfig: {
+                    temperature: 0.7,
+                    maxOutputTokens: 2000,
+                }
+            });
+
+            const result = await model.generateContent(systemPrompt);
+            return res.json({ response: result.response.text() });
+        }
+
 
         // Check if this is a strategy question first
         const strategyIntent = analyzeStrategyIntent(query);
@@ -1045,4 +1144,354 @@ GENERATION PARAMETERS:
 // We can delete the export or just leave it empty/warning effectively removing usage.
 export const proxyImage = async (req: express.Request, res: express.Response) => {
     res.status(410).send("Proxy deprecated. Using native Google Imagen.");
+};
+
+// ============================================================
+// SUPERADMIN AI FUNCTIONS - Platform-Wide Intelligence
+// ============================================================
+
+async function getSuperAdminPlatformContext() {
+    const today = new Date().toISOString().split('T')[0];
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    // Total stores and status breakdown
+    const storeStats = await db.query(
+        `SELECT 
+            COUNT(*) as total,
+            COUNT(CASE WHEN status = 'active' THEN 1 END) as active,
+            COUNT(CASE WHEN status = 'inactive' THEN 1 END) as inactive,
+            COUNT(CASE WHEN status = 'suspended' THEN 1 END) as suspended,
+            COUNT(CASE WHEN subscription_status = 'trial' THEN 1 END) as on_trial,
+            COUNT(CASE WHEN subscription_status = 'active' THEN 1 END) as subscribed,
+            COUNT(CASE WHEN subscription_status = 'past_due' THEN 1 END) as past_due
+         FROM stores`
+    );
+
+    // Platform-wide revenue (today, week, month)
+    const revenueToday = await db.query(
+        `SELECT COALESCE(SUM(total), 0) as total, COUNT(*) as count FROM sales WHERE DATE("timestamp") = $1`,
+        [today]
+    );
+
+    const revenueWeek = await db.query(
+        `SELECT COALESCE(SUM(total), 0) as total, COUNT(*) as count FROM sales WHERE DATE("timestamp") >= $1`,
+        [weekAgo]
+    );
+
+    const revenueMonth = await db.query(
+        `SELECT COALESCE(SUM(total), 0) as total, COUNT(*) as count FROM sales WHERE DATE("timestamp") >= $1`,
+        [monthAgo]
+    );
+
+    // Top performing stores this month
+    // Top performing stores this month
+    const topStores = await db.query(
+        `SELECT 
+            st.id,
+            st.name as store_name,
+            COALESCE(SUM(s.total), 0) as revenue,
+            COUNT(*) as transactions
+         FROM sales s
+         JOIN stores st ON s.store_id = st.id
+         WHERE DATE(s."timestamp") >= $1
+         GROUP BY st.id, st.name
+         ORDER BY revenue DESC
+         LIMIT 5`,
+        [monthAgo]
+    );
+
+    // New stores this month
+    const newStores = await db.query(
+        `SELECT COUNT(*) as count FROM stores WHERE DATE(created_at) >= $1`,
+        [monthAgo]
+    );
+
+    // Total users across platform
+    const userStats = await db.query(
+        `SELECT COUNT(*) as total FROM users`
+    );
+
+    return {
+        stores: storeStats.rows[0],
+        revenue: {
+            today: { total: parseFloat(revenueToday.rows[0].total || 0), count: revenueToday.rows[0].count },
+            week: { total: parseFloat(revenueWeek.rows[0].total || 0), count: revenueWeek.rows[0].count },
+            month: { total: parseFloat(revenueMonth.rows[0].total || 0), count: revenueMonth.rows[0].count }
+        },
+        topStores: topStores.rows,
+        newStoresThisMonth: newStores.rows[0].count,
+        totalUsers: userStats.rows[0].total
+    };
+}
+
+async function getSuperAdminStoreHealthContext() {
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    // Stores with declining revenue (comparison of recent week vs previous 3 weeks)
+    const decliningStores = await db.query(
+        `WITH recent_week AS (
+            SELECT store_id, COALESCE(SUM(total), 0) as revenue
+            FROM sales WHERE DATE("timestamp") >= $1
+            GROUP BY store_id
+        ),
+        prev_weeks AS (
+            SELECT store_id, COALESCE(SUM(total), 0) / 3 as avg_revenue
+            FROM sales WHERE DATE("timestamp") >= $2 AND DATE("timestamp") < $1
+            GROUP BY store_id
+        )
+        SELECT st.id, st.name, rw.revenue as recent_revenue, pw.avg_revenue as prev_avg,
+               CASE WHEN pw.avg_revenue > 0 THEN 
+                   ROUND(((rw.revenue - pw.avg_revenue) / pw.avg_revenue * 100)::numeric, 1) 
+               ELSE 0 END as change_pct
+        FROM stores st
+        LEFT JOIN recent_week rw ON st.id = rw.store_id
+        LEFT JOIN prev_weeks pw ON st.id = pw.store_id
+        WHERE st.status = 'active' 
+          AND pw.avg_revenue > 0 
+          AND rw.revenue < pw.avg_revenue * 0.7
+        ORDER BY change_pct ASC
+        LIMIT 5`,
+        [weekAgo, monthAgo]
+    );
+
+    // Stores at risk (past-due subscriptions, or no activity in 7 days)
+    const atRiskStores = await db.query(
+        `SELECT st.id, st.name, st.subscription_status, st.status,
+                (SELECT MAX(s."timestamp") FROM sales s WHERE s.store_id = st.id) as last_sale
+         FROM stores st
+         WHERE st.subscription_status = 'past_due'
+            OR (st.status = 'active' AND st.id NOT IN (
+                SELECT DISTINCT store_id FROM sales WHERE DATE("timestamp") >= $1
+            ))
+         LIMIT 10`,
+        [weekAgo]
+    );
+
+    // Recently onboarded stores (last 30 days) with their performance
+    const newStorePerformance = await db.query(
+        `SELECT st.id, st.name, st.created_at,
+                COALESCE(SUM(s.total), 0) as revenue,
+                COUNT(s.transaction_id) as transactions
+         FROM stores st
+         LEFT JOIN sales s ON st.id = s.store_id
+         WHERE DATE(st.created_at) >= $1
+         GROUP BY st.id, st.name, st.created_at
+         ORDER BY st.created_at DESC
+         LIMIT 10`,
+        [monthAgo]
+    );
+
+    return {
+        decliningStores: decliningStores.rows,
+        atRiskStores: atRiskStores.rows,
+        newStorePerformance: newStorePerformance.rows
+    };
+}
+
+async function getSuperAdminRevenueTrendsContext() {
+    const today = new Date();
+    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0];
+    const prevMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1).toISOString().split('T')[0];
+    const prevMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0).toISOString().split('T')[0];
+
+    // Monthly Recurring Revenue (MRR) from subscriptions
+    const mrrData = await db.query(
+        `SELECT 
+            COUNT(CASE WHEN subscription_status = 'active' THEN 1 END) as active_subscriptions,
+            COUNT(CASE WHEN subscription_status = 'trial' THEN 1 END) as trials
+         FROM stores WHERE status = 'active'`
+    );
+
+    // Subscription tier distribution
+    const tierDistribution = await db.query(
+        `SELECT 
+            COALESCE(subscription_plan, 'free') as plan,
+            COUNT(*) as count
+         FROM stores
+         GROUP BY subscription_plan
+         ORDER BY count DESC`
+    );
+
+    // Monthly revenue comparison
+    const currentMonthRevenue = await db.query(
+        `SELECT COALESCE(SUM(total), 0) as total FROM sales WHERE DATE("timestamp") >= $1`,
+        [monthStart]
+    );
+
+    const prevMonthRevenue = await db.query(
+        `SELECT COALESCE(SUM(total), 0) as total FROM sales WHERE DATE("timestamp") >= $1 AND DATE("timestamp") <= $2`,
+        [prevMonthStart, prevMonthEnd]
+    );
+
+    // Calculate growth rate
+    const currentRev = parseFloat(currentMonthRevenue.rows[0].total || 0);
+    const prevRev = parseFloat(prevMonthRevenue.rows[0].total || 0);
+    const growthRate = prevRev > 0 ? ((currentRev - prevRev) / prevRev * 100).toFixed(1) : '0';
+
+    // Daily revenue trend for the last 7 days
+    const dailyTrend = await db.query(
+        `SELECT DATE("timestamp") as date, COALESCE(SUM(total), 0) as revenue, COUNT(*) as transactions
+         FROM sales
+         WHERE DATE("timestamp") >= NOW() - INTERVAL '7 days'
+         GROUP BY DATE("timestamp")
+         ORDER BY date ASC`
+    );
+
+    return {
+        mrr: {
+            activeSubscriptions: mrrData.rows[0].active_subscriptions,
+            trials: mrrData.rows[0].trials
+        },
+        tierDistribution: tierDistribution.rows,
+        monthlyComparison: {
+            current: currentRev,
+            previous: prevRev,
+            growthRate: `${growthRate}%`
+        },
+        dailyTrend: dailyTrend.rows
+    };
+}
+
+// Analyze superadmin-specific query intent
+function analyzeSuperAdminQueryIntent(query: string): {
+    needsPlatformOverview: boolean;
+    needsStoreHealth: boolean;
+    needsRevenueTrends: boolean;
+    needsStoreDetails: boolean;
+    isActionRequest: boolean;
+} {
+    const lowerQuery = query.toLowerCase();
+
+    const platformKeywords = ['platform', 'overview', 'dashboard', 'summary', 'total', 'all stores', 'overall'];
+    const healthKeywords = ['health', 'risk', 'declining', 'attention', 'problem', 'issue', 'struggling', 'inactive', 'past due'];
+    const revenueKeywords = ['revenue', 'mrr', 'subscription', 'growth', 'trend', 'income', 'money', 'earnings'];
+    const storeKeywords = ['store', 'which store', 'top store', 'best store', 'worst store', 'new store'];
+    const actionKeywords = ['how to', 'what should', 'recommend', 'improve', 'grow', 'fix', 'strategy', 'action'];
+
+    return {
+        needsPlatformOverview: platformKeywords.some(kw => lowerQuery.includes(kw)) || lowerQuery.includes('overview'),
+        needsStoreHealth: healthKeywords.some(kw => lowerQuery.includes(kw)),
+        needsRevenueTrends: revenueKeywords.some(kw => lowerQuery.includes(kw)),
+        needsStoreDetails: storeKeywords.some(kw => lowerQuery.includes(kw)),
+        isActionRequest: actionKeywords.some(kw => lowerQuery.includes(kw))
+    };
+}
+
+export const handleSuperAdminChat = async (req: express.Request, res: express.Response) => {
+    try {
+        const { query } = req.body;
+        const user = req.user;
+
+        if (!query) {
+            return res.status(400).json({ message: 'Query is required' });
+        }
+
+        if (!process.env.API_KEY) {
+            return res.status(500).json({ message: 'AI service is not configured on the server.' });
+        }
+
+        // Analyze what data the superadmin is asking for
+        const intent = analyzeSuperAdminQueryIntent(query);
+
+        // Gather relevant context
+        const contextParts: string[] = [];
+
+        // Always include platform overview for superadmin queries
+        const platformContext = await getSuperAdminPlatformContext();
+        contextParts.push(`
+PLATFORM OVERVIEW:
+- Total Stores: ${platformContext.stores.total} (Active: ${platformContext.stores.active}, Inactive: ${platformContext.stores.inactive}, Suspended: ${platformContext.stores.suspended})
+- Subscription Status: ${platformContext.stores.subscribed} subscribed, ${platformContext.stores.on_trial} on trial, ${platformContext.stores.past_due} past due
+- Total Users: ${platformContext.totalUsers}
+- New Stores This Month: ${platformContext.newStoresThisMonth}
+
+PLATFORM REVENUE:
+- Today: $${platformContext.revenue.today.total.toFixed(2)} (${platformContext.revenue.today.count} transactions)
+- This Week: $${platformContext.revenue.week.total.toFixed(2)} (${platformContext.revenue.week.count} transactions)
+- This Month: $${platformContext.revenue.month.total.toFixed(2)} (${platformContext.revenue.month.count} transactions)
+
+TOP PERFORMING STORES (This Month):
+${platformContext.topStores.map((s: any, i: number) => `${i + 1}. ${s.store_name}: $${parseFloat(s.revenue).toFixed(2)} (${s.transactions} transactions)`).join('\n') || 'No sales data available'}
+        `);
+
+        if (intent.needsStoreHealth || intent.isActionRequest) {
+            const healthContext = await getSuperAdminStoreHealthContext();
+            contextParts.push(`
+STORE HEALTH ANALYSIS:
+Declining Stores (revenue down >30% vs previous weeks):
+${healthContext.decliningStores.length > 0
+                    ? healthContext.decliningStores.map((s: any) => `- ${s.name}: ${s.change_pct}% decline (was $${parseFloat(s.prev_avg).toFixed(2)}/week, now $${parseFloat(s.recent_revenue).toFixed(2)}/week)`).join('\n')
+                    : '- No significantly declining stores detected'}
+
+At-Risk Stores (past-due or inactive):
+${healthContext.atRiskStores.length > 0
+                    ? healthContext.atRiskStores.map((s: any) => `- ${s.name}: ${s.subscription_status} subscription, last sale: ${s.last_sale ? new Date(s.last_sale).toLocaleDateString() : 'Never'}`).join('\n')
+                    : '- No at-risk stores detected'}
+
+New Store Performance (Last 30 Days):
+${healthContext.newStorePerformance.map((s: any) => `- ${s.name}: $${parseFloat(s.revenue).toFixed(2)} revenue, ${s.transactions} transactions since ${new Date(s.created_at).toLocaleDateString()}`).join('\n') || 'No new stores'}
+            `);
+        }
+
+        if (intent.needsRevenueTrends) {
+            const revenueContext = await getSuperAdminRevenueTrendsContext();
+            contextParts.push(`
+REVENUE TRENDS:
+- Active Subscriptions: ${revenueContext.mrr.activeSubscriptions}
+- Free Trials: ${revenueContext.mrr.trials}
+- Month-over-Month Growth: ${revenueContext.monthlyComparison.growthRate}
+- Current Month: $${revenueContext.monthlyComparison.current.toFixed(2)}
+- Previous Month: $${revenueContext.monthlyComparison.previous.toFixed(2)}
+
+Subscription Tier Distribution:
+${revenueContext.tierDistribution.map((t: any) => `- ${t.plan}: ${t.count} stores`).join('\n')}
+
+Daily Revenue (Last 7 Days):
+${revenueContext.dailyTrend.map((d: any) => `- ${new Date(d.date).toLocaleDateString()}: $${parseFloat(d.revenue).toFixed(2)}`).join('\n')}
+            `);
+        }
+
+        // Build the prompt
+        const systemPrompt = `You are "SalePilot Platform Intelligence", an elite AI advisor for the SalePilot platform administrator.
+        
+Current Date: ${new Date().toISOString().split('T')[0]}
+Administrator: ${user?.name || 'SuperAdmin'}
+
+${contextParts.join('\n')}
+
+USER QUESTION: "${query}"
+
+ADVISOR INSTRUCTIONS:
+- You are speaking directly to the platform administrator who manages ALL stores on the SalePilot platform.
+- Provide insights based on the REAL platform data above.
+- Be concise, professional, and actionable.
+- Use specific numbers and store names when available.
+- For strategy questions, provide 2-3 prioritized action items.
+- FORMATTING: Use markdown with **bold** for key metrics, bullet points for lists, and emojis for visual clarity.
+- Keep responses focused and under 400 words unless detailed analysis is requested.
+
+Your goal is to help the platform administrator make data-driven decisions to grow the platform and support store owners.`;
+
+        const model = genAI.getGenerativeModel({
+            model: "gemini-3-flash-preview",
+            generationConfig: {
+                temperature: 0.7,
+                maxOutputTokens: 4096,
+            }
+        });
+
+        const result = await model.generateContent(systemPrompt);
+        return res.json({ response: result.response.text() });
+
+    } catch (error: any) {
+        console.error("SuperAdmin AI Chat Error:", error);
+
+        if (error.status === 429 || (error.message && error.message.includes('429'))) {
+            return res.status(429).json({ message: 'AI quota exceeded. Please try again later.' });
+        }
+
+        res.status(500).json({ message: 'Failed to process AI request. Please try again.' });
+    }
 };
