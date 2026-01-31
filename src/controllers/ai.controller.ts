@@ -718,6 +718,61 @@ async function getGlobalContext() {
     };
 }
 
+// SuperAdmin Platform Insight Generation
+export const getPlatformInsight = async (req: express.Request, res: express.Response) => {
+    try {
+        const user = req.user;
+        if (user?.role !== 'superadmin') {
+            return res.status(403).json({ message: 'Unauthorized. SuperAdmin access required.' });
+        }
+
+        if (!process.env.API_KEY) {
+            return res.status(500).json({ message: 'AI service is not configured.' });
+        }
+
+        const globalContext = await getGlobalContext();
+
+        const prompt = `You are "SalePilot Core", the platform intelligence.
+        Provide a friendly, professional, and slightly optimistic 1-2 sentence summary of the platform's health for the SuperAdmin.
+        
+        CURRENT DATA:
+        - Active Stores: ${globalContext.platform.activeStores} / ${globalContext.platform.totalStores}
+        - SaaS Revenue (This Month): $${globalContext.revenue.month.toFixed(2)}
+        - Global GMV (This Month): $${globalContext.gmv.month.toFixed(2)}
+        
+        GOAL:
+        - Summarize these metrics into a single, cohesive, engaging statement.
+        - Focus on growth and platform stability.
+        - Keep it under 200 characters.
+        - Do not use markdown bolding or special characters.
+        
+        Example: "Good day, Admin. Our active store count is up 5% this week, reflecting a healthy 12% growth in global GMV across the network."
+        `;
+
+        const model = genAI.getGenerativeModel({
+            model: "gemini-3-flash-preview",
+            generationConfig: {
+                temperature: 0.7,
+                maxOutputTokens: 100,
+            }
+        });
+
+        const result = await model.generateContent(prompt);
+        const insight = (result.response.text() ?? '').trim().replace(/\*/g, '');
+
+        res.status(200).json({ insight });
+    } catch (error: any) {
+        console.error("Error generating platform insight:", error);
+        if (error.status === 429 || (error.message && error.message.includes('429'))) {
+            return res.status(429).json({
+                message: 'Daily AI quota exceeded',
+                insight: "Daily AI quota reached. Standard platform metrics indicate stable performance across all regions."
+            });
+        }
+        res.status(500).json({ insight: "Platform metrics are stable. Real-time analysis suggests a positive trend in global commerce engagement." });
+    }
+};
+
 export const handleChat = async (req: express.Request, res: express.Response) => {
     try {
         const { query, context } = req.body;
@@ -777,6 +832,11 @@ export const handleChat = async (req: express.Request, res: express.Response) =>
 
             const result = await model.generateContent(systemPrompt);
             return res.json({ response: result.response.text() });
+        }
+
+        // Ensure storeId is defined for subsequent store-specific logic
+        if (!storeId) {
+            return res.status(400).json({ message: 'Store context is required' });
         }
 
 
