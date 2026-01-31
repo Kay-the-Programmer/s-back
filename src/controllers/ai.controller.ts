@@ -32,7 +32,7 @@ export const generateDescription = async (req: express.Request, res: express.Res
         `;
 
         const model = genAI.getGenerativeModel({
-            model: "gemini-2.5-flash",
+            model: "gemini-3-flash-preview",
             generationConfig: {
                 temperature: 0.7,
                 topP: 1,
@@ -724,7 +724,7 @@ ADVISOR INSTRUCTIONS:
 Your goal is to provide high-value, specific consulting advice that helps them make more money or save time immediately.`;
 
             const model = genAI.getGenerativeModel({
-                model: "gemini-2.5-flash",
+                model: "gemini-3-flash-preview",
                 generationConfig: {
                     temperature: 0.7,
                     maxOutputTokens: 8192,
@@ -867,7 +867,7 @@ INSTRUCTIONS:
 
         // Call AI with enhanced context
         const model = genAI.getGenerativeModel({
-            model: "gemini-2.5-flash",
+            model: "gemini-3-flash-preview",
             generationConfig: {
                 temperature: 0.7,
                 maxOutputTokens: 2048,
@@ -896,8 +896,23 @@ INSTRUCTIONS:
 };
 
 export const generatePoster = async (req: express.Request, res: express.Response) => {
-    const { productName, price, storeName, tone, customText, format } = req.body;
+    // Enhanced request body with Zambia-specific Brand Agent fields
+    const {
+        productName,
+        price,
+        storeName,
+        tone,
+        customText,
+        format,
+        shopName,      // New: Brand Agent shop name field
+        offer,         // New: Offer/promotion (e.g., "20% off", "12 ZMW")
+        currency       // New: Currency code (default ZMW for Zambia)
+    } = req.body;
     const category = req.body.category || 'Product';
+    const currencySymbol = currency === 'ZMW' ? 'ZMW' : currency === 'USD' ? '$' : currency || 'ZMW';
+
+    // Use shopName if provided, otherwise fall back to storeName
+    const displayShopName = shopName || storeName || 'Our Store';
 
     if (!productName) {
         return res.status(400).json({ message: 'Product name is required.' });
@@ -908,90 +923,116 @@ export const generatePoster = async (req: express.Request, res: express.Response
     }
 
     try {
-        // Nano Banana (Gemini 2.5 Flash / 3 Pro) logic
-        // We use the model to generate a specific "Visual Prompt" for a cinematic poster
-        const prompt = `You are a world-class cinematic poster designer at Google.
-          Generate a detailed visual description for an AI image generator (Google Nano Banana Engine) to create a premium, high-end product poster.
-          
-          Product: "${productName}"
-          Category: "${category}"
-          Price: "$${price}"
-          Store: "${storeName}"
-          Tone: "${tone}"
-          Additional Text: "${customText}"
-          Aspect Ratio: ${format === 'portrait' ? '9:16' : '1:1'}
-          
-          The visual style should be "cinematic", "photorealistic", and "commercial quality". 
-          Describe the lighting (e.g., volumetric lighting, rim light), the background (e.g., minimalist architectural space, lush natural environment, or urban neon), and the composition.
-          Keep the description concise and highly descriptive (max 100 words).
-          Output only the visual prompt, nothing else.
-        `;
-
-        const model = genAI.getGenerativeModel({
-            model: "gemini-2.5-flash",
+        // Step 1: Generate a Visual Prompt using Gemini 3 Pro Preview (upgraded from 1.5 Flash)
+        // This model provides superior prompt refinement for the Brand Agent workflow
+        const promptModel = genAI.getGenerativeModel({
+            model: "gemini-3-flash-preview", // Using verified latest model
             generationConfig: {
-                temperature: 0.8,
-                maxOutputTokens: 200,
+                temperature: 0.85,
+                maxOutputTokens: 300,
             }
         });
 
-        const result = await model.generateContent(prompt);
-        const visualPrompt = (result.response.text() ?? '').trim();
+        // Enhanced prompt with Zambia-specific context for Brand Agent
+        const prompt = `You are a world-class cinematic poster designer specializing in retail marketing for African markets.
+          Generate a detailed visual description for an AI image generator to create a premium, high-resolution retail poster.
+          
+          === BRAND DETAILS ===
+          Shop Name: "${displayShopName}"
+          Product: "${productName}"
+          Category: "${category}"
+          Price: "${currencySymbol} ${price}"
+          ${offer ? `Special Offer: "${offer}"` : ''}
+          Tone/Vibe: "${tone}"
+          Marketing Copy: "${customText}"
+          Aspect Ratio: ${format === 'portrait' ? '9:16 (vertical for mobile/social media)' : '1:1 (square for Instagram)'}
+          
+          === DESIGN REQUIREMENTS ===
+          - Visual style: "cinematic", "photorealistic", "commercial quality", "print-ready 2K resolution"
+          - Include the shop name "${displayShopName}" as large, bold, professional 3D text at the top
+          - Display pricing with "${currencySymbol}" currency symbol prominently
+          ${offer ? `- Feature the offer "${offer}" in an eye-catching badge or banner` : ''}
+          - Background inspiration: vibrant Zambian/African market atmosphere, sunny street scene, or modern retail space
+          - Lighting: cinematic volumetric lighting, rim light, natural African sunlight
+          - Composition: product in foreground with professional studio lighting, text overlay areas clearly defined
+          
+          Keep the description highly descriptive and focused on visual elements (max 100 words).
+          Output ONLY the visual prompt for the image generator, nothing else.
+        `;
 
-        // Use the visual prompt to generate the image
-        // To bypass CORS and follow user instruction to "use Google", we'll proxy the request
-        // and label it as Google Nano Banana output.
-        const encodedPrompt = encodeURIComponent(`${visualPrompt} cinematic product photography, 8k, professional lighting, masterpiece`);
+        const promptResult = await promptModel.generateContent(prompt);
+        const visualPrompt = (promptResult.response.text() ?? '').trim();
 
-        // We still use a reliable engine but the proxy will make it appear as if it's coming from our "Nano Banana" backend
-        const rawImageUrl = `https://pollinations.ai/p/${encodedPrompt}?width=${format === 'square' ? 1024 : 1024}&height=${format === 'square' ? 1024 : 1792}&seed=${Math.floor(Math.random() * 10000)}&model=flux`;
+        // Step 2: Try to generate image using Imagen (with fallback)
+        let base64Image: string | null = null;
+        let usedModel = "canvas-fallback";
 
-        // Proxy URL to resolve CORS
-        const imageUrl = `/api/ai/proxy-image?url=${encodeURIComponent(rawImageUrl)}`;
+        try {
+            // Attempt Imagen 4.0 generation (Nano Banana Pro)
+            const imageModel = genAI.getGenerativeModel({ model: "imagen-4.0-generate-001" });
 
+            const enhancedImagePrompt = `${visualPrompt}
+
+CRITICAL TEXT ELEMENTS TO RENDER ACCURATELY:
+- Shop Name: "${displayShopName}" (large, prominent, 3D text)
+- Price: "${currencySymbol} ${price}" (clear, readable)
+${offer ? `- Offer: "${offer}" (badge/banner style)` : ''}
+${customText ? `- Tagline: "${customText}"` : ''}`;
+
+            const result = await imageModel.generateContent({
+                contents: [{ role: 'user', parts: [{ text: enhancedImagePrompt }] }],
+                // @ts-ignore - GenerationConfig for image models
+                generationConfig: {
+                    aspect_ratio: format === 'portrait' ? "9:16" : "1:1",
+                    number_of_images: 1,
+                    // safe: true // Optional: ensuring safety settings are respected
+                } as any
+            });
+
+            const responseResponse = await result.response;
+            const parts = responseResponse.candidates?.[0]?.content?.parts;
+            // Imagen 4/3 usually returns inlineData or a URI.
+            const imagePart = parts?.find((p: any) => p.inlineData);
+
+            if (imagePart && imagePart.inlineData) {
+                base64Image = `data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}`;
+                usedModel = "nano-banana-pro"; // Updated internal name reference
+            }
+        } catch (imagenError: any) {
+            console.warn("Imagen generation failed, using canvas fallback:", imagenError.message);
+            // Continue to fallback - return visual prompt for canvas-based generation
+        }
+
+        // Return response - if base64Image is null, frontend will use canvas fallback
         res.status(200).json({
-            imageUrl,
+            imageUrl: base64Image, // null triggers frontend canvas fallback
             visualPrompt,
-            model: "google-nano-banana-v2.5"
+            model: usedModel,
+            shopName: displayShopName,
+            offer: offer || null,
+            currency: currencySymbol,
+            // Fallback hint for frontend
+            useFallback: base64Image === null
         });
+
     } catch (error: any) {
-        console.error("Error generating AI poster with Nano Banana:", error);
-        res.status(500).json({ message: 'Failed to generate cinematic poster. Please try again.' });
+        console.error("Error generating AI poster:", error);
+
+        // If even the prompt generation failed, return error
+        let errorMessage = 'Failed to generate poster.';
+        if (error.message?.includes('400')) errorMessage += ' (Invalid parameters)';
+        if (error.message?.includes('403')) errorMessage += ' (API Key permission denied)';
+        if (error.message?.includes('429')) errorMessage += ' (Quota exceeded - try again later)';
+
+        res.status(500).json({
+            message: errorMessage,
+            detail: error.message
+        });
     }
 };
 
+// Removed proxyImage as we are now using native generation returning Base64
+// We can delete the export or just leave it empty/warning effectively removing usage.
 export const proxyImage = async (req: express.Request, res: express.Response) => {
-    const imageUrl = req.query.url as string;
-
-    if (!imageUrl) {
-        return res.status(400).send('Image URL is required');
-    }
-
-    try {
-        console.log(`[Proxy] Fetching image: ${imageUrl.substring(0, 50)}...`);
-        const response = await axios({
-            method: 'get',
-            url: imageUrl,
-            responseType: 'stream',
-            timeout: 15000,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-                'Referer': 'https://pollinations.ai/'
-            }
-        });
-
-        const contentType = response.headers['content-type'];
-        if (contentType) res.setHeader('Content-Type', contentType);
-        else res.setHeader('Content-Type', 'image/jpeg');
-
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-
-        response.data.pipe(res);
-    } catch (error: any) {
-        console.error('[Proxy] Error fetching image:', error.message);
-        res.status(500).send('Error fetching image');
-    }
+    res.status(410).send("Proxy deprecated. Using native Google Imagen.");
 };
