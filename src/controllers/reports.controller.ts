@@ -3,7 +3,7 @@ import db from '../db_client';
 import { toCamelCase } from '../utils/helpers';
 
 export const getDashboardData = async (req: express.Request, res: express.Response) => {
-    const { startDate, endDate } = req.query as { startDate: string, endDate: string };
+    const { startDate, endDate, channel } = req.query as { startDate: string, endDate: string, channel?: string };
     if (!startDate || !endDate) {
         return res.status(400).json({ message: 'startDate and endDate query parameters are required.' });
     }
@@ -24,7 +24,8 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
                 COALESCE(SUM(total), 0) AS "grossRevenue",
                 COUNT(transaction_id) AS "totalTransactions"
             FROM sales
-            WHERE timestamp BETWEEN $1 AND $2 AND payment_status = 'paid' AND store_id = $3;
+            WHERE timestamp BETWEEN $1 AND $2 AND payment_status = 'paid' AND store_id = $3
+            ${channel ? `AND channel = '${channel}' ` : ''};
         `;
         const grossSalesResult = await db.query(grossSalesQuery, [startDate, adjustedEndDate, storeId]);
 
@@ -34,7 +35,8 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
                 COALESCE(SUM(si.cost_at_sale * (si.quantity - si.returned_quantity)), 0) AS "totalCogs"
             FROM sale_items si
             JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
-            WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND si.store_id = $3;
+            WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND si.store_id = $3
+                ${channel ? `AND s.channel = '${channel}' ` : ''};
         `;
         const cogsResult = await db.query(cogsQuery, [startDate, adjustedEndDate, storeId]);
 
@@ -77,6 +79,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
                 COALESCE(SUM(total), 0) as gross_revenue
             FROM sales
             WHERE timestamp BETWEEN $1 AND $2 AND payment_status = 'paid' AND store_id = $3
+            ${channel ? `AND channel = '${channel}' ` : ''}
             GROUP BY DATE(timestamp)
             ORDER BY date ASC;
         `;
@@ -90,6 +93,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             FROM sale_items si
             JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
             WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND si.store_id = $3
+                ${channel ? `AND s.channel = '${channel}' ` : ''}
             GROUP BY DATE(s.timestamp)
             ORDER BY date ASC;
         `;
@@ -147,6 +151,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
                      JOIN products p ON si.product_id = p.id AND p.store_id = $3
                      JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
             WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3 AND si.store_id = $3
+                ${channel ? `AND s.channel = '${channel}' ` : ''}
             GROUP BY p.name
             HAVING SUM(si.quantity - si.returned_quantity) > 0
             ORDER BY revenue DESC
@@ -161,6 +166,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
                      JOIN products p ON si.product_id = p.id AND p.store_id = $3
                      JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
             WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3 AND si.store_id = $3
+                ${channel ? `AND s.channel = '${channel}' ` : ''}
             GROUP BY p.name
             HAVING SUM(si.quantity - si.returned_quantity) > 0
             ORDER BY quantity DESC
@@ -176,6 +182,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
                      JOIN categories c ON p.category_id = c.id AND c.store_id = $3
                      JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
             WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3 AND si.store_id = $3
+                ${channel ? `AND s.channel = '${channel}' ` : ''}
             GROUP BY c.name
             HAVING SUM(si.quantity - si.returned_quantity) > 0
             ORDER BY revenue DESC;
