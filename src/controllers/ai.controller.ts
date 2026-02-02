@@ -564,6 +564,62 @@ async function getBusinessStrategyContext(storeId: string) {
     };
 }
 
+async function analyzeAnomalies(storeId: string) {
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const prevWeekStart = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    // Revenue Anomaly
+    const revenueQuery = await db.query(
+        `WITH current_week AS (
+            SELECT COALESCE(SUM(total), 0) as rev FROM sales WHERE store_id = $1 AND DATE("timestamp") >= $2
+        ),
+        previous_week AS (
+            SELECT COALESCE(SUM(total), 0) as rev FROM sales WHERE store_id = $1 AND DATE("timestamp") >= $3 AND DATE("timestamp") < $2
+        )
+        SELECT (SELECT rev FROM current_week) as current, (SELECT rev FROM previous_week) as previous`,
+        [storeId, weekAgo, prevWeekStart]
+    );
+
+    const anomalies: string[] = [];
+    const revCurr = parseFloat(revenueQuery.rows[0].current);
+    const revPrev = parseFloat(revenueQuery.rows[0].previous);
+
+    if (revPrev > 0 && revCurr < revPrev * 0.5) {
+        anomalies.push(`CRITICAL: Revenue dropped by ${((1 - revCurr / revPrev) * 100).toFixed(1)}% compared to last week.`);
+    }
+
+    // Top Product anomaly
+    const topProductAnomaly = await db.query(
+        `WITH last_sales AS (
+            SELECT product_id, SUM(quantity) as qty
+            FROM sale_items
+            WHERE store_id = $1 AND DATE(created_at) >= $2
+            GROUP BY product_id
+            ORDER BY qty DESC LIMIT 1
+        ),
+        prev_sales AS (
+            SELECT product_id, SUM(quantity) as qty
+            FROM sale_items
+            WHERE store_id = $1 AND DATE(created_at) >= $3 AND DATE(created_at) < $2
+            GROUP BY product_id
+        )
+        SELECT p.name, ls.qty as current_qty, ps.qty as prev_qty
+        FROM last_sales ls
+        JOIN products p ON ls.product_id = p.id
+        LEFT JOIN prev_sales ps ON ls.product_id = ps.product_id`,
+        [storeId, weekAgo, prevWeekStart]
+    );
+
+    if (topProductAnomaly.rows.length > 0) {
+        const row = topProductAnomaly.rows[0];
+        if (row.prev_qty > 0 && row.current_qty < row.prev_qty * 0.4) {
+            anomalies.push(`WARNING: Your top seller "${row.name}" sales dropped by ${((1 - row.current_qty / row.prev_qty) * 100).toFixed(1)}%.`);
+        }
+    }
+
+    return anomalies;
+}
+
 async function getProjectionContext(storeId: string, goalAmount?: number) {
     const today = new Date();
     const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0];
@@ -846,45 +902,40 @@ export const handleChat = async (req: express.Request, res: express.Response) =>
         if (strategyIntent.isStrategyQuestion) {
             // Handle business strategy questions
             const strategyContext = await getBusinessStrategyContext(storeId);
+            const anomalies = await analyzeAnomalies(storeId);
 
-            const strategyPrompt = `You are "Salepilot Business Advisor", an elite business consultant helping ${user?.name} maximize their retail business performance.
+            const strategyPrompt = `You are "Salepilot Intelligence", a tier-1 business strategist.
             
-Current Date: ${new Date().toISOString().split('T')[0]}
-Store Currency: ${currencyCode} (${currencySymbol}) - All monetary values below are in this currency.
-
-DEEP BUSINESS METRICS:
-1. REVENUE HEALTH
-- Month-to-Date: ${currencySymbol}${strategyContext.recentPerformance.monthRevenue.toFixed(2)} (${strategyContext.recentPerformance.transactionCount} txns)
-- Growth Trend: ${parseFloat(strategyContext.recentPerformance.revenueGrowth) > 0 ? '📈 UP' : '📉 DOWN'} ${strategyContext.recentPerformance.revenueGrowth}% vs 3-month avg
-- Average Order Value: ${currencySymbol}${strategyContext.recentPerformance.avgOrderValue} (Trend: ${strategyContext.recentPerformance.aovTrend})
-
-2. PRODUCT & INVENTORY INTELLIGENCE
-- Best Sellers: ${strategyContext.topProducts.map(p => p.name).join(', ') || 'No data'}
-- Inventory Risk: ${strategyContext.inventoryHealth.low_stock_count} items critical, ${strategyContext.inventoryHealth.dead_stock_candidates} potential dead stock items (unsold > 90 days)
-- Stock Value Efficiency: ${currencySymbol}${parseFloat(strategyContext.inventoryHealth.inventory_value || '0').toFixed(2)} locked in inventory
-
-3. CUSTOMER INSIGHTS
-- Acquisition: ${strategyContext.customerGrowth} new customers this month
-- Retention Rate: ${strategyContext.customerRetention.retentionRate}% of customers from 3 months ago returned
-- Churn Risk: ${strategyContext.customerRetention.churnRiskCount} valuable customers haven't shopped in 60 days
-
-USER QUESTION: "${query}"
-QUESTION CATEGORY: ${strategyIntent.strategyType?.toUpperCase() || 'GENERAL STRATEGY'}
-
-ADVISOR INSTRUCTIONS:
-- You are speaking to the business owner directly. Be professional, insightful, and encouraging.
-- DO NOT give generic advice. Use the specific metrics above to justify your recommendations.
-- ALWAYS use the store currency (${currencySymbol}) for all monetary figures in your response.
-- Structure your answer as follows:
-  1. **Executive Summary**: Direct answer to their question with a key insight.
-  2. **Data-Driven Analysis**: "I noticed your retention is..." or "Your average order value is..."
-  3. **3 Strategic Actions**: Specific, actionable steps they can take today.
-     - For Marketing questions: Focus on the ${strategyContext.customerRetention.churnRiskCount} at-risk customers or leveraging best sellers.
-     - For Inventory questions: Address the ${strategyContext.inventoryHealth.dead_stock_candidates} dead stock items or cash flow.
-     - For Growth questions: Look at AOV (${strategyContext.recentPerformance.avgOrderValue}) optimization.
-- FORMATTING: Use bolding for key terms, bullet points for lists, and emojis for readability.
-
-Your goal is to provide high-value, specific consulting advice that helps them make more money or save time immediately.`;
+            REASONING PROTOCOL:
+            1. Analyze the DATA provided below.
+            2. Identify hidden correlations (e.g., "Customer retention is high but AOV is low").
+            3. Detect anomalies and risks.
+            4. Formulate a multi-step plan.
+            
+            YOUR THINKING PROCESS:
+            Before giving your final response, you MUST wrap your internal monologue/reasoning in <THINKING> tags. In this section, analyze the metrics, calculate ratios, and weigh different strategies.
+            
+            CURRENT DATA:
+            Store Currency: ${currencyCode} (${currencySymbol})
+            
+            METRICS:
+            - MTD Revenue: ${currencySymbol}${strategyContext.recentPerformance.monthRevenue.toFixed(2)} (${strategyContext.recentPerformance.transactionCount} txns)
+            - Growth vs 3M Avg: ${strategyContext.recentPerformance.revenueGrowth}%
+            - AOV: ${currencySymbol}${strategyContext.recentPerformance.avgOrderValue} (Trend: ${strategyContext.recentPerformance.aovTrend})
+            - Inventory Risk: ${strategyContext.inventoryHealth.low_stock_count} critical, ${strategyContext.inventoryHealth.dead_stock_candidates} dead stock
+            - Customer Retention: ${strategyContext.customerRetention.retentionRate}%
+            - Churn Risk: ${strategyContext.customerRetention.churnRiskCount} customers
+            
+            DETECTED ANOMALIES:
+            ${anomalies.join('\n') || 'None detected.'}
+            
+            USER QUESTION: "${query}"
+            
+            OUTPUT STRUCTURE:
+            1. <THINKING>...</THINKING> (Your internal reasoning)
+            2. **Executive Summary**: Direct, blunt answer or key insight.
+            3. **Deep Dive**: Analysis using the specific metrics above.
+            4. **Actionable Roadmap**: 3 prioritized "SalesPilot Missions" (actions they can take in the app).`;
 
             const model = genAI.getGenerativeModel({
                 model: "gemini-3-flash-preview",
@@ -1003,30 +1054,29 @@ QUICK OVERVIEW (Currency: ${currencyCode}):
         }
 
         // Construct enhanced AI prompt
-        const systemContext = `You are "Salepilot Assistant", an intelligent business intelligence assistant for ${user?.name}.
-
-Current Date: ${new Date().toISOString().split('T')[0]}
-Store ID: ${storeId}
-
-BUSINESS DATA:
-${contextParts.join('\n')}
-
-USER QUESTION: "${query}"
-
-INSTRUCTIONS:
-- Provide a clear, conversational answer using the data above
-- Use specific numbers and metrics from the data
-- If asked about trends, compare current vs historical data when available
-- Highlight important insights (e.g., best sellers, low stock alerts, profit margins)
-- For projection questions, explain the calculation methodology briefly (e.g., "Based on your current month's average daily revenue of $X...")
-- When providing timelines, give multiple formats (days, weeks, months) for clarity
-- If growth rate is positive/negative, mention it and how it affects projections
-- Be concise but informative (2-4 sentences unless detailed analysis is requested)
-- Use business terminology appropriately
-- If data is missing or zero, acknowledge it naturally and explain limitations
-- Format numbers clearly with ${currencySymbol} for currency and use thousands separators for large numbers
-- For projections with limited data, mention the confidence level or recommend collecting more data
-- End with a helpful suggestion or next action if appropriate`;
+        const systemContext = `You are "Salepilot Assistant", an intelligent AI agent.
+        
+        REASONING PROTOCOL:
+        1. Parse the BUSINESS DATA provided.
+        2. Identify key trends or issues.
+        3. Formulate a concise, data-backed response.
+        
+        YOUR THINKING PROCESS:
+        You MUST wrap your internal reasoning in <THINKING> tags before the final response.
+        
+        Current Date: ${new Date().toISOString().split('T')[0]}
+        Store ID: ${storeId}
+        
+        BUSINESS DATA:
+        ${contextParts.join('\n')}
+        
+        USER QUESTION: "${query}"
+        
+        INSTRUCTIONS:
+        - Provide a clear, conversational answer.
+        - Use specific numbers and metrics.
+        - Format numbers clearly with ${currencySymbol}.
+        - End with a single "Smart Action" the user can take.`;
 
         // Call AI with enhanced context
         const model = genAI.getGenerativeModel({
@@ -1514,25 +1564,28 @@ ${revenueContext.dailyTrend.map((d: any) => `- ${new Date(d.date).toLocaleDateSt
         }
 
         // Build the prompt
-        const systemPrompt = `You are "SalePilot Platform Intelligence", an elite AI advisor for the SalePilot platform administrator.
+        const systemPrompt = `You are "SalePilot Core Intelligence", the platform's central brain.
         
-Current Date: ${new Date().toISOString().split('T')[0]}
-Administrator: ${user?.name || 'SuperAdmin'}
+        REASONING PROTOCOL:
+        1. Evaluate platform-wide metrics.
+        2. Identify stores needing attention.
+        3. Formulate high-level strategic advice.
+        
+        YOUR THINKING PROCESS:
+        You MUST wrap your internal reasoning in <THINKING> tags.
+        
+        Current Date: ${new Date().toISOString().split('T')[0]}
+        Administrator: ${user?.name || 'SuperAdmin'}
 
-${contextParts.join('\n')}
+        ${contextParts.join('\n')}
 
-USER QUESTION: "${query}"
+        USER QUESTION: "${query}"
 
-ADVISOR INSTRUCTIONS:
-- You are speaking directly to the platform administrator who manages ALL stores on the SalePilot platform.
-- Provide insights based on the REAL platform data above.
-- Be concise, professional, and actionable.
-- Use specific numbers and store names when available.
-- For strategy questions, provide 2-3 prioritized action items.
-- FORMATTING: Use markdown with **bold** for key metrics, bullet points for lists, and emojis for visual clarity.
-- Keep responses focused and under 400 words unless detailed analysis is requested.
-
-Your goal is to help the platform administrator make data-driven decisions to grow the platform and support store owners.`;
+        INSTRUCTIONS:
+        - Provide high-level, data-driven insights.
+        - Highlight anomalies or risks in the store network.
+        - Be authoritative yet professional.
+        - Use **bolding** for critical data points.`;
 
         const model = genAI.getGenerativeModel({
             model: "gemini-3-flash-preview",
