@@ -115,6 +115,8 @@ export interface Sale {
     address?: string;
   };
   amountPaid: number;
+  cashReceived?: number;
+  changeDue?: number;
   dueDate?: string;
   payments?: Payment[];
 }

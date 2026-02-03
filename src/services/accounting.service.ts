@@ -98,6 +98,7 @@ const recordSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) 
     const taxAccount = await findAccount('sales_tax_payable', storeId, dbClient);
     const cashAccount = await findAccount('cash', storeId, dbClient);
     const arAccount = await findAccount('accounts_receivable', storeId, dbClient);
+    const storeCreditAccount = await findAccount('store_credit_payable', storeId, dbClient);
 
     if (!inventoryAccount || !taxAccount || !cashAccount || !defaultRevenueAccount || !defaultCogsAccount || !arAccount) {
         console.error("Accounting Error: Core accounts for sales are not configured for store", storeId);
@@ -157,7 +158,8 @@ const recordSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) 
     const totalCogs = Array.from(cogsByAccount.values()).reduce((sum, item) => sum + item.amount, 0);
 
     const amountPaid = Number(sale.amountPaid || 0);
-    const balanceDue = Number(sale.total) - amountPaid;
+    const storeCreditUsed = Number(sale.storeCreditUsed || 0);
+    const balanceDue = Number(sale.total) - amountPaid - storeCreditUsed;
 
     const journalLines: JournalEntryLine[] = [
         { accountId: taxAccount.id, accountName: taxAccount.name, type: 'credit', amount: sale.tax },
@@ -165,7 +167,16 @@ const recordSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) 
     ];
 
     if (amountPaid > 0) {
-        journalLines.push({ accountId: cashAccount.id, accountName: cashAccount.name, type: 'debit', amount: amountPaid });
+        if (sale.cashReceived && sale.changeDue && sale.cashReceived > 0) {
+            // Explicitly record gross cash in and change out for better audit trail
+            journalLines.push({ accountId: cashAccount.id, accountName: cashAccount.name, type: 'debit', amount: sale.cashReceived });
+            journalLines.push({ accountId: cashAccount.id, accountName: cashAccount.name, type: 'credit', amount: sale.changeDue });
+        } else {
+            journalLines.push({ accountId: cashAccount.id, accountName: cashAccount.name, type: 'debit', amount: amountPaid });
+        }
+    }
+    if (storeCreditUsed > 0 && storeCreditAccount) {
+        journalLines.push({ accountId: storeCreditAccount.id, accountName: storeCreditAccount.name, type: 'debit', amount: storeCreditUsed });
     }
     if (balanceDue > 0.001) {
         journalLines.push({ accountId: arAccount.id, accountName: arAccount.name, type: 'debit', amount: balanceDue });
@@ -222,6 +233,7 @@ const voidSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) =>
     const taxAccount = await findAccount('sales_tax_payable', storeId, dbClient);
     const cashAccount = await findAccount('cash', storeId, dbClient);
     const arAccount = await findAccount('accounts_receivable', storeId, dbClient);
+    const storeCreditAccount = await findAccount('store_credit_payable', storeId, dbClient);
 
     if (!inventoryAccount || !taxAccount || !cashAccount || !defaultRevenueAccount || !defaultCogsAccount || !arAccount) {
         console.error("Accounting Error: Core accounts for voiding sales are not configured for store", storeId);
@@ -275,7 +287,8 @@ const voidSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) =>
     const totalCogs = Array.from(cogsByAccount.values()).reduce((sum, item) => sum + item.amount, 0);
 
     const amountPaid = Number(sale.amountPaid || 0);
-    const balanceDue = Number(sale.total) - amountPaid;
+    const storeCreditUsed = Number(sale.storeCreditUsed || 0);
+    const balanceDue = Number(sale.total) - amountPaid - storeCreditUsed;
 
     // REVERSAL LINES (Swap Debit/Credit from recordSale)
     const journalLines: JournalEntryLine[] = [
@@ -285,6 +298,9 @@ const voidSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) =>
 
     if (amountPaid > 0) {
         journalLines.push({ accountId: cashAccount.id, accountName: cashAccount.name, type: 'credit', amount: amountPaid });
+    }
+    if (storeCreditUsed > 0 && storeCreditAccount) {
+        journalLines.push({ accountId: storeCreditAccount.id, accountName: storeCreditAccount.name, type: 'credit', amount: storeCreditUsed });
     }
     if (balanceDue > 0.001) {
         journalLines.push({ accountId: arAccount.id, accountName: arAccount.name, type: 'credit', amount: balanceDue });
@@ -548,9 +564,16 @@ const recordCustomerPayment = async (sale: Sale, payment: Payment, client?: DBCl
 
     const cashAccount = await findAccount('cash', storeId, dbClient);
     const arAccount = await findAccount('accounts_receivable', storeId, dbClient);
+    const storeCreditAccount = await findAccount('store_credit_payable', storeId, dbClient);
+
     if (!cashAccount || !arAccount) {
         console.error("Accounting Error: Core accounts for payments are not configured.");
         return;
+    }
+
+    let debitAccount = cashAccount;
+    if (payment.method === 'store_credit' && storeCreditAccount) {
+        debitAccount = storeCreditAccount;
     }
 
     const invoiceRef = (sale.transactionId && sale.transactionId !== 'undefined')
@@ -567,8 +590,66 @@ const recordCustomerPayment = async (sale: Sale, payment: Payment, client?: DBCl
         description: description,
         source: { type: 'payment', id: sale.transactionId },
         lines: [
-            { accountId: cashAccount.id, accountName: cashAccount.name, type: 'debit', amount: payment.amount },
+            { accountId: debitAccount.id, accountName: debitAccount.name, type: 'debit', amount: payment.amount },
             { accountId: arAccount.id, accountName: arAccount.name, type: 'credit', amount: payment.amount },
+        ]
+    }, storeId, dbClient);
+};
+
+const recordSupplierInvoice = async (invoice: SupplierInvoice, client?: DBClient, storeIdParam?: string) => {
+    const dbClient = client || db;
+    const storeId = storeIdParam || (invoice as any).store_id;
+    if (!storeId) {
+        console.warn('recordSupplierInvoice: Missing store_id; aborting journal entry.');
+        return;
+    }
+
+    // Ensure system accounts exist for this store
+    await ensureCoreAccounts(storeId, dbClient);
+
+    const inventoryAccount = await findAccount('inventory', storeId, dbClient);
+    const apAccount = await findAccount('accounts_payable', storeId, dbClient);
+    if (!inventoryAccount || !apAccount) {
+        console.error("Accounting Error: Core accounts for supplier invoices are not configured.");
+        return;
+    }
+
+    await addJournalEntry({
+        date: invoice.invoiceDate,
+        description: `Supplier Invoice ${invoice.invoiceNumber} from ${invoice.supplierName}`,
+        source: { type: 'purchase', id: invoice.id },
+        lines: [
+            { accountId: inventoryAccount.id, accountName: inventoryAccount.name, type: 'debit', amount: invoice.amount },
+            { accountId: apAccount.id, accountName: apAccount.name, type: 'credit', amount: invoice.amount },
+        ]
+    }, storeId, dbClient);
+};
+
+const reverseSupplierInvoice = async (invoice: SupplierInvoice, client?: DBClient, storeIdParam?: string) => {
+    const dbClient = client || db;
+    const storeId = storeIdParam || (invoice as any).store_id;
+    if (!storeId) {
+        console.warn('reverseSupplierInvoice: Missing store_id; aborting journal entry.');
+        return;
+    }
+
+    // Ensure system accounts exist for this store
+    await ensureCoreAccounts(storeId, dbClient);
+
+    const inventoryAccount = await findAccount('inventory', storeId, dbClient);
+    const apAccount = await findAccount('accounts_payable', storeId, dbClient);
+    if (!inventoryAccount || !apAccount) {
+        console.error("Accounting Error: Core accounts for reversing supplier invoices are not configured.");
+        return;
+    }
+
+    await addJournalEntry({
+        date: new Date().toISOString(),
+        description: `REVERSAL: Supplier Invoice ${invoice.invoiceNumber} from ${invoice.supplierName}`,
+        source: { type: 'purchase', id: invoice.id },
+        lines: [
+            { accountId: inventoryAccount.id, accountName: inventoryAccount.name, type: 'credit', amount: invoice.amount },
+            { accountId: apAccount.id, accountName: apAccount.name, type: 'debit', amount: invoice.amount },
         ]
     }, storeId, dbClient);
 };
@@ -676,6 +757,8 @@ export const accountingService = {
     recordConsolidatedStockAdjustment,
     recordReturn,
     recordPurchaseOrderReception,
+    recordSupplierInvoice,
+    reverseSupplierInvoice,
     recordCustomerPayment,
     recordSupplierPayment,
     voidSale,

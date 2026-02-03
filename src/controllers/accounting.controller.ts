@@ -182,6 +182,7 @@ export const getFinancialOverview = async (req: express.Request, res: express.Re
         const inventoryQuery = `SELECT COALESCE(SUM(cost_price * stock), 0) as "inventoryValue" FROM products WHERE store_id = $1 AND status = 'active'`;
         const arQuery = `SELECT COALESCE(SUM(account_balance), 0) as "accountsReceivable" FROM customers WHERE store_id = $1`;
         const apQuery = `SELECT COALESCE(SUM(amount - amount_paid), 0) as "accountsPayable" FROM supplier_invoices WHERE store_id = $1`;
+        const storeCreditQuery = `SELECT COALESCE(SUM(store_credit), 0) as "storeCreditValue" FROM customers WHERE store_id = $1`;
 
         // 2. GL Balances
         const glBalancesQuery = `
@@ -218,11 +219,12 @@ export const getFinancialOverview = async (req: express.Request, res: express.Re
         `;
 
         const [
-            invResult, arResult, apResult, glResult, revResult, cogsResult, expResult, refResult
+            invResult, arResult, apResult, scResult, glResult, revResult, cogsResult, expResult, refResult
         ] = await Promise.all([
             db.query(inventoryQuery, [storeId]),
             db.query(arQuery, [storeId]),
             db.query(apQuery, [storeId]),
+            db.query(storeCreditQuery, [storeId]),
             db.query(glBalancesQuery, [storeId]),
             db.query(revenueQuery, [storeId, start, adjustedEndDate]),
             db.query(cogsQuery, [storeId, start, adjustedEndDate]),
@@ -233,6 +235,7 @@ export const getFinancialOverview = async (req: express.Request, res: express.Re
         const inventoryValue = parseFloat(invResult.rows[0].inventoryValue);
         const accountsReceivable = parseFloat(arResult.rows[0].accountsReceivable);
         const accountsPayable = parseFloat(apResult.rows[0].accountsPayable);
+        const storeCreditValue = parseFloat(scResult.rows[0].storeCreditValue);
 
         const glBalances = glResult.rows.map(r => ({ ...r, balance: parseFloat(r.balance) }));
         const cashBalance = glBalances.filter(b => b.subType === 'cash').reduce((sum, b) => sum + b.balance, 0);
@@ -248,11 +251,17 @@ export const getFinancialOverview = async (req: express.Request, res: express.Re
         const totalAssetsGL = glBalances.filter(b => b.type === 'asset').reduce((sum, b) => sum + b.balance, 0);
         const totalLiabilitiesGL = glBalances.filter(b => b.type === 'liability').reduce((sum, b) => sum + b.balance, 0);
 
+        // 4. Diagnostic Data
+        const missingCostQuery = `SELECT COUNT(*)::int as count FROM products WHERE store_id = $1 AND status = 'active' AND (cost_price IS NULL OR cost_price = 0)`;
+        const missingCostResult = await db.query(missingCostQuery, [storeId]);
+        const productsMissingCost = missingCostResult.rows[0].count;
+
         res.status(200).json({
             summary: {
                 inventoryValue,
                 accountsReceivable,
                 accountsPayable,
+                storeCreditValue,
                 cashBalance,
                 totalAssets: totalAssetsGL,
                 totalLiabilities: totalLiabilitiesGL,
@@ -268,7 +277,11 @@ export const getFinancialOverview = async (req: express.Request, res: express.Re
             checks: {
                 arMatch: Math.abs(accountsReceivable - (glBalances.find(b => b.subType === 'accounts_receivable')?.balance || 0)) < 0.01,
                 apMatch: Math.abs(accountsPayable - (glBalances.find(b => b.subType === 'accounts_payable')?.balance || 0)) < 0.01,
-                inventoryMatch: Math.abs(inventoryValue - (glBalances.find(b => b.subType === 'inventory')?.balance || 0)) < 0.01
+                inventoryMatch: Math.abs(inventoryValue - (glBalances.find(b => b.subType === 'inventory')?.balance || 0)) < 0.01,
+                storeCreditMatch: Math.abs(storeCreditValue - Math.abs(glBalances.find(b => b.subType === 'store_credit_payable')?.balance || 0)) < 0.01,
+                hasProductsMissingCost: productsMissingCost > 0,
+                productsMissingCostCount: productsMissingCost,
+                isTaxRatioSkewed: (periodNetRevenue > 0 && (glBalances.find(b => b.subType === 'sales_tax_payable')?.balance || 0) / periodNetRevenue > 0.4)
             }
         });
     } catch (error) {
@@ -345,34 +358,66 @@ export const getSupplierInvoices = async (req: express.Request, res: express.Res
 export const createSupplierInvoice = async (req: express.Request, res: express.Response) => {
     const { invoiceNumber, supplierId, supplierName, purchaseOrderId, poNumber, invoiceDate, dueDate, amount } = req.body;
     const id = generateId('inv-sup');
+    const client = await (db as any)._pool.connect();
     try {
         const storeId = (req as any).tenant?.storeId;
         if (!storeId) return res.status(400).json({ message: 'No active store selected.' });
-        const result = await db.query(
+
+        await client.query('BEGIN');
+        const result = await client.query(
             'INSERT INTO supplier_invoices (id, invoice_number, supplier_id, supplier_name, purchase_order_id, po_number, invoice_date, due_date, amount, amount_paid, status, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, \'unpaid\', $10) RETURNING *',
             [id, invoiceNumber, supplierId, supplierName, purchaseOrderId, poNumber, invoiceDate, dueDate, amount, storeId]
         );
+        const invoice = toCamelCase(result.rows[0]);
+
+        await accountingService.recordSupplierInvoice(invoice, client, storeId);
+
+        await client.query('COMMIT');
         auditService.log(req.user!, 'Supplier Invoice Created', `Invoice #: ${invoiceNumber} for ${supplierName}`);
-        res.status(201).json(toCamelCase(result.rows[0]));
+        res.status(201).json(invoice);
     } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Error creating supplier invoice:', error);
         res.status(500).json({ message: 'Error creating supplier invoice' });
+    } finally {
+        client.release();
     }
 };
 export const updateSupplierInvoice = async (req: express.Request, res: express.Response) => {
     const { id } = req.params;
     const { invoiceNumber, supplierId, supplierName, purchaseOrderId, poNumber, invoiceDate, dueDate, amount } = req.body;
+    const client = await (db as any)._pool.connect();
     try {
         const storeId = (req as any).tenant?.storeId;
         if (!storeId) return res.status(400).json({ message: 'No active store selected.' });
-        const result = await db.query(
+
+        await client.query('BEGIN');
+
+        // Get old invoice to reverse its journal entry
+        const oldInvoiceRes = await client.query('SELECT * FROM supplier_invoices WHERE id = $1 AND store_id = $2', [id, storeId]);
+        if (oldInvoiceRes.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ message: 'Invoice not found' });
+        }
+        await accountingService.reverseSupplierInvoice(toCamelCase(oldInvoiceRes.rows[0]), client, storeId);
+
+        const result = await client.query(
             'UPDATE supplier_invoices SET invoice_number=$1, supplier_id=$2, supplier_name=$3, purchase_order_id=$4, po_number=$5, invoice_date=$6, due_date=$7, amount=$8 WHERE id=$9 AND store_id=$10 RETURNING *',
             [invoiceNumber, supplierId, supplierName, purchaseOrderId, poNumber, invoiceDate, dueDate, amount, id, storeId]
         );
-        if (result.rowCount === 0) return res.status(404).json({ message: 'Invoice not found' });
+        const updatedInvoice = toCamelCase(result.rows[0]);
+
+        await accountingService.recordSupplierInvoice(updatedInvoice, client, storeId);
+
+        await client.query('COMMIT');
         auditService.log(req.user!, 'Supplier Invoice Updated', `Invoice #: ${invoiceNumber}`);
-        res.status(200).json(toCamelCase(result.rows[0]));
+        res.status(200).json(updatedInvoice);
     } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Error updating supplier invoice:', error);
         res.status(500).json({ message: 'Error updating supplier invoice' });
+    } finally {
+        client.release();
     }
 };
 export const recordSupplierPayment = async (req: express.Request, res: express.Response) => {
