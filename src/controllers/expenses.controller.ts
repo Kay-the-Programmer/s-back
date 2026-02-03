@@ -11,11 +11,88 @@ export const getExpenses = async (req: express.Request, res: express.Response) =
         const storeId = (req as any).tenant?.storeId;
         if (!storeId) return res.status(400).json({ message: 'No active store selected.' });
 
-        const result = await db.query(
-            'SELECT * FROM expenses WHERE store_id = $1 ORDER BY date DESC',
-            [storeId]
-        );
-        res.status(200).json(toCamelCase(result.rows));
+        const { startDate, endDate, category, search, limit, offset } = req.query as {
+            startDate?: string,
+            endDate?: string,
+            category?: string,
+            search?: string,
+            limit?: string,
+            offset?: string
+        };
+
+        let query = 'SELECT * FROM expenses WHERE store_id = $1';
+        const params: any[] = [storeId];
+        let paramIndex = 2;
+
+        if (startDate) {
+            query += ` AND date >= $${paramIndex++}`;
+            params.push(startDate);
+        }
+
+        if (endDate) {
+            query += ` AND date <= $${paramIndex++}`;
+            params.push(endDate);
+        }
+
+        if (category) {
+            query += ` AND category = $${paramIndex++}`;
+            params.push(category);
+        }
+
+        if (search) {
+            query += ` AND (description ILIKE $${paramIndex} OR reference ILIKE $${paramIndex})`;
+            params.push(`%${search}%`);
+            paramIndex++;
+        }
+
+        query += ' ORDER BY date DESC';
+
+        if (limit) {
+            query += ` LIMIT $${paramIndex++}`;
+            params.push(parseInt(limit, 10));
+        }
+
+        if (offset) {
+            query += ` OFFSET $${paramIndex++}`;
+            params.push(parseInt(offset, 10));
+        }
+
+        const result = await db.query(query, params);
+
+        // Also get total count and total amount for the filtered set
+        let totalCount = result.rowCount;
+        let totalAmount = 0;
+
+        let countQuery = 'SELECT COUNT(*), COALESCE(SUM(amount), 0) as total_amount FROM expenses WHERE store_id = $1';
+        const countParams: any[] = [storeId];
+        let countParamIndex = 2;
+
+        if (startDate) {
+            countQuery += ` AND date >= $${countParamIndex++}`;
+            countParams.push(startDate);
+        }
+        if (endDate) {
+            countQuery += ` AND date <= $${countParamIndex++}`;
+            countParams.push(endDate);
+        }
+        if (category) {
+            countQuery += ` AND category = $${countParamIndex++}`;
+            countParams.push(category);
+        }
+        if (search) {
+            countQuery += ` AND (description ILIKE $${countParamIndex} OR reference ILIKE $${countParamIndex})`;
+            countParams.push(`%${search}%`);
+        }
+
+        const countResult = await db.query(countQuery, countParams);
+        totalCount = parseInt(countResult.rows[0].count, 10);
+        totalAmount = parseFloat(countResult.rows[0].total_amount);
+
+        res.status(200).json({
+            items: toCamelCase(result.rows),
+            totalCount,
+            totalAmount
+        });
     } catch (error) {
         console.error('Error fetching expenses:', error);
         res.status(500).json({ message: 'Error fetching expenses' });

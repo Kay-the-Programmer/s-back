@@ -156,11 +156,20 @@ const recordSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) 
 
     const totalCogs = Array.from(cogsByAccount.values()).reduce((sum, item) => sum + item.amount, 0);
 
+    const amountPaid = Number(sale.amountPaid || 0);
+    const balanceDue = Number(sale.total) - amountPaid;
+
     const journalLines: JournalEntryLine[] = [
-        { accountId: primaryAssetAccount.id, accountName: primaryAssetAccount.name, type: 'debit', amount: sale.total },
         { accountId: taxAccount.id, accountName: taxAccount.name, type: 'credit', amount: sale.tax },
         { accountId: inventoryAccount.id, accountName: inventoryAccount.name, type: 'credit', amount: totalCogs },
     ];
+
+    if (amountPaid > 0) {
+        journalLines.push({ accountId: cashAccount.id, accountName: cashAccount.name, type: 'debit', amount: amountPaid });
+    }
+    if (balanceDue > 0.001) {
+        journalLines.push({ accountId: arAccount.id, accountName: arAccount.name, type: 'debit', amount: balanceDue });
+    }
 
     revenueByAccount.forEach(({ account, amount }) => {
         journalLines.push({ accountId: account.id, accountName: account.name, type: 'credit', amount: amount });
@@ -219,8 +228,6 @@ const voidSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) =>
         return;
     }
 
-    // Determine primary asset (AR or Cash) based on original status
-    const primaryAssetAccount = sale.paymentStatus === 'paid' ? cashAccount : arAccount;
     const productMap = new Map(allProducts.map(p => [p.id, p]));
     const categoryMap = new Map(allCategories.map(c => [c.id, c]));
 
@@ -267,12 +274,21 @@ const voidSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) =>
 
     const totalCogs = Array.from(cogsByAccount.values()).reduce((sum, item) => sum + item.amount, 0);
 
+    const amountPaid = Number(sale.amountPaid || 0);
+    const balanceDue = Number(sale.total) - amountPaid;
+
     // REVERSAL LINES (Swap Debit/Credit from recordSale)
     const journalLines: JournalEntryLine[] = [
-        { accountId: primaryAssetAccount.id, accountName: primaryAssetAccount.name, type: 'credit', amount: sale.total },
         { accountId: taxAccount.id, accountName: taxAccount.name, type: 'debit', amount: sale.tax },
         { accountId: inventoryAccount.id, accountName: inventoryAccount.name, type: 'debit', amount: totalCogs },
     ];
+
+    if (amountPaid > 0) {
+        journalLines.push({ accountId: cashAccount.id, accountName: cashAccount.name, type: 'credit', amount: amountPaid });
+    }
+    if (balanceDue > 0.001) {
+        journalLines.push({ accountId: arAccount.id, accountName: arAccount.name, type: 'credit', amount: balanceDue });
+    }
 
     revenueByAccount.forEach(({ account, amount }) => {
         journalLines.push({ accountId: account.id, accountName: account.name, type: 'debit', amount: amount });
@@ -400,9 +416,8 @@ const recordReturn = async (returnInfo: Return, originalSale: Sale, client?: DBC
         return acc + price * item.quantity;
     }, 0);
 
-    const taxRatio = originalSale.total > 0 ? (Number(originalSale.tax) / Number(originalSale.total)) : 0;
-    const returnedTax = returnInfo.refundAmount * taxRatio;
-    const returnedRevenueTotal = returnInfo.refundAmount - returnedTax;
+    const returnedTax = Number(returnInfo.taxAmount || 0);
+    const returnedRevenueTotal = Number(returnInfo.subtotalAmount || 0);
 
     for (const item of returnInfo.returnedItems) {
         const product = productMap.get(item.productId);

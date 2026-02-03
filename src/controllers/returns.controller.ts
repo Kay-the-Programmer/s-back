@@ -49,9 +49,13 @@ export const createReturn = async (req: express.Request, res: express.Response) 
         const originalSale = toCamelCase(saleResult.rows[0]);
 
         // 1. Create the return record
+        const taxRatio = originalSale.total > 0 ? (Number(originalSale.tax) / Number(originalSale.total)) : 0;
+        const refundTax = refundAmount * taxRatio;
+        const refundSubtotal = refundAmount - refundTax;
+
         const returnResult = await client.query(
-            'INSERT INTO returns (id, original_sale_id, "timestamp", refund_amount, refund_method, store_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-            [id, originalSaleId, timestamp, refundAmount, refundMethod, storeId]
+            'INSERT INTO returns (id, original_sale_id, "timestamp", refund_amount, tax_amount, subtotal_amount, refund_method, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+            [id, originalSaleId, timestamp, refundAmount, refundTax, refundSubtotal, refundMethod, storeId]
         );
         const newReturn = toCamelCase(returnResult.rows[0]);
 
@@ -83,6 +87,10 @@ export const createReturn = async (req: express.Request, res: express.Response) 
                 return res.status(400).json({ message: 'Cannot refund to store credit: no customer on original sale.' });
             }
             await client.query('UPDATE customers SET store_credit = store_credit + $1 WHERE id = $2 AND store_id = $3', [refundAmount, originalSale.customerId, storeId]);
+        } else if (refundMethod === 'accounts_receivable' || refundMethod === 'on_account') {
+            if (originalSale.customerId) {
+                await client.query('UPDATE customers SET account_balance = account_balance - $1 WHERE id = $2 AND store_id = $3', [refundAmount, originalSale.customerId, storeId]);
+            }
         }
 
         // 4. Update original sale's refund status

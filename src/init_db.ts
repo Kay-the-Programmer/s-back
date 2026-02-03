@@ -448,9 +448,26 @@ async function initializeDatabase() {
                 original_sale_id TEXT NOT NULL REFERENCES sales(transaction_id),
                 "timestamp" TIMESTAMPTZ NOT NULL,
                 refund_amount DECIMAL(10,2) NOT NULL,
+                tax_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+                subtotal_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
                 refund_method TEXT NOT NULL,
                 store_id TEXT
             );
+        `);
+
+        // Migration for returns table
+        await client.query(`
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'returns') THEN
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'returns' AND column_name = 'tax_amount') THEN
+                        ALTER TABLE returns ADD COLUMN tax_amount DECIMAL(10,2) NOT NULL DEFAULT 0;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'returns' AND column_name = 'subtotal_amount') THEN
+                        ALTER TABLE returns ADD COLUMN subtotal_amount DECIMAL(10,2) NOT NULL DEFAULT 0;
+                    END IF;
+                END IF;
+            END $$;
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_returns_store_id ON returns(store_id);`);
         await client.query(`

@@ -2,12 +2,15 @@ import express from 'express';
 import {
     getAccounts, createAccount, updateAccount, deleteAccount, adjustAccountBalance,
     getJournalEntries, createManualJournalEntry,
-    getSupplierInvoices, createSupplierInvoice, updateSupplierInvoice, recordSupplierPayment
+    getSupplierInvoices, createSupplierInvoice, updateSupplierInvoice, recordSupplierPayment,
+    getFinancialOverview
 } from '../controllers/accounting.controller';
 import { protect, adminOnly } from '../middleware/auth.middleware';
 
 const router = express.Router();
 router.use(protect, adminOnly);
+
+router.get('/summary', getFinancialOverview);
 
 // Chart of Accounts
 router.route('/accounts')

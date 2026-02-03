@@ -136,15 +136,22 @@ export const createSale = async (req: express.Request, res: express.Response) =>
         ]);
         const newSale = saleResult.rows[0];
 
+        const productIds = saleData.cart.map(i => i.productId);
+        const productsResult = await client.query('SELECT id, cost_price FROM products WHERE id = ANY($1::text[]) AND store_id = $2', [productIds, storeId]);
+        const costPriceMap = new Map<string, number>(productsResult.rows.map((p: any) => [p.id, parseFloat(p.cost_price || 0)]));
+
         for (const item of saleData.cart) {
+            const currentCostPrice = costPriceMap.get(item.productId) ?? 0;
             await client.query(
                 'INSERT INTO sale_items(sale_id, product_id, quantity, price_at_sale, cost_at_sale, store_id) VALUES ($1, $2, $3, $4, $5, $6)',
-                [transactionId, item.productId, item.quantity, item.price, item.costPrice, storeId]
+                [transactionId, item.productId, item.quantity, item.price, currentCostPrice, storeId]
             );
             await client.query(
                 'UPDATE products SET stock = stock - $1 WHERE id = $2 AND store_id = $3',
                 [item.quantity, item.productId, storeId]
             );
+            // Update the cart item in the sale response to reflect the cost price used
+            item.costPrice = currentCostPrice;
         }
 
         const finalPayments = [] as any[];
@@ -180,8 +187,12 @@ export const createSale = async (req: express.Request, res: express.Response) =>
                 updates.push(`store_credit = store_credit - $${params.length}`);
             }
             if (saleData.paymentStatus !== 'paid') {
-                params.push(saleData.total);
-                updates.push(`account_balance = account_balance + $${params.length}`);
+                const amountPaid = Number(saleData.amountPaid || 0);
+                const unpaidAmount = Number(saleData.total) - amountPaid;
+                if (unpaidAmount > 0.001) {
+                    params.push(unpaidAmount);
+                    updates.push(`account_balance = account_balance + $${params.length}`);
+                }
             }
             if (updates.length > 0) {
                 params.push(saleData.customerId);

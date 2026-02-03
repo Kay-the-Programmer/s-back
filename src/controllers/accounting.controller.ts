@@ -1,6 +1,6 @@
 import express from 'express';
 import db from '../db_client';
-import { Account, JournalEntry, SupplierInvoice, SupplierPayment } from '../types';
+import { Account, JournalEntry, SupplierInvoice, SupplierPayment, Sale, Customer } from '../types';
 import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { accountingService } from '../services/accounting.service';
@@ -166,6 +166,114 @@ export const adjustAccountBalance = async (req: express.Request, res: express.Re
         res.status(500).json({ message: 'Error adjusting account balance' });
     } finally {
         client.release();
+    }
+};
+
+export const getFinancialOverview = async (req: express.Request, res: express.Response) => {
+    try {
+        const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
+        if (!storeId) return res.status(400).json({ message: 'No active store selected.' });
+
+        const { startDate, endDate } = req.query as { startDate?: string, endDate?: string };
+        const adjustedEndDate = endDate ? new Date(new Date(endDate).getTime() + 24 * 60 * 60 * 1000 - 1).toISOString() : new Date().toISOString();
+        const start = startDate || new Date(0).toISOString(); // Default to beginning of time if no start date
+
+        // 1. Sub-ledger Stats
+        const inventoryQuery = `SELECT COALESCE(SUM(cost_price * stock), 0) as "inventoryValue" FROM products WHERE store_id = $1 AND status = 'active'`;
+        const arQuery = `SELECT COALESCE(SUM(account_balance), 0) as "accountsReceivable" FROM customers WHERE store_id = $1`;
+        const apQuery = `SELECT COALESCE(SUM(amount - amount_paid), 0) as "accountsPayable" FROM supplier_invoices WHERE store_id = $1`;
+
+        // 2. GL Balances
+        const glBalancesQuery = `
+            SELECT 
+                type,
+                sub_type as "subType",
+                COALESCE(SUM(balance), 0) as balance
+            FROM accounts 
+            WHERE store_id = $1 
+            GROUP BY type, sub_type
+        `;
+
+        // 3. Profit & Loss (Period-bound)
+        const revenueQuery = `
+            SELECT COALESCE(SUM(subtotal), 0) as revenue 
+            FROM sales 
+            WHERE store_id = $1 AND payment_status = 'paid' AND timestamp BETWEEN $2 AND $3
+        `;
+        const cogsQuery = `
+            SELECT COALESCE(SUM(si.cost_at_sale * (si.quantity - si.returned_quantity)), 0) as cogs
+            FROM sale_items si
+            JOIN sales s ON si.sale_id = s.transaction_id
+            WHERE s.store_id = $1 AND s.payment_status = 'paid' AND s.timestamp BETWEEN $2 AND $3
+        `;
+        const expensesQuery = `
+            SELECT COALESCE(SUM(amount), 0) as expenses 
+            FROM expenses 
+            WHERE store_id = $1 AND date BETWEEN $2 AND $3
+        `;
+        const refundsQuery = `
+            SELECT COALESCE(SUM(subtotal_amount), 0) as refunds
+            FROM returns
+            WHERE store_id = $1 AND timestamp BETWEEN $2 AND $3
+        `;
+
+        const [
+            invResult, arResult, apResult, glResult, revResult, cogsResult, expResult, refResult
+        ] = await Promise.all([
+            db.query(inventoryQuery, [storeId]),
+            db.query(arQuery, [storeId]),
+            db.query(apQuery, [storeId]),
+            db.query(glBalancesQuery, [storeId]),
+            db.query(revenueQuery, [storeId, start, adjustedEndDate]),
+            db.query(cogsQuery, [storeId, start, adjustedEndDate]),
+            db.query(expensesQuery, [storeId, start, adjustedEndDate]),
+            db.query(refundsQuery, [storeId, start, adjustedEndDate])
+        ]);
+
+        const inventoryValue = parseFloat(invResult.rows[0].inventoryValue);
+        const accountsReceivable = parseFloat(arResult.rows[0].accountsReceivable);
+        const accountsPayable = parseFloat(apResult.rows[0].accountsPayable);
+
+        const glBalances = glResult.rows.map(r => ({ ...r, balance: parseFloat(r.balance) }));
+        const cashBalance = glBalances.filter(b => b.subType === 'cash').reduce((sum, b) => sum + b.balance, 0);
+
+        const periodGrossSales = parseFloat(revResult.rows[0].revenue);
+        const periodRefunds = parseFloat(refResult.rows[0].refunds);
+        const periodNetRevenue = periodGrossSales - periodRefunds;
+        const periodCogs = parseFloat(cogsResult.rows[0].cogs);
+        const periodExpenses = parseFloat(expResult.rows[0].expenses);
+        const periodNetIncome = (periodNetRevenue - periodCogs) - periodExpenses;
+
+        // Total Assets from GL (for comparison)
+        const totalAssetsGL = glBalances.filter(b => b.type === 'asset').reduce((sum, b) => sum + b.balance, 0);
+        const totalLiabilitiesGL = glBalances.filter(b => b.type === 'liability').reduce((sum, b) => sum + b.balance, 0);
+
+        res.status(200).json({
+            summary: {
+                inventoryValue,
+                accountsReceivable,
+                accountsPayable,
+                cashBalance,
+                totalAssets: totalAssetsGL,
+                totalLiabilities: totalLiabilitiesGL,
+                equity: totalAssetsGL - totalLiabilitiesGL
+            },
+            period: {
+                revenue: periodNetRevenue,
+                cogs: periodCogs,
+                expenses: periodExpenses,
+                grossProfit: periodNetRevenue - periodCogs,
+                netIncome: periodNetIncome
+            },
+            checks: {
+                arMatch: Math.abs(accountsReceivable - (glBalances.find(b => b.subType === 'accounts_receivable')?.balance || 0)) < 0.01,
+                apMatch: Math.abs(accountsPayable - (glBalances.find(b => b.subType === 'accounts_payable')?.balance || 0)) < 0.01,
+                inventoryMatch: Math.abs(inventoryValue - (glBalances.find(b => b.subType === 'inventory')?.balance || 0)) < 0.01
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching financial overview:', error);
+        res.status(500).json({ message: 'Error fetching financial overview' });
     }
 };
 

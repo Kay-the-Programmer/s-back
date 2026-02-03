@@ -27,8 +27,10 @@ const allowedOrigins: (string | RegExp)[] = [
   'http://localhost:5173',
   'http://localhost:3000',
   'http://localhost',
+  'https://localhost',
   'capacitor://localhost',
 ].filter(Boolean) as (string | RegExp)[];
+
 
 const corsOptions: cors.CorsOptions = {
   origin: (origin, callback) => {

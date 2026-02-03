@@ -131,6 +131,8 @@ export interface Return {
     addToStock: boolean;
   }[];
   refundAmount: number;
+  taxAmount: number;
+  subtotalAmount: number;
   refundMethod: string;
 }
 

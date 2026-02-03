@@ -22,7 +22,7 @@ export const getActiveStockTake = async (req: express.Request, res: express.Resp
         }
         const session = await getActiveSessionWithItems(storeId);
         res.status(200).json(toCamelCase(session));
-    } catch(error) {
+    } catch (error) {
         console.error("Error fetching active stock take:", error);
         res.status(500).json({ message: "Error fetching active stock take" });
     }
@@ -55,7 +55,7 @@ export const startStockTake = async (req: express.Request, res: express.Response
         const newSession = await getActiveSessionWithItems(storeId);
         auditService.log(req.user!, 'Stock Take Started', `Session ID: ${id}`);
         res.status(201).json(toCamelCase(newSession));
-    } catch(error) {
+    } catch (error) {
         console.error("Error starting stock take:", error);
         res.status(500).json({ message: "Error starting stock take" });
     }
@@ -108,30 +108,54 @@ export const cancelStockTake = async (req: express.Request, res: express.Respons
 };
 
 export const finalizeStockTake = async (req: express.Request, res: express.Response) => {
-    // Should be a transaction
+    const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
+    if (!storeId) {
+        return res.status(400).json({ message: 'Store context required' });
+    }
+
+    const client = await (db as any)._pool.connect();
     try {
-        const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
-        if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
-        }
         const session = await getActiveSessionWithItems(storeId);
         if (!session) {
             return res.status(404).json({ message: 'No active stock take session to finalize.' });
         }
 
+        await client.query('BEGIN');
+
+        let totalAdjustmentValue = 0;
+
         for (const item of session.items) {
-            if (item.counted !== null && item.counted !== item.expected) {
-                await db.query("UPDATE products SET stock = $1 WHERE id = $2 AND store_id = $3", [item.counted, item.productId, storeId]);
+            if (item.counted !== null && Number(item.counted) !== Number(item.expected)) {
+                // Fetch current cost price to value the adjustment
+                const productRes = await client.query("SELECT cost_price FROM products WHERE id = $1 AND store_id = $2", [item.productId, storeId]);
+                const costPrice = productRes.rowCount > 0 ? parseFloat(productRes.rows[0].cost_price || 0) : 0;
+                const diff = Number(item.counted) - Number(item.expected);
+                totalAdjustmentValue += (diff * costPrice);
+
+                await client.query("UPDATE products SET stock = $1 WHERE id = $2 AND store_id = $3", [item.counted, item.productId, storeId]);
             }
         }
 
         const endTime = new Date().toISOString();
-        await db.query("UPDATE stock_takes SET status = 'completed', end_time = $1 WHERE id = $2 AND store_id = $3", [endTime, session.id, storeId]);
+        await client.query("UPDATE stock_takes SET status = 'completed', end_time = $1 WHERE id = $2 AND store_id = $3", [endTime, session.id, storeId]);
 
-        auditService.log(req.user!, 'Stock Take Finalized', `Session ID: ${session.id}.`);
-        res.status(200).json({ message: 'Stock take finalized and inventory updated.' });
+        if (Math.abs(totalAdjustmentValue) > 0.01) {
+            await accountingService.recordConsolidatedStockAdjustment(
+                totalAdjustmentValue,
+                `Stock take adjustment (Session: ${session.id})`,
+                client,
+                storeId
+            );
+        }
+
+        await client.query('COMMIT');
+        auditService.log(req.user!, 'Stock Take Finalized', `Session ID: ${session.id}. Total Adj: ${totalAdjustmentValue.toFixed(2)}`);
+        res.status(200).json({ message: 'Stock take finalized and inventory journal updated.' });
     } catch (error) {
+        await client.query('ROLLBACK');
         console.error("Error finalizing stock take:", error);
         res.status(500).json({ message: "Error finalizing stock take" });
+    } finally {
+        client.release();
     }
 };

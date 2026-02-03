@@ -178,10 +178,31 @@ export const createProduct = async (req: express.Request, res: express.Response)
 
         console.log('Executing query with values:', values);
 
-        const result = await db.query(queryText, values);
-        const createdProduct = result.rows[0];
-        await auditService.log(req.user!, 'Product Created', `Product: "${createdProduct.name}" (SKU: ${createdProduct.sku})`);
-        res.status(201).json(toCamelCase(createdProduct));
+        const client = await (db as any)._pool.connect();
+        try {
+            await client.query('BEGIN');
+            const result = await client.query(queryText, values);
+            const createdProduct = result.rows[0];
+
+            if (processedValues.stock > 0 && (processedValues.costPrice || 0) > 0) {
+                await accountingService.recordStockAdjustment(
+                    toCamelCase(createdProduct),
+                    0, // oldQuantity was 0
+                    'Initial Stock',
+                    client,
+                    storeId
+                );
+            }
+
+            await client.query('COMMIT');
+            await auditService.log(req.user!, 'Product Created', `Product: "${createdProduct.name}" (SKU: ${createdProduct.sku})`);
+            res.status(201).json(toCamelCase(createdProduct));
+        } catch (innerError) {
+            await client.query('ROLLBACK');
+            throw innerError;
+        } finally {
+            client.release();
+        }
     } catch (error) {
         // If database operation fails, clean up uploaded files
         const files = req.files as Express.Multer.File[];
@@ -261,16 +282,14 @@ export const updateProduct = async (req: express.Request, res: express.Response)
         if (!storeId) {
             return res.status(400).json({ message: 'Store context required' });
         }
-        const currentProductResult = await db.query('SELECT image_urls FROM products WHERE id = $1 AND store_id = $2', [id, storeId]);
+        const currentProductResult = await db.query('SELECT stock, cost_price, image_urls FROM products WHERE id = $1 AND store_id = $2', [id, storeId]);
         if (currentProductResult.rowCount === 0) {
-            if (files.length > 0) {
-                // Verify if we need to clean up. With memory storage, files aren't saved yet if we just return here? 
-                // Actually processImageUrls does the upload. We haven't called it yet. 
-                // So we don't need to delete anything here because files are in memory.
-                // deleteImageFiles(files.map(file => `/uploads/products/${file.filename}`));
-            }
             return res.status(404).json({ message: 'Product not found' });
         }
+
+        const oldStock = parseFloat(currentProductResult.rows[0].stock || 0);
+        const oldCost = parseFloat(currentProductResult.rows[0].cost_price || 0);
+        const oldInventoryValue = oldStock * oldCost;
 
         const dbImageUrls = currentProductResult.rows[0].image_urls;
         let currentImageUrls: string[] = [];
@@ -351,15 +370,39 @@ export const updateProduct = async (req: express.Request, res: express.Response)
             storeId
         ];
 
-        const result = await db.query(queryText, values);
-        if (result.rowCount === 0) {
-            return res.status(404).json({ message: 'Product not found' });
+        const client = await (db as any)._pool.connect();
+        try {
+            await client.query('BEGIN');
+            const result = await client.query(queryText, values);
+            if (result.rowCount === 0) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({ message: 'Product not found' });
+            }
+
+            const updatedProduct = result.rows[0];
+            const newStock = parseFloat(updatedProduct.stock || 0);
+            const newCost = parseFloat(updatedProduct.cost_price || 0);
+            const newInventoryValue = newStock * newCost;
+            const valueDiff = newInventoryValue - oldInventoryValue;
+
+            if (Math.abs(valueDiff) > 0.01) {
+                await accountingService.recordConsolidatedStockAdjustment(
+                    valueDiff,
+                    `Manual adjustment for ${updatedProduct.name}`,
+                    client,
+                    storeId
+                );
+            }
+
+            await client.query('COMMIT');
+            await auditService.log(req.user!, 'Product Updated', `Product: "${updatedProduct.name}" (ID: ${updatedProduct.id})`);
+            res.status(200).json(toCamelCase(updatedProduct));
+        } catch (innerError) {
+            await client.query('ROLLBACK');
+            throw innerError;
+        } finally {
+            client.release();
         }
-
-        const updatedProduct = result.rows[0];
-        await auditService.log(req.user!, 'Product Updated', `Product: "${updatedProduct.name}" (ID: ${updatedProduct.id})`);
-        res.status(200).json(toCamelCase(updatedProduct));
-
     } catch (error) {
         if (files.length > 0) {
             // Memory storage, files not saved if error occurs before upload call, 
@@ -528,7 +571,7 @@ export const adjustStock = async (req: express.Request, res: express.Response) =
             `Product: "${product.name}" | From: ${oldQuantity} To: ${finalStock}${actionDetail} | Reason: ${reason}`
         );
 
-        await accountingService.recordStockAdjustment(product, oldQuantity, reason, undefined, storeId);
+        await accountingService.recordStockAdjustment(updateResult.rows[0], oldQuantity, reason, undefined, storeId);
 
         res.status(200).json(toCamelCase(updateResult.rows[0]));
     } catch (error) {

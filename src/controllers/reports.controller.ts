@@ -21,7 +21,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         // 1. Gross Sales & Transactions (Directly from sales table to avoid join duplication)
         const grossSalesQuery = `
             SELECT
-                COALESCE(SUM(total), 0) AS "grossRevenue",
+                COALESCE(SUM(subtotal), 0) AS "grossRevenue",
                 COUNT(transaction_id) AS "totalTransactions"
             FROM sales
             WHERE timestamp BETWEEN $1 AND $2 AND payment_status = 'paid' AND store_id = $3
@@ -43,7 +43,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         // 3. Refunds (From returns table)
         const refundsQuery = `
             SELECT
-                COALESCE(SUM(refund_amount), 0) AS "totalRefunds"
+                COALESCE(SUM(subtotal_amount), 0) AS "totalRefunds"
             FROM returns
             WHERE timestamp BETWEEN $1 AND $2 AND store_id = $3;
         `;
@@ -55,17 +55,25 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         const totalRefunds = parseFloat(refundsResult.rows[0]?.totalRefunds || 0);
 
         const netRevenue = grossRevenue - totalRefunds;
-        const totalProfit = netRevenue - totalCogs;
-        // Note: This is simplified. Ideally CoGS should decrease when items are returned to stock?
-        // But typically Refund is a contra-revenue. If we put item back in stock, we regain the asset, 
-        // but the validation of "Profit on Sales" usually implies (Sales - Returns) - Cost of Goods Sold *that are gone*.
-        // If item came back, ensuring CoGS is credited is correct only if we track that specific return's cost reversal.
-        // For now, Net Revenue - COGS (of original sales) is a conservative profit estimate (lower bound if stock returned).
-        // Since we are fixing the "Misinterpretation", showing Net Revenue is the key.
+        const grossProfit = netRevenue - totalCogs;
+
+        // 4. Operating Expenses
+        const expensesQuery = `
+            SELECT COALESCE(SUM(amount), 0) AS "totalExpenses"
+            FROM expenses
+            WHERE date BETWEEN $1 AND $2 AND store_id = $3;
+        `;
+        const expensesResult = await db.query(expensesQuery, [startDate, adjustedEndDate, storeId]);
+        const totalOperatingExpenses = parseFloat(expensesResult.rows[0]?.totalExpenses || 0);
+
+        const netIncome = grossProfit - totalOperatingExpenses;
 
         const salesData = {
-            totalRevenue: netRevenue, // Display Net Revenue
-            totalProfit: totalProfit,
+            totalRevenue: netRevenue,
+            grossProfit: grossProfit,
+            totalProfit: grossProfit, // Legacy support for "Gross Profit" shown as "Total Profit"
+            netIncome: netIncome,
+            totalOperatingExpenses: totalOperatingExpenses,
             totalCogs: totalCogs,
             totalTransactions: totalTransactions
         };
@@ -76,7 +84,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         const trendGrossQuery = `
             SELECT
                 DATE(timestamp)::text as date,
-                COALESCE(SUM(total), 0) as gross_revenue
+                COALESCE(SUM(subtotal), 0) as gross_revenue
             FROM sales
             WHERE timestamp BETWEEN $1 AND $2 AND payment_status = 'paid' AND store_id = $3
             ${channel ? `AND channel = '${channel}' ` : ''}
@@ -103,7 +111,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         const trendRefundsQuery = `
             SELECT
                 DATE(timestamp)::text as date,
-                COALESCE(SUM(refund_amount), 0) as refunds
+                COALESCE(SUM(subtotal_amount), 0) as refunds
             FROM returns
             WHERE timestamp BETWEEN $1 AND $2 AND store_id = $3
             GROUP BY DATE(timestamp)
@@ -111,35 +119,63 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         `;
         const trendRefundsResult = await db.query(trendRefundsQuery, [startDate, adjustedEndDate, storeId]);
 
+        // 4. Daily Expenses
+        const trendExpensesQuery = `
+        SELECT
+        DATE(date):: text as date,
+            COALESCE(SUM(amount), 0) as expenses
+            FROM expenses
+            WHERE date BETWEEN $1 AND $2 AND store_id = $3
+            GROUP BY DATE(date)
+            ORDER BY date ASC;
+        `;
+        const trendExpensesResult = await db.query(trendExpensesQuery, [startDate, adjustedEndDate, storeId]);
+
         // Merge Data
-        const trendMap: Record<string, { revenue: number, profit: number }> = {};
+        const trendMap: Record<string, { revenue: number, grossProfit: number, netIncome: number, expenses: number }> = {};
 
         // Helper to init date entry
         const getOrInit = (date: string) => {
-            if (!trendMap[date]) trendMap[date] = { revenue: 0, profit: 0 };
+            if (!trendMap[date]) trendMap[date] = { revenue: 0, grossProfit: 0, netIncome: 0, expenses: 0 };
             return trendMap[date];
         };
 
-        // Add Gross
+        // Add Gross Revenue
         trendGrossResult.rows.forEach(row => {
             const entry = getOrInit(row.date);
             entry.revenue += parseFloat(row.gross_revenue);
-            entry.profit += parseFloat(row.gross_revenue); // Start profit as revenue
+            entry.grossProfit += parseFloat(row.gross_revenue);
+            entry.netIncome += parseFloat(row.gross_revenue);
         });
 
-        // Subtract Refunds from Revenue and Profit
+        // Subtract Refunds from Revenue, Gross Profit, and Net Income
         trendRefundsResult.rows.forEach(row => {
             const entry = getOrInit(row.date);
             const ref = parseFloat(row.refunds);
             entry.revenue -= ref;
-            entry.profit -= ref;
+            entry.grossProfit -= ref;
+            entry.netIncome -= ref;
         });
 
-        // Subtract COGS from Profit only
+        // Subtract COGS from Gross Profit and Net Income
         trendCogsResult.rows.forEach(row => {
             const entry = getOrInit(row.date);
             const cogs = parseFloat(row.cogs);
-            entry.profit -= cogs;
+            entry.grossProfit -= cogs;
+            entry.netIncome -= cogs;
+        });
+
+        // Subtract Expenses from Net Income only
+        trendExpensesResult.rows.forEach(row => {
+            const entry = getOrInit(row.date);
+            const exp = parseFloat(row.expenses);
+            entry.expenses += exp;
+            entry.netIncome -= exp;
+        });
+
+        // For backward compatibility, also include "profit" which maps to grossProfit
+        Object.keys(trendMap).forEach(date => {
+            (trendMap[date] as any).profit = trendMap[date].grossProfit;
         });
 
         const salesTrend = trendMap;
@@ -191,15 +227,15 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
 
         // --- Cashflow from Journal Entries ---
         const cashflowQuery = `
-            SELECT
-                DATE(je.date)::text as date,
-                SUM(CASE WHEN jel.type = 'debit' AND a.type = 'asset' THEN jel.amount ELSE 0 END) as inflow,
-                SUM(CASE WHEN jel.type = 'credit' AND a.type = 'asset' THEN jel.amount ELSE 0 END) as outflow
+        SELECT
+        DATE(je.date):: text as date,
+            SUM(CASE WHEN jel.type = 'debit' AND a.type = 'asset' THEN jel.amount ELSE 0 END) as inflow,
+            SUM(CASE WHEN jel.type = 'credit' AND a.type = 'asset' THEN jel.amount ELSE 0 END) as outflow
             FROM journal_entries je
                      JOIN journal_entry_lines jel ON je.id = jel.journal_entry_id
                      JOIN accounts a ON jel.account_id = a.id
             WHERE je.date BETWEEN $1 AND $2 
-              AND a.sub_type IN ('cash', 'accounts_receivable')
+              AND a.sub_type IN('cash', 'accounts_receivable')
               AND je.store_id = $3
             GROUP BY DATE(je.date)
             ORDER BY date ASC;
@@ -208,9 +244,9 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
 
         // New query to see "where is the money going"
         const outflowBreakdownQuery = `
-            SELECT
-                a_dest.name as category,
-                SUM(jel_dest.amount) as amount
+        SELECT
+        a_dest.name as category,
+            SUM(jel_dest.amount) as amount
             FROM journal_entry_lines jel_source
             JOIN journal_entries je ON jel_source.journal_entry_id = je.id
             JOIN journal_entry_lines jel_dest ON je.id = jel_dest.journal_entry_id
@@ -219,9 +255,9 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             WHERE je.store_id = $3
               AND je.date BETWEEN $1 AND $2
               AND jel_source.type = 'credit'
-              AND a_source.sub_type IN ('cash', 'accounts_receivable')
+              AND a_source.sub_type IN('cash', 'accounts_receivable')
               AND jel_dest.type = 'debit'
-              AND a_dest.sub_type NOT IN ('cash', 'accounts_receivable')
+              AND a_dest.sub_type NOT IN('cash', 'accounts_receivable')
             GROUP BY a_dest.name
             ORDER BY amount DESC;
         `;
@@ -252,10 +288,10 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
 
         // --- Inventory Calculations ---
         const invQuery = `
-            SELECT
-                COALESCE(SUM(price * stock), 0) as "totalRetailValue",
-                COALESCE(SUM(cost_price * stock), 0) as "totalCostValue",
-                COALESCE(SUM(stock), 0) as "totalUnits"
+        SELECT
+        COALESCE(SUM(price * stock), 0) as "totalRetailValue",
+            COALESCE(SUM(cost_price * stock), 0) as "totalCostValue",
+            COALESCE(SUM(stock), 0) as "totalUnits"
             FROM products WHERE status = 'active' AND store_id = $1;
         `;
         const invResult = await db.query(invQuery, [storeId]);
@@ -263,11 +299,11 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
 
         // --- Customer Calculations ---
         const customerQuery = `
-            SELECT
-                    (SELECT COUNT(*) FROM customers WHERE store_id = $1) as "totalCustomers",
-                    COALESCE(SUM(account_balance), 0) as "totalStoreCreditOwed"
+        SELECT
+            (SELECT COUNT(*) FROM customers WHERE store_id = $1) as "totalCustomers",
+            COALESCE(SUM(account_balance), 0) as "totalStoreCreditOwed"
             FROM customers WHERE store_id = $1
-        `;
+            `;
         const customerResult = await db.query(customerQuery, [storeId]);
         const customerData = customerResult.rows[0] || { totalCustomers: '0', totalStoreCreditOwed: '0' };
 
@@ -275,7 +311,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         const supplierQuery = `
             SELECT COUNT(*) as "totalSuppliers"
             FROM suppliers WHERE store_id = $1
-        `;
+            `;
         const supplierResult = await db.query(supplierQuery, [storeId]);
         const totalSuppliers = parseInt(supplierResult.rows[0]?.totalSuppliers || 0, 10);
 
@@ -284,7 +320,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             SELECT COUNT(DISTINCT customer_id) as "activeCustomers"
             FROM sales
             WHERE timestamp BETWEEN $1 AND $2 AND customer_id IS NOT NULL AND store_id = $3
-        `;
+            `;
         const activeCustomersResult = await db.query(activeCustomersQuery, [startDate, adjustedEndDate, storeId]);
         const activeCustomers = activeCustomersResult.rows[0] ? parseInt(activeCustomersResult.rows[0].activeCustomers, 10) : 0;
 
@@ -293,7 +329,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             SELECT COUNT(*) as "newCustomers"
             FROM customers
             WHERE created_at BETWEEN $1 AND $2 AND store_id = $3
-        `;
+            `;
         const newCustomersResult = await db.query(newCustomersQuery, [startDate, adjustedEndDate, storeId]);
         const newCustomers = newCustomersResult.rows[0] ? parseInt(newCustomersResult.rows[0].newCustomers, 10) : 0;
 
@@ -322,11 +358,15 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         const report = {
             sales: {
                 totalRevenue: salesData.totalRevenue,
-                totalProfit: salesData.totalProfit,
+                grossProfit: salesData.grossProfit,
+                totalProfit: salesData.totalProfit, // Gross Profit for compatibility
+                netIncome: salesData.netIncome,
+                totalOperatingExpenses: salesData.totalOperatingExpenses,
                 totalCogs: salesData.totalCogs,
                 totalTransactions: salesData.totalTransactions,
                 avgSaleValue: salesData.totalTransactions > 0 ? (salesData.totalRevenue / salesData.totalTransactions) : 0,
-                grossMargin: salesData.totalRevenue > 0 ? ((salesData.totalProfit / salesData.totalRevenue) * 100) : 0,
+                grossMargin: salesData.totalRevenue > 0 ? ((salesData.grossProfit / salesData.totalRevenue) * 100) : 0,
+                netMargin: salesData.totalRevenue > 0 ? ((salesData.netIncome / salesData.totalRevenue) * 100) : 0,
                 salesTrend: salesTrend,
                 salesByChannel: salesByChannelResult.rows.map(row => ({
                     channel: row.channel || 'pos',

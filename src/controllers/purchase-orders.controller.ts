@@ -172,11 +172,36 @@ export const receiveItems = async (req: express.Request, res: express.Response) 
             return res.status(404).json({ message: 'Purchase Order not found' });
         }
 
+        const poItemsResult = await client.query('SELECT product_id, cost_price FROM purchase_order_items WHERE po_id = $1 AND store_id = $2', [id, storeId]);
+        const poItemsMap = new Map<string, number>(poItemsResult.rows.map((row: any) => [row.product_id, parseFloat(row.cost_price)]));
+
         for (const item of receivedItems) {
-            // Update received quantity on PO
+            // 1. Update received quantity on PO
             await client.query('UPDATE purchase_order_items SET received_quantity = received_quantity + $1 WHERE po_id = $2 AND product_id = $3 AND store_id = $4', [item.quantity, id, item.productId, storeId]);
-            // Update product stock (tenant-scoped)
-            await client.query('UPDATE products SET stock = stock + $1 WHERE id = $2 AND store_id = $3', [item.quantity, item.productId, storeId]);
+
+            // 2. WAC Calculation & Stock Update
+            const productResult = await client.query('SELECT stock, cost_price FROM products WHERE id = $1 AND store_id = $2', [item.productId, storeId]);
+            if (productResult.rowCount > 0) {
+                const oldStock = parseFloat(productResult.rows[0].stock || 0);
+                const oldCost = parseFloat(productResult.rows[0].cost_price || 0);
+                const incomingQty = parseFloat(String(item.quantity));
+                const incomingCost: number = poItemsMap.get(item.productId) || 0;
+
+                let newCost = oldCost;
+                if (oldStock + incomingQty > 0) {
+                    if (oldStock <= 0) {
+                        newCost = incomingCost;
+                    } else {
+                        // (Old Value + New Value) / Total Quantity
+                        newCost = ((oldStock * oldCost) + (incomingQty * incomingCost)) / (oldStock + incomingQty);
+                    }
+                }
+
+                await client.query(
+                    'UPDATE products SET stock = stock + $1, cost_price = $2 WHERE id = $3 AND store_id = $4',
+                    [incomingQty, newCost, item.productId, storeId]
+                );
+            }
         }
 
         // Update PO status
