@@ -9,5 +9,6 @@ router.get('/plans', subscriptionController.getPlans);
 router.post('/pay', protect, subscriptionController.createPayment);
 router.get('/verify/:reference', protect, subscriptionController.verifyPayment);
 router.post('/cancel/:reference', protect, subscriptionController.cancelPayment);
+router.get('/history/:storeId', protect, subscriptionController.getHistory);
 
 export default router;

@@ -58,3 +58,18 @@ export const cancelPayment = async (req: Request, res: Response) => {
         res.status(400).json({ message: error.message || 'Failed to cancel payment' });
     }
 };
+
+export const getHistory = async (req: Request, res: Response) => {
+    try {
+        const { storeId } = req.params;
+        if (!storeId) {
+            return res.status(400).json({ error: 'Store ID is required' });
+        }
+
+        const history = await subscriptionService.getSubscriptionHistory(storeId);
+        res.json(history);
+    } catch (error) {
+        console.error('Error fetching subscription history:', error);
+        res.status(500).json({ error: 'Failed to fetch subscription history' });
+    }
+};

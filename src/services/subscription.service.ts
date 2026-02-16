@@ -229,3 +229,34 @@ export const processMockPayment = async (paymentId: string) => {
     return { success: true, newStatus: 'active', expiresAt: endDate };
 };
 
+export const getSubscriptionHistory = async (storeId: string) => {
+    const result = await db.query(
+        `SELECT * FROM subscription_payments 
+         WHERE store_id = $1 
+         ORDER BY created_at DESC`,
+        [storeId]
+    );
+
+    return result.rows.map(row => {
+        const plan = SUBSCRIPTION_PLANS.find(p => p.id === row.plan_id) || SUBSCRIPTION_PLANS[1];
+        const startDate = new Date(row.created_at);
+        const endDate = new Date(startDate);
+        endDate.setMonth(endDate.getMonth() + 1); // Approximation
+
+        return {
+            id: row.id,
+            planName: plan.name,
+            amount: parseFloat(row.amount),
+            currency: row.currency,
+            status: row.status === 'completed' ? 'succeeded' : row.status,
+            startDate: startDate.toISOString(),
+            endDate: endDate.toISOString(),
+            paymentMethod: row.method,
+            reference: row.reference,
+            createdAt: row.created_at,
+            invoiceId: `INV-${row.reference.substring(7, 15)}`, // Generate a pseudo invoice ID
+            invoiceUrl: '#' // We handle generation on frontend
+        };
+    });
+};
+

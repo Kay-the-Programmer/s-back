@@ -149,13 +149,17 @@ export const updateConfiguration = async (req: express.Request, res: express.Res
 export const getConversations = async (req: express.Request, res: express.Response) => {
     try {
         const storeId = req.user?.currentStoreId;
-        if (!storeId) return res.status(400).json({ message: 'Store ID required' });
+        const isSystemRequest = req.query.system === 'true' && req.user?.role === 'superadmin';
+
+        if (!storeId && !isSystemRequest) return res.status(400).json({ message: 'Store ID required' });
+
+        const targetStoreId = (isSystemRequest ? 'system' : storeId) as string;
 
         const result = await db.query(
             `SELECT * FROM whatsapp_conversations 
              WHERE store_id = $1 
              ORDER BY last_message_at DESC LIMIT 50`,
-            [storeId]
+            [targetStoreId]
         );
         res.json(result.rows);
     } catch (error) {
@@ -167,9 +171,12 @@ export const getMessages = async (req: express.Request, res: express.Response) =
     try {
         const storeId = req.user?.currentStoreId;
         const { id } = req.params; // Conversation ID
+        const isSystemRequest = req.query.system === 'true' && req.user?.role === 'superadmin';
+
+        const targetStoreId = (isSystemRequest ? 'system' : storeId) as string;
 
         // Security check: ensure conversation belongs to store
-        const check = await db.query('SELECT 1 FROM whatsapp_conversations WHERE id = $1 AND store_id = $2', [id, storeId]);
+        const check = await db.query('SELECT 1 FROM whatsapp_conversations WHERE id = $1 AND store_id = $2', [id, targetStoreId]);
         if (check.rows.length === 0) return res.status(403).json({ message: 'Access denied' });
 
         const messages = await db.query(
@@ -187,18 +194,21 @@ export const getMessages = async (req: express.Request, res: express.Response) =
 export const sendManualMessage = async (req: express.Request, res: express.Response) => {
     try {
         const storeId = req.user?.currentStoreId;
-        if (!storeId) return res.status(400).json({ message: 'Store ID required' });
+        const { conversationId, content, system } = req.body;
+        const isSystemRequest = system === true && req.user?.role === 'superadmin';
 
-        const { conversationId, content } = req.body;
+        if (!storeId && !isSystemRequest) return res.status(400).json({ message: 'Store ID required' });
+
+        const targetStoreId = (isSystemRequest ? 'system' : storeId) as string;
 
         // Get customer phone from conversation
-        const conv = await db.query('SELECT customer_phone FROM whatsapp_conversations WHERE id = $1 AND store_id = $2', [conversationId, storeId]);
+        const conv = await db.query('SELECT customer_phone FROM whatsapp_conversations WHERE id = $1 AND store_id = $2', [conversationId, targetStoreId]);
         if (conv.rows.length === 0) return res.status(404).json({ message: 'Conversation not found' });
 
         const to = conv.rows[0].customer_phone;
 
-        await whatsAppService.sendTextMessage(storeId, to, content);
-        await whatsAppService.logMessage(conversationId, storeId, 'outbound', 'text', content, undefined, 'sent', false);
+        await whatsAppService.sendTextMessage(targetStoreId, to, content);
+        await whatsAppService.logMessage(conversationId, targetStoreId, 'outbound', 'text', content, undefined, 'sent', false);
 
         res.json({ message: 'Message sent' });
     } catch (error: any) {
