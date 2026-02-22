@@ -105,6 +105,7 @@ function analyzeQueryIntent(query: string): {
     needsOrders: boolean;
     needsReturns: boolean;
     needsProjection: boolean;
+    isReportRequest: boolean;
     goalAmount?: number;
     timeframe: 'today' | 'week' | 'month' | 'all';
 } {
@@ -118,6 +119,7 @@ function analyzeQueryIntent(query: string): {
     const orderKeywords = ['purchase order', 'po', 'supplier', 'order', 'pending'];
     const returnKeywords = ['return', 'refund', 'returned'];
     const projectionKeywords = ['million', 'reach', 'goal', 'how long', 'forecast', 'projection', 'estimate', 'predict', 'when will', 'how much will', 'project', 'make'];
+    const reportKeywords = ['report', 'export', 'statement', 'pdf', 'excel', 'spreadsheet', 'download', 'csv', 'summary'];
 
     // Timeframe detection
     let timeframe: 'today' | 'week' | 'month' | 'all' = 'today';
@@ -144,15 +146,17 @@ function analyzeQueryIntent(query: string): {
     }
 
     const needsProjection = projectionKeywords.some(kw => lowerQuery.includes(kw));
+    const isReportRequest = reportKeywords.some(kw => lowerQuery.includes(kw));
 
     return {
-        needsSales: salesKeywords.some(kw => lowerQuery.includes(kw)) || lowerQuery.includes('overview') || lowerQuery.includes('snapshot') || needsProjection,
-        needsInventory: inventoryKeywords.some(kw => lowerQuery.includes(kw)) || lowerQuery.includes('overview') || lowerQuery.includes('snapshot'),
-        needsCustomers: customerKeywords.some(kw => lowerQuery.includes(kw)),
-        needsFinancial: financialKeywords.some(kw => lowerQuery.includes(kw)),
-        needsOrders: orderKeywords.some(kw => lowerQuery.includes(kw)),
-        needsReturns: returnKeywords.some(kw => lowerQuery.includes(kw)),
+        needsSales: salesKeywords.some(kw => lowerQuery.includes(kw)) || lowerQuery.includes('overview') || lowerQuery.includes('snapshot') || needsProjection || isReportRequest,
+        needsInventory: inventoryKeywords.some(kw => lowerQuery.includes(kw)) || lowerQuery.includes('overview') || lowerQuery.includes('snapshot') || isReportRequest,
+        needsCustomers: customerKeywords.some(kw => lowerQuery.includes(kw)) || isReportRequest,
+        needsFinancial: financialKeywords.some(kw => lowerQuery.includes(kw)) || isReportRequest,
+        needsOrders: orderKeywords.some(kw => lowerQuery.includes(kw)) || isReportRequest,
+        needsReturns: returnKeywords.some(kw => lowerQuery.includes(kw)) || isReportRequest,
         needsProjection,
+        isReportRequest,
         goalAmount,
         timeframe
     };
@@ -831,7 +835,7 @@ export const getPlatformInsight = async (req: express.Request, res: express.Resp
 
 export const handleChat = async (req: express.Request, res: express.Response) => {
     try {
-        const { query, context } = req.body;
+        const { query, context, history } = req.body;
         const user = req.user;
         const storeId = user?.currentStoreId;
         const currencySymbol = context?.currency?.symbol || '$';
@@ -1053,13 +1057,19 @@ QUICK OVERVIEW (Currency: ${currencyCode}):
             `);
         }
 
+        // Format chat history for the AI
+        const historyContext = history && history.length > 0
+            ? history.map((msg: any) => `${msg.role.toUpperCase()}: ${msg.content}`).join('\n')
+            : "No previous conversation.";
+
         // Construct enhanced AI prompt
-        const systemContext = `You are "Salepilot Assistant", an intelligent AI agent.
+        const systemContext = `You are "SalePilot Business Assistant", a sophisticated and proactive AI business partner.
         
         REASONING PROTOCOL:
         1. Parse the BUSINESS DATA provided.
-        2. Identify key trends or issues.
-        3. Formulate a concise, data-backed response.
+        2. Identify key trends, anomalies, or growth opportunities.
+        3. Consider the CONVERSATION HISTORY for context and follow-up intent.
+        4. Formulate a conversational, insightful, and data-backed response.
         
         YOUR THINKING PROCESS:
         You MUST wrap your internal reasoning in <THINKING> tags before the final response.
@@ -1067,16 +1077,23 @@ QUICK OVERVIEW (Currency: ${currencyCode}):
         Current Date: ${new Date().toISOString().split('T')[0]}
         Store ID: ${storeId}
         
+        CONVERSATION HISTORY:
+        ${historyContext}
+
         BUSINESS DATA:
         ${contextParts.join('\n')}
         
         USER QUESTION: "${query}"
         
         INSTRUCTIONS:
-        - Provide a clear, conversational answer.
-        - Use specific numbers and metrics.
+        - Respond as a helpful, professional business assistant, not just a data reporter.
+        - Provide clear, actionable insights using specific numbers and metrics.
         - Format numbers clearly with ${currencySymbol}.
-        - End with a single "Smart Action" the user can take.`;
+        - Always look for ways to help the user grow their business.
+        - If the user asks for a report, statement, or export (detected: ${intent.isReportRequest}), you MUST include the raw data for that report in a structured JSON format at the end of your response, wrapped in <REPORT_DATA> tags.
+        - The JSON in <REPORT_DATA> should have a 'title', 'headers' (array of strings), and 'rows' (array of arrays).
+        - After providing your answer or report, ALWAYS ask a proactive, data-driven follow-up question that could help the user explore their business deeper (e.g., "Would you like to see which products are currently losing you money?" or "Shall I analyze the impact of increasing your marketing spend on top products?").
+        - End with a "Smart Action" or advice that helps the business improve.`;
 
         // Call AI with enhanced context
         const model = genAI.getGenerativeModel({
@@ -1088,7 +1105,7 @@ QUICK OVERVIEW (Currency: ${currencyCode}):
         });
 
         const result = await model.generateContent(systemContext);
-        res.json({ response: result.response.text() });
+        res.json({ response: result.response.text(), intent: intent });
 
     } catch (error: any) {
         console.error('AI Chat Error:', error);
