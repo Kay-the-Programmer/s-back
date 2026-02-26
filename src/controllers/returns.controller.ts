@@ -117,6 +117,19 @@ export const createReturn = async (req: express.Request, res: express.Response) 
         await auditService.log(req.user!, 'Return Processed', `For Sale ID: ${originalSaleId}, Amount: ${refundAmount.toFixed(2)}`, client);
 
         await client.query('COMMIT');
+
+        // --- Push Notification for Return ---
+        try {
+            const { pushService } = await import('../services/push.service');
+            await pushService.sendToStore(storeId, {
+                title: 'Return Processed 🔙',
+                body: `Return of ${refundAmount.toFixed(2)} for Sale ID ${originalSaleId}.`,
+                url: `/returns`
+            });
+        } catch (pushErr) {
+            console.error('Push failed for return:', pushErr);
+        }
+
         res.status(201).json({ ...newReturn, returnedItems });
 
     } catch (error) {

@@ -4,6 +4,7 @@ import { PurchaseOrder, ReceptionEvent, SupplierInvoice } from '../types';
 import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { accountingService } from '../services/accounting.service';
+import { adminDb } from '../firebase';
 
 export const getPurchaseOrders = async (req: express.Request, res: express.Response) => {
     try {
@@ -61,6 +62,39 @@ export const createPurchaseOrder = async (req: express.Request, res: express.Res
         }
 
         await client.query('COMMIT');
+
+        // --- Trigger Email Extension for PO Confirmation ---
+        if (poData.supplierId && adminDb) {
+            try {
+                const supplierResult = await db.query('SELECT email, name FROM suppliers WHERE id = $1 AND store_id = $2', [poData.supplierId, storeId]);
+                if (supplierResult.rowCount && supplierResult.rowCount > 0 && supplierResult.rows[0].email) {
+                    const supplier = supplierResult.rows[0];
+                    const emailHtml = `
+                        <h2>Purchase Order: ${poNumber}</h2>
+                        <p>Hi ${supplier.name || 'Supplier'},</p>
+                        <p>Please find attached our purchase order request:</p>
+                        <ul>
+                            ${items.map((item: any) => `<li>${item.quantity}x ${item.productName || item.sku || item.productId}</li>`).join('')}
+                        </ul>
+                        <p><strong>Total Value:</strong> ${poData.total}</p>
+                        <p>Expected Date: ${poData.expectedAt || 'Not specified'}</p>
+                    `;
+
+                    await adminDb.collection('mail').add({
+                        to: supplier.email,
+                        message: {
+                            subject: `New Purchase Order - ${poNumber}`,
+                            html: emailHtml
+                        }
+                    });
+                    console.log(`Added PO email for ${poNumber} to Firestore mail collection.`);
+                }
+            } catch (emailError) {
+                console.error('Failed to trigger PO confirmation email:', emailError);
+            }
+        }
+        // ----------------------------------------------------
+
         auditService.log(req.user!, 'Purchase Order Created', `PO Number: ${poNumber}`);
         res.status(201).json({ ...newPO, items });
     } catch (error) {
@@ -114,6 +148,18 @@ export const updatePurchaseOrder = async (req: express.Request, res: express.Res
 
         if (oldStatus === 'draft' && updatedPO.status === 'ordered') {
             auditService.log(req.user!, 'Purchase Order Placed', `PO Number: ${updatedPO.poNumber}`);
+
+            // Notify staff/admin about new PO placed (if relevant)
+            try {
+                const { pushService } = await import('../services/push.service');
+                await pushService.sendToStore(storeId, {
+                    title: 'PO Placed 📦',
+                    body: `Purchase Order ${updatedPO.poNumber} has been placed.`,
+                    url: `/purchase-orders/${id}`
+                }, ['admin', 'inventory_manager']);
+            } catch (pushErr) {
+                console.error('Push failed for PO update:', pushErr);
+            }
         } else {
             auditService.log(req.user!, 'Purchase Order Updated', `PO Number: ${updatedPO.poNumber}`);
         }
@@ -233,6 +279,19 @@ export const receiveItems = async (req: express.Request, res: express.Response) 
         await client.query('COMMIT');
 
         auditService.log(req.user!, 'PO Stock Received', `PO ID: ${id} | ${receivedItems.length} item types.`);
+
+        // --- Push Notification for Stock Reception ---
+        try {
+            const { pushService } = await import('../services/push.service');
+            await pushService.sendToStore(storeId, {
+                title: 'Stock Received! 📥',
+                body: `Stock for PO ${updatedPO.poNumber} has been ${updatedPO.status === 'received' ? 'fully' : 'partially'} received.`,
+                url: `/purchase-orders/${id}`
+            });
+        } catch (pushErr) {
+            console.error('Push failed for PO reception:', pushErr);
+        }
+
         res.status(200).json(updatedPO);
     } catch (error) {
         await client.query('ROLLBACK');

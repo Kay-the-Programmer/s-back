@@ -7,6 +7,7 @@ import { accountingService } from '../services/accounting.service';
 import LencoService from '../services/lenco.service';
 
 import SocketService from '../services/socket.service';
+import { adminDb } from '../firebase';
 
 export const getSales = async (req: express.Request, res: express.Response) => {
     const { startDate, endDate, customerId, paymentStatus } = req.query as { [key: string]: string };
@@ -137,20 +138,63 @@ export const createSale = async (req: express.Request, res: express.Response) =>
         const newSale = saleResult.rows[0];
 
         const productIds = saleData.cart.map(i => i.productId);
-        const productsResult = await client.query('SELECT id, cost_price FROM products WHERE id = ANY($1::text[]) AND store_id = $2', [productIds, storeId]);
-        const costPriceMap = new Map<string, number>(productsResult.rows.map((p: any) => [p.id, parseFloat(p.cost_price || 0)]));
+        const productsResult = await client.query('SELECT id, name, cost_price, stock, reorder_point FROM products WHERE id = ANY($1::text[]) AND store_id = $2', [productIds, storeId]);
+        const productMap = new Map<string, any>(productsResult.rows.map((p: any) => [p.id, p]));
 
         for (const item of saleData.cart) {
-            const currentCostPrice = costPriceMap.get(item.productId) ?? 0;
+            const product = productMap.get(item.productId);
+            const currentCostPrice = parseFloat(product?.cost_price || 0);
+
             await client.query(
                 'INSERT INTO sale_items(sale_id, product_id, quantity, price_at_sale, cost_at_sale, store_id) VALUES ($1, $2, $3, $4, $5, $6)',
                 [transactionId, item.productId, item.quantity, item.price, currentCostPrice, storeId]
             );
+
+            const newStock = parseFloat(product.stock) - item.quantity;
             await client.query(
-                'UPDATE products SET stock = stock - $1 WHERE id = $2 AND store_id = $3',
-                [item.quantity, item.productId, storeId]
+                'UPDATE products SET stock = $1 WHERE id = $2 AND store_id = $3',
+                [newStock, item.productId, storeId]
             );
-            // Update the cart item in the sale response to reflect the cost price used
+
+            if (product.reorder_point !== null && newStock <= parseFloat(product.reorder_point)) {
+                try {
+                    const title = "Low Stock Alert ⚠️";
+                    const message = `Low stock: ${product.name} (${newStock} left). Reorder at: ${product.reorder_point}.`;
+
+                    const { pushService } = await import('../services/push.service');
+                    await pushService.sendToStore(storeId, {
+                        title: title,
+                        body: message,
+                        url: `/inventory`
+                    }, ['admin', 'inventory_manager', 'staff']);
+
+                    // --- Trigger Low Stock Email ---
+                    if (adminDb) {
+                        try {
+                            const storeResult = await db.query('SELECT owner_id FROM stores WHERE id = $1', [storeId]);
+                            if (storeResult.rowCount && storeResult.rows[0].owner_id) {
+                                const ownerRes = await db.query('SELECT email, name FROM users WHERE id = $1', [storeResult.rows[0].owner_id]);
+                                if (ownerRes.rowCount && ownerRes.rows[0].email) {
+                                    await adminDb.collection('mail_events').add({
+                                        type: 'LOW_STOCK_ALERT',
+                                        storeId,
+                                        userEmail: ownerRes.rows[0].email,
+                                        userName: ownerRes.rows[0].name,
+                                        productName: product.name,
+                                        currentStock: newStock,
+                                        reorderPoint: parseFloat(product.reorder_point),
+                                        timestamp: new Date().toISOString()
+                                    });
+                                }
+                            }
+                        } catch (emailErr) {
+                            console.error('Failed to trigger low stock email:', emailErr);
+                        }
+                    }
+                    // --------------------------------
+                } catch (e) { console.error('Low stock notification failed', e); }
+            }
+
             item.costPrice = currentCostPrice;
         }
 
@@ -208,6 +252,45 @@ export const createSale = async (req: express.Request, res: express.Response) =>
         await client.query('COMMIT');
 
         const saleResponse = toCamelCase({ ...newSale, cart: saleData.cart, payments: finalPayments });
+
+        // --- Push Notification for New Sale ---
+        try {
+            const { pushService } = await import('../services/push.service');
+            await pushService.sendToStore(storeId, {
+                title: 'New Sale Created! 💰',
+                body: `Transaction ${transactionId} for ${Number(saleData.total).toFixed(2)}`,
+                url: `/sales/history`
+            }, ['admin', 'staff', 'superadmin']);
+        } catch (pushError) {
+            console.error('Failed to send push notification for new sale:', pushError);
+        }
+        // --------------------------------------
+
+        // --- Trigger Email Extension for Order Confirmation ---
+        if (saleData.customerId && adminDb) {
+            try {
+                const customerResult = await db.query('SELECT email, name FROM customers WHERE id = $1 AND store_id = $2', [saleData.customerId, storeId]);
+                if (customerResult.rowCount && customerResult.rowCount > 0 && customerResult.rows[0].email) {
+                    const customer = customerResult.rows[0];
+
+                    // Add to mail_events for structured template processing
+                    await adminDb.collection('mail_events').add({
+                        type: 'ORDER_CONFIRMATION',
+                        storeId,
+                        transactionId,
+                        userEmail: customer.email,
+                        userName: customer.name || 'Customer',
+                        total: saleData.total,
+                        cart: saleData.cart,
+                        timestamp: new Date().toISOString()
+                    });
+                    console.log(`Added order confirmation event for ${transactionId} to Firestore.`);
+                }
+            } catch (emailError) {
+                console.error('Failed to trigger order confirmation email:', emailError);
+            }
+        }
+        // ----------------------------------------------------
 
         // Broadcast to store room for real-time updates
         try {
@@ -369,6 +452,25 @@ export const updateFulfillmentStatus = async (req: express.Request, res: express
                 'UPDATE sales SET fulfillment_status = $1 WHERE transaction_id = $2 AND store_id = $3 RETURNING *',
                 [status, id, storeId]
             );
+
+            // Send Push Notification to Customer
+            if (sale.customerId) {
+                try {
+                    const { pushService } = await import('../services/push.service');
+                    let statusMsg = `Your order ${id} is now ${status}!`;
+                    if (status === 'shipped') statusMsg = `Great news! Your order ${id} has been shipped. 🚚`;
+                    if (status === 'fulfilled') statusMsg = `Your order ${id} has been fulfilled and is ready. ✅`;
+                    if (status === 'cancelled') statusMsg = `Your order ${id} has been cancelled. ℹ️`;
+
+                    await pushService.sendToUsers([sale.customerId], {
+                        title: 'Order Update',
+                        body: statusMsg,
+                        url: `/marketplace/orders` // or relevant tracking page
+                    });
+                } catch (pushErr) {
+                    console.error('Failed to send fulfillment push notification:', pushErr);
+                }
+            }
 
             await auditService.log(
                 req.user!,

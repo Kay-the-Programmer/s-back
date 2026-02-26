@@ -66,6 +66,16 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         const expensesResult = await db.query(expensesQuery, [startDate, adjustedEndDate, storeId]);
         const totalOperatingExpenses = parseFloat(expensesResult.rows[0]?.totalExpenses || 0);
 
+        // 4b. Expenses Breakdown by Account
+        const expenseBreakdownQuery = `
+            SELECT expense_account_name as title, SUM(amount) as amount
+            FROM expenses
+            WHERE date BETWEEN $1 AND $2 AND store_id = $3
+            GROUP BY expense_account_name
+            ORDER BY amount DESC;
+        `;
+        const expenseBreakdownResult = await db.query(expenseBreakdownQuery, [startDate, adjustedEndDate, storeId]);
+
         const netIncome = grossProfit - totalOperatingExpenses;
 
         const salesData = {
@@ -74,6 +84,10 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             totalProfit: grossProfit, // Legacy support for "Gross Profit" shown as "Total Profit"
             netIncome: netIncome,
             totalOperatingExpenses: totalOperatingExpenses,
+            expensesBreakdown: expenseBreakdownResult.rows.map(row => ({
+                title: row.title,
+                amount: parseFloat(row.amount)
+            })),
             totalCogs: totalCogs,
             totalTransactions: totalTransactions
         };
@@ -291,11 +305,12 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         SELECT
         COALESCE(SUM(price * stock), 0) as "totalRetailValue",
             COALESCE(SUM(cost_price * stock), 0) as "totalCostValue",
-            COALESCE(SUM(stock), 0) as "totalUnits"
+            COALESCE(SUM(stock), 0) as "totalUnits",
+            (SELECT COUNT(*) FROM products WHERE store_id = $1) as "totalProducts"
             FROM products WHERE status = 'active' AND store_id = $1;
         `;
         const invResult = await db.query(invQuery, [storeId]);
-        const invData = invResult.rows[0] || { totalRetailValue: 0, totalCostValue: 0, totalUnits: 0 };
+        const invData = invResult.rows[0] || { totalRetailValue: 0, totalCostValue: 0, totalUnits: 0, totalProducts: 0 };
 
         // --- Customer Calculations ---
         const customerQuery = `
@@ -362,6 +377,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
                 totalProfit: salesData.totalProfit, // Gross Profit for compatibility
                 netIncome: salesData.netIncome,
                 totalOperatingExpenses: salesData.totalOperatingExpenses,
+                expensesBreakdown: salesData.expensesBreakdown,
                 totalCogs: salesData.totalCogs,
                 totalTransactions: salesData.totalTransactions,
                 avgSaleValue: salesData.totalTransactions > 0 ? (salesData.totalRevenue / salesData.totalTransactions) : 0,
@@ -400,6 +416,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
                 totalCostValue: parseFloat(invData.totalCostValue || 0),
                 potentialProfit: (parseFloat(invData.totalRetailValue || 0) - parseFloat(invData.totalCostValue || 0)),
                 totalUnits: parseInt(invData.totalUnits || 0, 10),
+                totalProducts: parseInt(invData.totalProducts || 0, 10),
             },
             customers: {
                 totalCustomers: parseInt(String(customerData.totalCustomers || 0), 10),

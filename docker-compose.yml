@@ -1,0 +1,34 @@
+services:
+  s-back-db:
+    image: postgres:15-alpine
+    container_name: salepilot-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: salepilot
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  s-back:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: salepilot-backend
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./uploads:/usr/src/app/uploads
+      - ./public/images:/usr/src/app/public/images
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@s-back-db:5432/salepilot
+    depends_on:
+      - s-back-db
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

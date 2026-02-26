@@ -573,7 +573,25 @@ export const adjustStock = async (req: express.Request, res: express.Response) =
 
         await accountingService.recordStockAdjustment(updateResult.rows[0], oldQuantity, reason, undefined, storeId);
 
-        res.status(200).json(toCamelCase(updateResult.rows[0]));
+        // --- Low Stock Check ---
+        const updated = updateResult.rows[0];
+        if (updated.reorder_point !== null && finalStock <= parseFloat(updated.reorder_point)) {
+            try {
+                const title = "Low Stock Alert ⚠️";
+                const message = `Low stock: ${updated.name} (${finalStock} left). Reorder at: ${updated.reorder_point}. Adjusted by: ${req.user!.name}`;
+
+                const { pushService } = await import('../services/push.service');
+                await pushService.sendToStore(storeId, {
+                    title: title,
+                    body: message,
+                    url: `/inventory`
+                });
+            } catch (e) {
+                console.error('Low stock push failed for manual adjustment:', e);
+            }
+        }
+
+        res.status(200).json(toCamelCase(updated));
     } catch (error) {
         console.error(`Error adjusting stock for product ${id}:`, error);
         res.status(500).json({ message: 'Error adjusting stock' });

@@ -94,6 +94,22 @@ export const handleWebhook = async (req: express.Request, res: express.Response)
                                 'delivered'
                             );
 
+                            // --- Push Notification for Staff ---
+                            try {
+                                const { pushService } = await import('../services/push.service');
+                                const userRes = await db.query('SELECT id FROM users WHERE current_store_id = $1', [storeId]);
+                                const userIds = userRes.rows.map(u => u.id);
+                                if (userIds.length > 0) {
+                                    await pushService.sendToUsers(userIds, {
+                                        title: `New WhatsApp: ${customerName || from}`,
+                                        body: messageBody || `Received ${messageType} message`,
+                                        url: `/whatsapp/${conversationId}`
+                                    });
+                                }
+                            } catch (pushErr) {
+                                console.error('Push failed for inbound WhatsApp:', pushErr);
+                            }
+
                             // 3. Trigger AI Auto-Reply (if enabled)
                             if (storeConfig.auto_reply_enabled && messageType === 'text') {
                                 // Async processing - don't block 200 OK to WhatsApp

@@ -11,6 +11,7 @@ import initializeDatabase from './init_db';
 import seedDatabase from './seed';
 import path from 'path';
 import SocketService from './services/socket.service';
+import './firebase';
 
 const app = express();
 const port = process.env.PORT || 5000;

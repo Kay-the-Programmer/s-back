@@ -50,62 +50,29 @@ const notifyNextSeller = async (requestId: string) => {
     const requestRes = await db.query('SELECT * FROM marketplace_requests WHERE id = $1', [requestId]);
     const request = requestRes.rows[0];
 
-    // Notification for the store
-    await db.query(`
-        INSERT INTO notifications (id, store_id, title, message, type, link)
-        VALUES ($1, $2, $3, $4, $5, $6)
-    `, [
-        genId('notif'),
-        match.store_id,
-        'New Product Request',
-        `A customer "${request.customer_name}" is looking for "${request.query}" with a target price of ${request.target_price}.`,
-        'marketplace',
-        `/directory/request/${requestId}`
-    ]);
+    const title = 'New Product Request';
+    const message = `A customer "${request.customer_name}" is looking for "${request.query}" with a target price of ${request.target_price}.`;
 
-    // Update match status to notified
-    await db.query(`UPDATE marketplace_matches SET status = 'notified', updated_at = NOW() WHERE id = $1`, [match.id]);
-
-    // Emit socket event to the specific store (if connected and we had room logic) or broadcast to sellers for now
-    // The previous implementation of SocketService has 'join_sellers'.
-    //Ideally we'd emit to a specific store room like `store_${match.store_id}`.
-    // Dashboard.tsx only joins 'sellers' (global room for all sellers? or maybe logic needs update).
-    // Dashboard.tsx says `socket.emit('join_sellers');` and listens for `new_request`.
-    // The current dashboard implementation seems to broadcast to ALL sellers.
-    // "socket.on('new_request', handleNewRequest);"
-
-    // Ideally we only notify the MATCHED seller.
-    // But based on the user request "offers should show as notifications instantly to sellers" (plural), 
-    // and looking at Dashboard.tsx, it seems to expect a broadcast or at least a push.
-
-    // IF I use `broadcastToSellers`, EVERY seller gets it. 
-    // `notifyNextSeller` only picks ONE store at a time from the DB matches.
-    // So we should try to target that store if possible.
-    // However, SocketService only has `broadcastToSellers` room 'sellers'.
-    // Modifying SocketService to support store-specific rooms would be better, but staying within scope:
-    // If I emit to 'sellers' with storeId in data, the frontend can filter? 
-    // Dashboard.tsx: `handleNewRequest` just shows snackbar. It doesn't filter by ID.
-
-    // CRITICAL: The user wants "instantly to sellers".
-    // I will use `SocketService.getInstance().broadcastToSellers('new_request', ...)`
-    // And pass the data.
-    // I should check if I should update SocketService to target specific store, but for now let's use what exists or add a small helper.
-    // I'll assume for this prototype that broadcasting to "sellers" room is acceptable, 
-    // OR I can use `io.to('store_' + storeId)` if I update Dashboard to join that room.
-
-    // Let's stick to the existing pattern: broadcast to 'sellers' but maybe include storeId so client *could* filter if logic existed.
-    // Actually, `notifyNextSeller` implies a directed flow. 
-    // Using `broadcastToSellers` might spam others.
-    // But since `Dashboard.tsx` joins `sellers`, that's the channel.
+    // Send Push Notification & Persist
+    try {
+        const { pushService } = await import('../services/push.service');
+        await pushService.sendToStore(match.store_id, {
+            title: 'New Product Request! 🔍',
+            body: message,
+            url: `/directory/request/${requestId}`
+        });
+    } catch (pushErr) {
+        console.error('Failed to send push notification to seller:', pushErr);
+    }
 
     const socketService = SocketService.getInstance();
     if (socketService) {
         socketService.broadcastToSellers('new_request', {
             requestId: requestId,
-            title: 'New Product Request',
-            description: request.query, // or similar
+            title: title,
+            description: request.query,
             targetPrice: request.target_price,
-            storeId: match.store_id // Send who it is intended for
+            storeId: match.store_id
         });
     }
 
@@ -198,17 +165,19 @@ export const submitOffer = async (req: express.Request, res: express.Response) =
         const requestRes = await db.query('SELECT customer_id, query FROM marketplace_requests WHERE id = $1', [requestId]);
         const request = requestRes.rows[0];
         if (request && request.customer_id) {
-            await db.query(`
-                INSERT INTO notifications (id, user_id, title, message, type, link)
-                VALUES ($1, $2, $3, $4, $5, $6)
-            `, [
-                genId('notif'),
-                request.customer_id,
-                'New Offer Received! 🎁',
-                `A store has made an offer for your request: "${request.query}".`,
-                'marketplace',
-                `/marketplace/track/${requestId}`
-            ]);
+            const pushTitle = 'New Offer Received! 🎁';
+            const pushBody = `A store has made an offer for your request: "${request.query}".`;
+            // Send Push Notification & Persist
+            try {
+                const { pushService } = await import('../services/push.service');
+                await pushService.sendToUsers([request.customer_id], {
+                    title: pushTitle,
+                    body: pushBody,
+                    url: `/marketplace/track/${requestId}`
+                });
+            } catch (pushErr) {
+                console.error('Failed to send push notification to customer:', pushErr);
+            }
         }
 
         res.status(201).json({ id: offerId, message: 'Offer submitted successfully' });
@@ -239,16 +208,19 @@ export const respondToOffer = async (req: express.Request, res: express.Response
             const request = requestRes.rows[0];
 
             // Notify seller with customer contact info
-            await db.query(`
-                INSERT INTO notifications (id, store_id, title, message, type)
-                VALUES ($1, $2, $3, $4, $5)
-            `, [
-                genId('notif'),
-                offer.store_id,
-                'Deal Confirmed! 🎉',
-                `Contact ${request.customer_name} at ${request.customer_phone || request.customer_email} to finalize the delivery of "${offer.query}".`,
-                'marketplace'
-            ]);
+            const pushTitle = 'Deal Confirmed! 🎉';
+            const pushBody = `Contact ${request.customer_name} at ${request.customer_phone || request.customer_email} to finalize the delivery.`;
+            // Send Push Notification & Persist
+            try {
+                const { pushService } = await import('../services/push.service');
+                await pushService.sendToStore(offer.store_id, {
+                    title: pushTitle,
+                    body: pushBody,
+                    url: '/dashboard'
+                });
+            } catch (pushErr) {
+                console.error('Failed to send push notification to seller for deal confirmation:', pushErr);
+            }
 
         } else if (action === 'decline') {
             await db.query("UPDATE marketplace_offers SET status = 'declined' WHERE id = $1", [offerId]);

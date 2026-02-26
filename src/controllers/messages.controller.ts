@@ -52,6 +52,50 @@ export const sendMessage = async (req: Request, res: Response) => {
             socketService.emitToOffer(offerId, 'new_message', message);
         }
 
+        // --- Push Notification ---
+        try {
+            const { pushService } = await import('../services/push.service');
+            // Find participants
+            const participantsRes = await db.query(`
+                SELECT o.store_id, r.customer_id 
+                FROM marketplace_offers o 
+                JOIN marketplace_requests r ON o.request_id = r.id 
+                WHERE o.id = $1
+            `, [offerId]);
+
+            if (participantsRes.rowCount && participantsRes.rowCount > 0) {
+                const { store_id, customer_id } = participantsRes.rows[0];
+                const isSenderCustomer = userId === customer_id;
+
+                const senderRes = await db.query('SELECT name FROM users WHERE id = $1', [userId]);
+                const senderName = senderRes.rows[0]?.name || 'Someone';
+
+                if (isSenderCustomer) {
+                    // Notify store staff
+                    const userRes = await db.query('SELECT id FROM users WHERE current_store_id = $1', [store_id]);
+                    const userIds = userRes.rows.map(u => u.id);
+                    if (userIds.length > 0) {
+                        await pushService.sendToUsers(userIds, {
+                            title: `New Message from ${senderName}`,
+                            body: content || 'Sent an image',
+                            url: `/marketplace/offers/${offerId}`
+                        });
+                    }
+                } else {
+                    // Notify customer
+                    if (customer_id) {
+                        await pushService.sendToUsers([customer_id], {
+                            title: `New Message from Store: ${senderName}`,
+                            body: content || 'Sent an image',
+                            url: `/marketplace/track/${offerId}` // might need correct tracking URL
+                        });
+                    }
+                }
+            }
+        } catch (pushErr) {
+            console.error('Push failed for internal message:', pushErr);
+        }
+
         res.status(201).json(message);
     } catch (error) {
         console.error('Error sending message:', error);

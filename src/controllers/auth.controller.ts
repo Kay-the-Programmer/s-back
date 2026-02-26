@@ -18,11 +18,17 @@ const generateToken = (id: string) => {
 };
 
 import crypto from 'crypto';
-import { sendVerificationEmail, sendPasswordResetEmail } from '../services/email.service';
+import { sendVerificationEmail, sendOTPVerificationEmail, sendPasswordResetEmail } from '../services/email.service';
+import { adminApp } from '../firebase';
 
 // Helper to generate random token
 const generateRandomToken = () => {
     return crypto.randomBytes(32).toString('hex');
+};
+
+// Helper to generate a 6-digit numeric OTP
+const generateOTP = () => {
+    return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
 export const loginUser = async (req: express.Request, res: express.Response) => {
@@ -47,6 +53,7 @@ export const loginUser = async (req: express.Request, res: express.Response) => 
                 email: user.email,
                 role: user.role,
                 phone: user.phone,
+                profile_picture: user.profile_picture,
                 current_store_id: user.current_store_id,
                 is_verified: user.is_verified,
                 subscription_status: user.subscription_status,
@@ -84,8 +91,8 @@ export const registerUser = async (req: express.Request, res: express.Response) 
         const id = generateId('user');
         const role = 'staff'; // Default role
 
-        // Generate verification token
-        const verificationToken = generateRandomToken();
+        // Generate verification OTP
+        const verificationToken = generateOTP();
 
         const insertResult = await db.query(
             'INSERT INTO users(id, name, email, password_hash, role, verification_token, is_verified) VALUES($1, $2, $3, $4, $5, $6, $7) RETURNING id, name, email, role, phone, is_verified',
@@ -93,9 +100,9 @@ export const registerUser = async (req: express.Request, res: express.Response) 
         );
         const newUser = insertResult.rows[0];
 
-        // Send verification email
+        // Send OTP verification email
         try {
-            await sendVerificationEmail(newUser.email, verificationToken);
+            await sendOTPVerificationEmail(newUser.email, verificationToken);
         } catch (emailError) {
             console.error('Failed to send verification email:', emailError);
             // Don't fail registration, just log it. User can request resend.
@@ -137,7 +144,7 @@ export const registerCustomer = async (req: express.Request, res: express.Respon
         const role = 'customer'; // Set role to customer
 
         // Verification logic
-        const verificationToken = generateRandomToken();
+        const verificationToken = generateOTP();
 
         const insertResult = await db.query(
             'INSERT INTO users(id, name, email, password_hash, role, phone, verification_token, is_verified) VALUES($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, name, email, role, phone, is_verified',
@@ -147,7 +154,7 @@ export const registerCustomer = async (req: express.Request, res: express.Respon
 
         // Send verification email
         try {
-            await sendVerificationEmail(newUser.email, verificationToken);
+            await sendOTPVerificationEmail(newUser.email, verificationToken);
         } catch (e) { console.error('Email send failed', e); }
 
         const userResponse = toCamelCase({
@@ -186,7 +193,7 @@ export const registerSupplier = async (req: express.Request, res: express.Respon
         const role = 'supplier';
 
         // Verification logic
-        const verificationToken = generateRandomToken();
+        const verificationToken = generateOTP();
 
         const insertResult = await db.query(
             'INSERT INTO users(id, name, email, password_hash, role, phone, verification_token, is_verified) VALUES($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, name, email, role, phone, is_verified',
@@ -195,7 +202,7 @@ export const registerSupplier = async (req: express.Request, res: express.Respon
         const newUser = insertResult.rows[0];
 
         try {
-            await sendVerificationEmail(newUser.email, verificationToken);
+            await sendOTPVerificationEmail(newUser.email, verificationToken);
         } catch (e) { console.error('Email send failed', e); }
 
         const userResponse = toCamelCase({
@@ -238,6 +245,41 @@ export const verifyEmail = async (req: express.Request, res: express.Response) =
     }
 };
 
+export const verifyRegistration = async (req: express.Request, res: express.Response) => {
+    const { email, emailOtp } = req.body;
+
+    if (!email || !emailOtp) {
+        return res.status(400).json({ message: 'Email and OTP code are required.' });
+    }
+
+    try {
+        const normEmail = String(email).toLowerCase();
+
+        // Check Database for matching User and OTP
+        const result = await db.query('SELECT id, verification_token FROM users WHERE email = $1', [normEmail]);
+        if (result.rowCount === 0) {
+            return res.status(404).json({ message: 'User not found.' });
+        }
+
+        const user = result.rows[0];
+
+        if (user.verification_token !== String(emailOtp).trim()) {
+            return res.status(400).json({ message: 'Invalid or expired verification code.' });
+        }
+
+        // Mark email as verified
+        await db.query(
+            'UPDATE users SET is_verified = TRUE, verification_token = NULL WHERE id = $1',
+            [user.id]
+        );
+
+        res.status(200).json({ message: 'Email verified successfully.' });
+    } catch (error) {
+        console.error('Verify registration error:', error);
+        res.status(500).json({ message: 'Internal server error during verification.' });
+    }
+};
+
 export const resendVerificationEmail = async (req: express.Request, res: express.Response) => {
     // Requires auth usually, or email
     const { email } = req.body;
@@ -255,10 +297,10 @@ export const resendVerificationEmail = async (req: express.Request, res: express
         const user = result.rows[0];
         if (user.is_verified) return res.status(400).json({ message: 'Email already verified' });
 
-        const newToken = generateRandomToken();
+        const newToken = generateOTP();
         await db.query('UPDATE users SET verification_token = $1 WHERE id = $2', [newToken, user.id]);
 
-        await sendVerificationEmail(targetEmail, newToken);
+        await sendOTPVerificationEmail(targetEmail, newToken);
         res.json({ message: 'Verification email sent' });
     } catch (error) {
         console.error('Resend error:', error);
@@ -392,6 +434,7 @@ export const googleLogin = async (req: express.Request, res: express.Response) =
         const email = googleUser.email;
         const name = googleUser.displayName;
         const normEmail = String(email).toLowerCase();
+        const profilePicture = googleUser.photoUrl || null;
 
         // Check if user exists
         const result = await db.query(`
@@ -418,10 +461,14 @@ export const googleLogin = async (req: express.Request, res: express.Response) =
             }
 
             const insertResult = await db.query(
-                'INSERT INTO users(id, name, email, password_hash, role) VALUES($1, $2, $3, $4, $5) RETURNING id, name, email, role, phone',
-                [id, String(name || 'Google User'), normEmail, password_hash, role]
+                'INSERT INTO users(id, name, email, password_hash, role, profile_picture) VALUES($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role, phone, profile_picture',
+                [id, String(name || 'Google User'), normEmail, password_hash, role, profilePicture]
             );
             user = insertResult.rows[0];
+        } else if (profilePicture && user.profile_picture !== profilePicture) {
+            // Update profile picture if it has changed
+            await db.query('UPDATE users SET profile_picture = $1 WHERE id = $2', [profilePicture, user.id]);
+            user.profile_picture = profilePicture;
         }
 
         // Generate App Token using EXISTING logic
@@ -433,6 +480,7 @@ export const googleLogin = async (req: express.Request, res: express.Response) =
             email: user.email,
             role: user.role,
             phone: user.phone,
+            profile_picture: user.profile_picture,
             current_store_id: user.current_store_id,
             token: token,
         });

@@ -19,7 +19,8 @@ async function initializeDatabase() {
                 email TEXT NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
                 role TEXT NOT NULL CHECK (role IN ('superadmin','admin','staff','inventory_manager','customer','supplier')),
-                phone TEXT
+                phone TEXT,
+                profile_picture TEXT
             );
         `);
         // Ensure role check allows superadmin on existing DBs
@@ -42,6 +43,11 @@ async function initializeDatabase() {
                 -- Add onboarding_state column if missing
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='onboarding_state') THEN
                     ALTER TABLE users ADD COLUMN onboarding_state JSONB DEFAULT '{"completedActions":[],"dismissedHelpers":[],"lastUpdated":null}'::jsonb;
+                END IF;
+
+                -- Add profile_picture column if missing
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='profile_picture') THEN
+                    ALTER TABLE users ADD COLUMN profile_picture TEXT;
                 END IF;
 
                 -- Add email verification columns
@@ -1196,6 +1202,17 @@ async function initializeDatabase() {
             );
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_id ON push_subscriptions(user_id);`);
+
+        // Migration to make p256dh and auth nullable for FCM
+        await client.query(`
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'push_subscriptions') THEN
+                    ALTER TABLE push_subscriptions ALTER COLUMN p256dh DROP NOT NULL;
+                    ALTER TABLE push_subscriptions ALTER COLUMN auth DROP NOT NULL;
+                END IF;
+            END $$;
+        `);
 
 
         // Logistics (Couriers & Shipments)

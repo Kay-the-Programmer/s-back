@@ -10,6 +10,7 @@ yarn-error.log
 .env.development.local
 .env.test.local
 .env.production.local
+.env.yaml
 
 # Build outputs
 dist/
@@ -39,3 +40,12 @@ coverage/
 # Temporary files
 tmp/
 temp/
+uploads/
+available_models.txt
+*.txt
+*.json
+!README.md
+!package.json
+!tsconfig.json
+!render.yaml
+!package-lock.json

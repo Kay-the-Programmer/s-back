@@ -139,6 +139,22 @@ export const handleLencoWebhook = async (req: Request, res: Response, next: Next
             // but webhook is the ultimate source of truth)
 
             await client.query('COMMIT');
+
+            // --- Push Notification for Successful Payment ---
+            try {
+                const { pushService } = await import('../services/push.service');
+                const storeId = (payment as any).store_id || (req as any).tenant?.storeId || (req as any).user?.currentStoreId;
+                if (storeId) {
+                    await pushService.sendToStore(storeId, {
+                        title: 'Payment Received! 💰',
+                        body: `Success! Received ${amount} ${currency || 'ZMW'} for Sale ID ${payment.saleId}.`,
+                        url: `/sales/history`
+                    });
+                }
+            } catch (pushErr) {
+                console.error('Push failed for successful webhook payment:', pushErr);
+            }
+
             console.log(`Webhook: Successfully updated sale ${payment.saleId} for reference ${reference}`);
         }
 

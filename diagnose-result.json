@@ -1,0 +1,27 @@
+{
+  "storeId": "store-1771795793625-m9fj97a",
+  "ar": {
+    "subledger": 0,
+    "gl": 0,
+    "diff": 0,
+    "match": true
+  },
+  "ap": {
+    "subledger": 0,
+    "gl": 0,
+    "diff": 0,
+    "match": true
+  },
+  "inventory": {
+    "subledger": 105491,
+    "gl": 105491,
+    "diff": 0,
+    "match": true
+  },
+  "storeCredit": {
+    "subledger": 0,
+    "gl": 0,
+    "diff": 0,
+    "match": true
+  }
+}

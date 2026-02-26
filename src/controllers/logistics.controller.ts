@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import db from '../db_client';
 import { LogisticsService } from '../services/logistics.service';
 
 // Helper to get storeId
@@ -179,6 +180,29 @@ export const updateShipmentStatus = async (req: Request, res: Response) => {
 
         const updated = await LogisticsService.updateShipmentStatus(storeId, id, status);
         if (!updated) return res.status(404).json({ message: 'Shipment not found' });
+
+        // Notify Customer if sale_id exists
+        if (updated.sale_id) {
+            try {
+                const saleRes = await db.query('SELECT customer_id FROM sales WHERE transaction_id = $1', [updated.sale_id]);
+                if (saleRes.rowCount && saleRes.rowCount > 0 && saleRes.rows[0].customer_id) {
+                    const { pushService } = await import('../services/push.service');
+                    let msg = `Your shipment for order ${updated.sale_id} is now ${status}.`;
+                    if (status === 'shipped') msg = `Your order ${updated.sale_id} is on its way! 🚚`;
+                    if (status === 'in_transit') msg = `Your order ${updated.sale_id} is currently in transit. 🗺️`;
+                    if (status === 'delivered') msg = `Your order ${updated.sale_id} has been delivered! 📦`;
+
+                    await pushService.sendToUsers([saleRes.rows[0].customer_id], {
+                        title: 'Shipment Update',
+                        body: msg,
+                        url: '/marketplace/orders'
+                    });
+                }
+            } catch (pushErr) {
+                console.error('Shipment push failed:', pushErr);
+            }
+        }
+
         res.json(updated);
     } catch (error: any) {
         console.error('Update shipment status error:', error);

@@ -77,27 +77,68 @@ export const getVerificationStatus = async (req: express.Request, res: express.R
             return res.status(401).json({ message: 'Unauthorized' });
         }
 
-        const result = await db.query(
+        // Fetch store-level business verification
+        const storeResult = await db.query(
             'SELECT is_verified, verification_documents FROM stores WHERE id = $1',
             [user.currentStoreId]
         );
 
-        if (result.rowCount === 0) {
+        if (storeResult.rowCount === 0) {
             return res.status(404).json({ message: 'Store not found' });
         }
 
-        const { is_verified, verification_documents } = result.rows[0];
-        // Postgres returns snake_case, we might need to map to camelCase if strictly followed, 
-        // but the frontend likely expects what we send here. 
-        // Let's send camelCase.
+        // Fetch user-level email/phone verification
+        const userResult = await db.query(
+            'SELECT is_verified AS email_verified, phone FROM users WHERE id = $1',
+            [user.id]
+        );
+
+        const { is_verified, verification_documents } = storeResult.rows[0];
+        const userRow = userResult.rows[0] || {};
+
         return res.json({
             isVerified: is_verified,
-            verificationDocuments: verification_documents || []
+            verificationDocuments: verification_documents || [],
+            isEmailVerified: userRow.email_verified ?? false,
+            isPhoneVerified: !!userRow.phone,
+            phoneNumber: userRow.phone || null,
         });
 
     } catch (error) {
         console.error('Error getting verification status:', error);
         return res.status(500).json({ message: 'Error fetching status' });
+    }
+};
+
+// Verify phone number via Firebase ID Token
+export const verifyPhone = async (req: express.Request, res: express.Response) => {
+    try {
+        const user = req.user!;
+        if (!user) return res.status(401).json({ message: 'Unauthorized' });
+
+        const { phoneIdToken, phoneNumber } = req.body;
+        if (!phoneIdToken || !phoneNumber) {
+            return res.status(400).json({ message: 'phoneIdToken and phoneNumber are required.' });
+        }
+
+        // Verify the Firebase ID token from phone auth
+        const { adminApp } = await import('../firebase');
+        if (adminApp) {
+            const decoded = await adminApp.auth().verifyIdToken(phoneIdToken);
+            if (!decoded.phone_number) {
+                return res.status(400).json({ message: 'No phone number in token.' });
+            }
+        } else {
+            console.warn('[verifyPhone] Firebase Admin not available — skipping token check for dev.');
+        }
+
+        // Save the verified phone number
+        await db.query('UPDATE users SET phone = $1 WHERE id = $2', [phoneNumber, user.id]);
+
+        return res.json({ message: 'Phone verified and saved successfully.', phoneNumber });
+    } catch (error) {
+        console.error('Error verifying phone:', error);
+        return res.status(500).json({ message: 'Failed to verify phone number.' });
     }
 };
 
@@ -115,6 +156,20 @@ export const verifyStore = async (req: express.Request, res: express.Response) =
         }
 
         await db.query('UPDATE stores SET is_verified = $1 WHERE id = $2', [status, storeId]);
+
+        // --- Push Notification for Verification ---
+        try {
+            const { pushService } = await import('../services/push.service');
+            await pushService.sendToStore(storeId, {
+                title: status ? 'Store Verified! ✅' : 'Verification Revoked ⚠️',
+                body: status
+                    ? 'Your store account has been successfully verified by our team.'
+                    : 'Your store verification status has been revoked. Please check your documents.',
+                url: '/settings/verification'
+            });
+        } catch (pushErr) {
+            console.error('Push failed for store verification update:', pushErr);
+        }
 
         return res.json({ message: `Store verification status updated to ${status}` });
     } catch (error) {

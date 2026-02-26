@@ -25,6 +25,7 @@ export const storage = getStorage(app); // Client SDK Storage
 // --- Admin SDK Configuration (New) ---
 let adminApp: admin.app.App | null = null;
 let bucket: any = null;
+let adminDb: admin.firestore.Firestore | null = null;
 
 try {
     const serviceAccountVar = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -43,10 +44,11 @@ try {
             adminApp = admin.initializeApp({
                 credential: admin.credential.cert(serviceAccount),
                 storageBucket: firebaseConfig.storageBucket
-            }, 'adminApp'); // distinct name to avoid conflict if any
+            });
 
             bucket = adminApp.storage().bucket();
-            console.log('Firebase Admin SDK initialized successfully.');
+            adminDb = adminApp.firestore();
+            console.log('Firebase Admin SDK initialized successfully as default app.');
         }
     } else {
         console.warn('FIREBASE_SERVICE_ACCOUNT env var not found. Using Client SDK fallback for storage (less reliable for backend).');
@@ -56,3 +58,4 @@ try {
 }
 
 export const adminStorage = bucket;
+export { adminDb, adminApp };

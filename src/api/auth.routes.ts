@@ -10,6 +10,7 @@ import {
     changePassword,
     googleLogin,
     verifyEmail,
+    verifyRegistration,
     resendVerificationEmail,
     resetPassword
 } from '../controllers/auth.controller';
@@ -29,6 +30,7 @@ router.post('/reset-password', resetPassword);
 
 // Email Verification
 router.post('/verify-email', verifyEmail);
+router.post('/verify-registration', verifyRegistration);
 router.post('/resend-verification', protect, resendVerificationEmail); // Protected usually, or allow plain post if only email
 
 router.get('/me', protect, getCurrentUser);

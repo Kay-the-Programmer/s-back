@@ -149,6 +149,19 @@ export const finalizeStockTake = async (req: express.Request, res: express.Respo
         }
 
         await client.query('COMMIT');
+
+        // --- Push Notification for Stock Take ---
+        try {
+            const { pushService } = await import('../services/push.service');
+            await pushService.sendToStore(storeId, {
+                title: 'Stock Take Complete ✅',
+                body: `Stock take ${session.id} finished. Total inventory adjustment value: ${totalAdjustmentValue.toFixed(2)}.`,
+                url: `/inventory`
+            });
+        } catch (pushErr) {
+            console.error('Push failed for stock take finalize:', pushErr);
+        }
+
         auditService.log(req.user!, 'Stock Take Finalized', `Session ID: ${session.id}. Total Adj: ${totalAdjustmentValue.toFixed(2)}`);
         res.status(200).json({ message: 'Stock take finalized and inventory journal updated.' });
     } catch (error) {

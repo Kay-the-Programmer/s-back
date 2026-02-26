@@ -57,6 +57,33 @@ export const updateStore = async (req: express.Request, res: express.Response) =
     const result = await db.query(q, params);
     if (result.rowCount === 0) return res.status(404).json({ message: 'Store not found' });
 
+    const updatedStore = result.rows[0];
+
+    // --- Push Notification for Store Updates ---
+    if (status || subscriptionStatus) {
+      try {
+        const { pushService } = await import('../services/push.service');
+        let title = 'Store Update ℹ️';
+        let body = `Your store "${updatedStore.name}" has been updated by system administration.`;
+
+        if (status === 'suspended') {
+          title = 'Store Suspended ⚠️';
+          body = `Your store "${updatedStore.name}" has been suspended. Please contact support.`;
+        } else if (subscriptionStatus === 'past_due') {
+          title = 'Subscription Past Due 💳';
+          body = `Your subscription for "${updatedStore.name}" is past due. Please update payment info.`;
+        }
+
+        await pushService.sendToStore(id, {
+          title,
+          body,
+          url: '/settings'
+        });
+      } catch (pushErr) {
+        console.error('Push failed for store update by superadmin:', pushErr);
+      }
+    }
+
     // Audit log
     await auditService.log(req.user!, 'Store Updated', `Store ${id} updated by superadmin: ${fields.join(', ')}`);
 
@@ -92,6 +119,18 @@ export const createNotification = async (req: express.Request, res: express.Resp
     });
 
     await Promise.all(queries);
+
+    // Send Push Broadcast
+    try {
+      const { pushService } = await import('../services/push.service');
+      await pushService.broadcast({
+        title: `📢 ${title}`,
+        body: message,
+        url: '/notifications'
+      });
+    } catch (pushErr) {
+      console.error('Failed to send push broadcast:', pushErr);
+    }
 
     await auditService.log(req.user!, 'System Notification Sent', `Title: ${title} to ${stores.rows.length} stores`);
     return res.status(201).json(toCamelCase({ notification: { id, title, message, created_at: createdAt, created_by: req.user!.id } }));
@@ -260,6 +299,18 @@ export const sendStoreNotification = async (req: express.Request, res: express.R
              VALUES ($1, $2, $3, $4, $5, false, $6)`,
       [notifId, id, title, message, type || 'system_targeted', createdAt]
     );
+
+    // Send Push Notification to store users
+    try {
+      const { pushService } = await import('../services/push.service');
+      await pushService.sendToStore(id, {
+        title: `⚠️ ${title}`,
+        body: message,
+        url: '/notifications'
+      });
+    } catch (pushErr) {
+      console.error('Failed to send push notification to store:', pushErr);
+    }
 
     // Also log this as a system notification reference if we want global tracking? 
     // For simple targeted messaging, just inserting into local notifications is enough, 
