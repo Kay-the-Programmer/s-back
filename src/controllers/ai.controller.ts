@@ -1,7 +1,9 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+﻿import { GoogleGenerativeAI } from "@google/generative-ai";
 import express from 'express';
 import axios from 'axios';
 import db from '../db_client';
+import { logAiUsage } from '../middleware/ai-limit.middleware';
+import { SUBSCRIPTION_PLANS } from '../services/subscription.service';
 
 
 if (!process.env.API_KEY) {
@@ -43,6 +45,12 @@ export const generateDescription = async (req: express.Request, res: express.Res
 
         const result = await model.generateContent(prompt);
         const description = (result.response.text() ?? '').trim();
+
+        // Log usage
+        if (req.user?.currentStoreId) {
+            await logAiUsage(req.user.currentStoreId, req.user.id, 'description_generation', { productName, category }, description.slice(0, 100));
+        }
+
         res.status(200).json({ description });
     } catch (error: any) {
         console.error("Error generating description with Gemini API:", error);
@@ -594,18 +602,20 @@ async function analyzeAnomalies(storeId: string) {
 
     // Top Product anomaly
     const topProductAnomaly = await db.query(
-        `WITH last_sales AS (
-            SELECT product_id, SUM(quantity) as qty
-            FROM sale_items
-            WHERE store_id = $1 AND DATE(created_at) >= $2
-            GROUP BY product_id
-            ORDER BY qty DESC LIMIT 1
-        ),
-        prev_sales AS (
-            SELECT product_id, SUM(quantity) as qty
-            FROM sale_items
-            WHERE store_id = $1 AND DATE(created_at) >= $3 AND DATE(created_at) < $2
-            GROUP BY product_id
+        `WITH last_sales AS (
+            SELECT si.product_id, SUM(si.quantity) as qty
+            FROM sale_items si
+            JOIN sales s ON si.sale_id = s.transaction_id AND si.store_id = s.store_id
+            WHERE si.store_id = $1 AND DATE(s."timestamp") >= $2
+            GROUP BY si.product_id
+            ORDER BY qty DESC LIMIT 1
+        ),
+        prev_sales AS (
+            SELECT si.product_id, SUM(si.quantity) as qty
+            FROM sale_items si
+            JOIN sales s ON si.sale_id = s.transaction_id AND si.store_id = s.store_id
+            WHERE si.store_id = $1 AND DATE(s."timestamp") >= $3 AND DATE(s."timestamp") < $2
+            GROUP BY si.product_id
         )
         SELECT p.name, ls.qty as current_qty, ps.qty as prev_qty
         FROM last_sales ls
@@ -820,6 +830,11 @@ export const getPlatformInsight = async (req: express.Request, res: express.Resp
         const result = await model.generateContent(prompt);
         const insight = (result.response.text() ?? '').trim().replace(/\*/g, '');
 
+        // Log usage (System level)
+        if (user.role === 'superadmin') {
+            await logAiUsage('system', user.id, 'platform_insight', {}, insight.slice(0, 100));
+        }
+
         res.status(200).json({ insight });
     } catch (error: any) {
         console.error("Error generating platform insight:", error);
@@ -891,7 +906,12 @@ export const handleChat = async (req: express.Request, res: express.Response) =>
             });
 
             const result = await model.generateContent(systemPrompt);
-            return res.json({ response: result.response.text() });
+            const responseText = result.response.text();
+
+            // Log usage (System level for SuperAdmin)
+            await logAiUsage('system', user.id, 'superadmin_chat', { query }, responseText.slice(0, 100));
+
+            return res.json({ response: responseText });
         }
 
         // Ensure storeId is defined for subsequent store-specific logic
@@ -950,7 +970,12 @@ export const handleChat = async (req: express.Request, res: express.Response) =>
             });
 
             const result = await model.generateContent(strategyPrompt);
-            return res.json({ response: result.response.text() });
+            const responseText = result.response.text();
+
+            // Log usage
+            await logAiUsage(storeId, user.id, 'strategic_chat', { query }, responseText.slice(0, 100));
+
+            return res.json({ response: responseText });
         }
 
         // Analyze what data the user is asking for (original data-specific queries)
@@ -1114,7 +1139,12 @@ QUICK OVERVIEW (Currency: ${currencyCode}):
         });
 
         const result = await model.generateContent(systemContext);
-        res.json({ response: result.response.text(), intent: intent });
+        const responseText = result.response.text();
+
+        // Log usage
+        await logAiUsage(storeId, user.id, 'standard_chat', { query }, responseText.slice(0, 100));
+
+        res.json({ response: responseText, intent: intent });
 
     } catch (error: any) {
         console.error('AI Chat Error:', error);
@@ -1260,6 +1290,11 @@ GENERATION PARAMETERS:
             useFallback: base64Image === null
         });
 
+        // Log usage if storeId is available
+        const storeId = req.user?.currentStoreId;
+        if (storeId) {
+            await logAiUsage(storeId, req.user!.id, 'poster_generation', { productName, format }, visualPrompt.slice(0, 50));
+        }
     } catch (error: any) {
         console.error("Error generating AI poster:", error);
 
@@ -1632,5 +1667,37 @@ ${revenueContext.dailyTrend.map((d: any) => `- ${new Date(d.date).toLocaleDateSt
         }
 
         res.status(500).json({ message: 'Failed to process AI request. Please try again.' });
+    }
+};
+
+export const getAiUsage = async (req: express.Request, res: express.Response) => {
+    const storeId = req.user?.currentStoreId;
+    if (!storeId) return res.status(400).json({ message: 'Store context required' });
+
+    try {
+        const storeRes = await db.query('SELECT subscription_plan FROM stores WHERE id = $1', [storeId]);
+        const planId = storeRes.rows[0]?.subscription_plan || 'plan_basic';
+        const plan = SUBSCRIPTION_PLANS.find(p => p.id === planId) || SUBSCRIPTION_PLANS[0];
+
+        const monthStart = new Date();
+        monthStart.setDate(1);
+        monthStart.setHours(0, 0, 0, 0);
+
+        const usageRes = await db.query(
+            'SELECT COUNT(*) as count FROM ai_usage_logs WHERE store_id = $1 AND created_at >= $2',
+            [storeId, monthStart]
+        );
+
+        const count = parseInt(usageRes.rows[0].count, 10);
+
+        res.json({
+            count,
+            limit: plan.aiRequestsLimit,
+            remaining: plan.aiRequestsLimit === -1 ? -1 : Math.max(0, plan.aiRequestsLimit - count),
+            planName: plan.name
+        });
+    } catch (error) {
+        console.error('Error fetching AI usage:', error);
+        res.status(500).json({ message: 'Error fetching AI usage' });
     }
 };

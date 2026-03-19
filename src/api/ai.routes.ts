@@ -1,10 +1,12 @@
 import express from 'express';
-import { generateDescription, handleChat, generatePoster, proxyImage, getPlatformInsight } from '../controllers/ai.controller';
+import { generateDescription, handleChat, generatePoster, proxyImage, getPlatformInsight, getAiUsage } from '../controllers/ai.controller';
 import { protect } from '../middleware/auth.middleware';
+import { checkAiLimit } from '../middleware/ai-limit.middleware';
 
 const router = express.Router();
 
-router.post('/generate-description', protect, generateDescription);
+router.get('/usage', protect, getAiUsage);
+router.post('/generate-description', protect, checkAiLimit, generateDescription);
 router.post('/chat', protect as any, handleChat as any);
 router.get('/platform-insight', protect as any, getPlatformInsight as any);
 router.post('/generate-poster', protect, generatePoster);

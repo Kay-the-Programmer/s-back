@@ -124,12 +124,19 @@ export const verifyPhone = async (req: express.Request, res: express.Response) =
         // Verify the Firebase ID token from phone auth
         const { adminApp } = await import('../firebase');
         if (adminApp) {
-            const decoded = await adminApp.auth().verifyIdToken(phoneIdToken);
-            if (!decoded.phone_number) {
-                return res.status(400).json({ message: 'No phone number in token.' });
+            try {
+                const decoded = await adminApp.auth().verifyIdToken(phoneIdToken);
+                if (!decoded.phone_number) {
+                    return res.status(400).json({ message: 'No phone number in token.' });
+                }
+                // Optionally compare phoneNumber with decoded.phone_number for extra security
+            } catch (authError) {
+                console.error('[verifyPhone] Firebase token verification failed:', authError);
+                return res.status(401).json({ message: 'Invalid phone authentication token.' });
             }
         } else {
-            console.warn('[verifyPhone] Firebase Admin not available — skipping token check for dev.');
+            console.warn('[verifyPhone] Firebase Admin not available.');
+            return res.status(503).json({ message: 'Authentication service unavailable.' });
         }
 
         // Save the verified phone number

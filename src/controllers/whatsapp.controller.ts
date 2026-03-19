@@ -97,7 +97,12 @@ export const handleWebhook = async (req: express.Request, res: express.Response)
                             // --- Push Notification for Staff ---
                             try {
                                 const { pushService } = await import('../services/push.service');
-                                const userRes = await db.query('SELECT id FROM users WHERE current_store_id = $1', [storeId]);
+                                let userRes;
+                                if (storeId === 'system') {
+                                    userRes = await db.query("SELECT id FROM users WHERE role = 'superadmin'");
+                                } else {
+                                    userRes = await db.query('SELECT id FROM users WHERE current_store_id = $1', [storeId]);
+                                }
                                 const userIds = userRes.rows.map(u => u.id);
                                 if (userIds.length > 0) {
                                     await pushService.sendToUsers(userIds, {
@@ -236,7 +241,7 @@ export const getSupportContact = async (req: express.Request, res: express.Respo
     try {
         // Fetch config for the SYSTEM store (superadmin support)
         const result = await db.query(
-            'SELECT display_phone_number, greeting_message FROM whatsapp_config WHERE store_id = $1',
+            'SELECT display_phone_number, greeting_message, phone_number_id, access_token, webhook_verify_token FROM whatsapp_config WHERE store_id = $1',
             ['system']
         );
 
@@ -244,9 +249,21 @@ export const getSupportContact = async (req: express.Request, res: express.Respo
             return res.status(404).json({ message: 'Support contact not configured' });
         }
 
+        const config = result.rows[0];
+        // Decrypt the token correctly using the service before sending back if needed for UI (though usually not returned plainly)
+        // For settings page, we may want to show if it's set or part of it, or just allow overwrite.
+        // We will return it, but maybe the service method should be used for safety. Let's use the decrypt from service.
+        let accessToken = config.access_token;
+        if (accessToken) {
+            accessToken = await whatsAppService.getStoreConfig('system').then(c => c?.access_token || '');
+        }
+
         res.json({
-            phone: result.rows[0].display_phone_number,
-            message: result.rows[0].greeting_message
+            phone: config.display_phone_number,
+            message: config.greeting_message,
+            phone_number_id: config.phone_number_id,
+            webhook_verify_token: config.webhook_verify_token,
+            access_token: accessToken || ''
         });
     } catch (error) {
         res.status(500).json({ message: 'Failed to fetch support contact' });
@@ -259,7 +276,7 @@ export const updateSupportContact = async (req: express.Request, res: express.Re
             return res.status(403).json({ message: 'Only superadmins can configure support contact' });
         }
 
-        const { phone, message } = req.body;
+        const { phone, message, phone_number_id, access_token, webhook_verify_token } = req.body;
 
         if (!phone) return res.status(400).json({ message: 'Phone number is required' });
 
@@ -267,9 +284,9 @@ export const updateSupportContact = async (req: express.Request, res: express.Re
             store_id: 'system',
             display_phone_number: phone,
             greeting_message: message,
-            phone_number_id: 'system_placeholder', // Required by schema constraint likely, but we can check service
-            webhook_verify_token: 'system',
-            access_token: 'system',
+            phone_number_id: phone_number_id || 'system_placeholder',
+            webhook_verify_token: webhook_verify_token || 'system',
+            access_token: access_token || 'system',
             is_enabled: true,
             auto_reply_enabled: false
         });

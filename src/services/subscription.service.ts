@@ -22,6 +22,7 @@ export interface SubscriptionPlan {
     interval: 'month' | 'year';
     description: string;
     features: string[];
+    aiRequestsLimit: number; // Monthly limit, -1 for unlimited
 }
 
 export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
@@ -36,8 +37,10 @@ export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
             'Up to 100 Products',
             'Basic Sales Reports',
             '1 User Account',
+            '50 AI Requests/month',
             'Email Support'
-        ]
+        ],
+        aiRequestsLimit: 50
     },
     {
         id: 'plan_pro',
@@ -50,9 +53,11 @@ export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
             'Unlimited Products',
             'Advanced Analytics',
             'Up to 5 User Accounts',
+            '500 AI Requests/month',
             'Inventory Alerts',
             'Priority Support'
-        ]
+        ],
+        aiRequestsLimit: 500
     },
     {
         id: 'plan_enterprise',
@@ -64,15 +69,34 @@ export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
         features: [
             'Unlimited Everything',
             'Custom Reports',
+            'Unlimited AI Requests',
             'Dedicated Account Manager',
             'API Access',
             'Multi-store Management'
-        ]
+        ],
+        aiRequestsLimit: -1
     }
 ];
 
 export const getPlans = async () => {
     return SUBSCRIPTION_PLANS;
+};
+
+export const getPlanById = (planId: string) => {
+    return SUBSCRIPTION_PLANS.find(p => p.id === planId);
+};
+
+export const subscriptionService = {
+    getPlans,
+    getPlanById,
+    initiatePayment: (async (...args: any[]) => {
+        // @ts-ignore
+        return initiatePayment(...args);
+    }) as any, // Placeholder for type safety if needed, or just export the functions
+    verifyPayment: (async (...args: any[]) => {
+        // @ts-ignore
+        return verifyPayment(...args);
+    }) as any
 };
 
 export const initiatePayment = async (storeId: string, planId: string, method: string, phoneNumber?: string) => {

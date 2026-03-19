@@ -47,8 +47,12 @@ try {
             });
 
             bucket = adminApp.storage().bucket();
+
+            // Support custom Database ID if provided, otherwise default to '(default)'
+            const databaseId = process.env.FIREBASE_DATABASE_ID || '(default)';
             adminDb = adminApp.firestore();
-            console.log('Firebase Admin SDK initialized successfully as default app.');
+
+            console.log(`Firebase Admin SDK initialized successfully for project: ${serviceAccount.project_id}, database: ${databaseId}`);
         }
     } else {
         console.warn('FIREBASE_SERVICE_ACCOUNT env var not found. Using Client SDK fallback for storage (less reliable for backend).');

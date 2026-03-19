@@ -57,6 +57,12 @@ async function initializeDatabase() {
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='verification_token') THEN
                     ALTER TABLE users ADD COLUMN verification_token TEXT;
                 END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='verification_token_expires') THEN
+                    ALTER TABLE users ADD COLUMN verification_token_expires TIMESTAMPTZ;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='last_verification_sent_at') THEN
+                    ALTER TABLE users ADD COLUMN last_verification_sent_at TIMESTAMPTZ;
+                END IF;
 
                 -- Add password reset columns
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='reset_password_token') THEN
@@ -104,6 +110,8 @@ async function initializeDatabase() {
                 subscription_ends_at TIMESTAMPTZ,
                 is_verified BOOLEAN DEFAULT FALSE,
                 verification_documents JSONB DEFAULT '[]',
+                verification_token TEXT,
+                verification_token_expires TIMESTAMPTZ,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
@@ -119,6 +127,8 @@ async function initializeDatabase() {
                 ALTER TABLE stores ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;
                 ALTER TABLE stores ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE;
                 ALTER TABLE stores ADD COLUMN IF NOT EXISTS verification_documents JSONB DEFAULT '[]';
+                ALTER TABLE stores ADD COLUMN IF NOT EXISTS verification_token TEXT;
+                ALTER TABLE stores ADD COLUMN IF NOT EXISTS verification_token_expires TIMESTAMPTZ;
                 -- Set defaults and checks if missing by re-adding constraints
                 IF EXISTS (
                     SELECT 1 FROM information_schema.columns WHERE table_name='stores' AND column_name='status'
@@ -1009,6 +1019,17 @@ async function initializeDatabase() {
             END $$;
         `);
 
+        // Add created_at to products table if missing (some queries rely on it for ordering)
+        await client.query(`
+            ALTER TABLE products ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_products_store_id_created_at ON products(store_id, created_at);`);
+
+        // Add created_at to sale_items table if missing (for backward compat - canonical date is sales.timestamp)
+        await client.query(`
+            ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+        `);
+
         // Ensure return_items.quantity supports fractional quantities
         await client.query(`
             DO $$
@@ -1423,6 +1444,21 @@ async function initializeDatabase() {
         await client.query(`CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_conversation_id ON whatsapp_messages(conversation_id);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_store_id ON whatsapp_messages(store_id);`);
 
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS ai_usage_logs (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                store_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                feature TEXT NOT NULL,
+                request_payload JSONB,
+                response_summary TEXT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                month_year TEXT NOT NULL
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_ai_usage_store_month ON ai_usage_logs(store_id, month_year);`);
+
+        console.log('✅ AI usage logs tables verified/created');
         console.log('✅ WhatsApp integration tables verified/created');
         console.log('✅ Database schema verified/updated successfully');
     } catch (error) {

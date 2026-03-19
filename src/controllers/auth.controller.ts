@@ -18,7 +18,7 @@ const generateToken = (id: string) => {
 };
 
 import crypto from 'crypto';
-import { sendVerificationEmail, sendOTPVerificationEmail, sendPasswordResetEmail } from '../services/email.service';
+import { sendVerificationEmail, sendOTPVerificationEmail, sendPasswordResetEmail, sendWelcomeEmail } from '../services/email.service';
 import { adminApp } from '../firebase';
 
 // Helper to generate random token
@@ -273,6 +273,12 @@ export const verifyRegistration = async (req: express.Request, res: express.Resp
             [user.id]
         );
 
+        // Fetch user's name and send a welcome email (fire-and-forget)
+        db.query('SELECT name FROM users WHERE id = $1', [user.id]).then(r => {
+            const name = r.rows[0]?.name || 'there';
+            sendWelcomeEmail(normEmail, name).catch(e => console.error('[email] Failed to send welcome email:', e));
+        }).catch(() => { });
+
         res.status(200).json({ message: 'Email verified successfully.' });
     } catch (error) {
         console.error('Verify registration error:', error);
@@ -291,20 +297,35 @@ export const resendVerificationEmail = async (req: express.Request, res: express
     if (!targetEmail) return res.status(400).json({ message: 'Email is required' });
 
     try {
+        console.log(`[resend-verification] Attempting to resend for: ${targetEmail}`);
         const result = await db.query('SELECT id, is_verified FROM users WHERE email = $1', [targetEmail]);
-        if (result.rowCount === 0) return res.status(404).json({ message: 'User not found' });
+        if (result.rowCount === 0) {
+            console.warn(`[resend-verification] User not found for email: ${targetEmail}`);
+            return res.status(404).json({ message: 'User not found' });
+        }
 
         const user = result.rows[0];
-        if (user.is_verified) return res.status(400).json({ message: 'Email already verified' });
+        if (user.is_verified) {
+            console.log(`[resend-verification] User ${targetEmail} is already verified.`);
+            return res.status(400).json({ message: 'Email already verified' });
+        }
 
         const newToken = generateOTP();
+        console.log(`[resend-verification] Generated new OTP: ${newToken} for user: ${user.id}`);
+
         await db.query('UPDATE users SET verification_token = $1 WHERE id = $2', [newToken, user.id]);
+        console.log(`[resend-verification] Database updated with new token.`);
 
         await sendOTPVerificationEmail(targetEmail, newToken);
+        console.log(`[resend-verification] Email service called successfully.`);
+
         res.json({ message: 'Verification email sent' });
-    } catch (error) {
+    } catch (error: any) {
         console.error('Resend error:', error);
-        res.status(500).json({ message: 'Error resending email' });
+        res.status(500).json({
+            message: 'Error resending email',
+            details: error.message
+        });
     }
 };
 

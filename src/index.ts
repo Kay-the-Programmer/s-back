@@ -33,21 +33,29 @@ const allowedOrigins: (string | RegExp)[] = [
 ].filter(Boolean) as (string | RegExp)[];
 
 
+const normalizeOrigin = (o: string) => o.replace(/\/+$/, '').toLowerCase().trim();
+
 const corsOptions: cors.CorsOptions = {
   origin: (origin, callback) => {
-    if (!origin) return callback(null, true); // allow non-browser tools
-    const isAllowed = allowedOrigins.some((o) =>
-      typeof o === 'string' ? origin === o : (o as RegExp).test(origin)
-    );
+    if (!origin) return callback(null, true);
+
+    const normalizedOrigin = normalizeOrigin(origin);
+    const isAllowed = allowedOrigins.some((o) => {
+      if (typeof o === 'string') {
+        return normalizedOrigin === normalizeOrigin(o);
+      }
+      return (o as RegExp).test(origin);
+    });
+
     if (isAllowed) {
       return callback(null, true);
     } else {
-      console.log('❌ CORS Blocked Origin:', origin);
+      console.error(`❌ CORS Blocked Origin: "${origin}" (Normalized: "${normalizedOrigin}")`);
       return callback(new Error(`CORS: Origin ${origin} not allowed`), false);
     }
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-firebase-appcheck'],
   credentials: true,
 };
 app.use(cors(corsOptions));
