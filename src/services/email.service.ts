@@ -16,7 +16,9 @@ const getTransporter = () => {
             user: process.env.SMTP_USER,
             pass: process.env.SMTP_PASS,
         },
-    });
+        // Force IPv4 if IPv6 is unreachable (fixes ENETUNREACH / ETIMEDOUT for Gmail)
+        family: 4,
+    } as any);
 };
 
 const sendEmail = async (to: string, subject: string, html: string, text?: string) => {
