@@ -3,25 +3,17 @@ import db from '../db_client';
 import { generateId } from '../utils/helpers';
 import SocketService from '../services/socket.service';
 import multer from 'multer';
-import path from 'path';
-import fs from 'fs';
+import { storageService } from '../services/storage.service';
 
-// Configure Multer for image uploads
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        const uploadPath = path.join(__dirname, '../../uploads/messages');
-        if (!fs.existsSync(uploadPath)) {
-            fs.mkdirSync(uploadPath, { recursive: true });
-        }
-        cb(null, uploadPath);
-    },
-    filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-        cb(null, uniqueSuffix + path.extname(file.originalname));
+// Use memory storage — file is uploaded to Firebase Storage, not local disk
+export const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+    fileFilter: (_req, file, cb) => {
+        if (file.mimetype.startsWith('image/')) cb(null, true);
+        else cb(new Error('Only image files are allowed'));
     }
 });
-export const upload = multer({ storage });
-
 
 export const sendMessage = async (req: Request, res: Response) => {
     try {
@@ -30,7 +22,7 @@ export const sendMessage = async (req: Request, res: Response) => {
         let imageUrl = null;
 
         if (req.file) {
-            imageUrl = `/uploads/messages/${req.file.filename}`;
+            imageUrl = await storageService.uploadFile(req.file, 'messages');
         }
 
         if (!offerId) {

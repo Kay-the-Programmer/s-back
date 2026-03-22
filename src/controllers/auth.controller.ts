@@ -4,6 +4,7 @@ import db from '../db_client';
 import { User } from '../types';
 import { generateId, toCamelCase } from '../utils/helpers';
 import express from 'express';
+import { invalidateUserCache } from '../middleware/auth.middleware';
 import { signInWithEmailAndPassword, signInWithPhoneNumber } from "firebase/auth";
 import { authentication } from "../firebase";
 
@@ -237,6 +238,8 @@ export const verifyEmail = async (req: express.Request, res: express.Response) =
 
         // Mark verified and clear token
         await db.query('UPDATE users SET is_verified = TRUE, verification_token = NULL WHERE id = $1', [user.id]);
+        
+        invalidateUserCache(user.id);
 
         res.json({ message: 'Email verified successfully' });
     } catch (error) {
@@ -272,6 +275,8 @@ export const verifyRegistration = async (req: express.Request, res: express.Resp
             'UPDATE users SET is_verified = TRUE, verification_token = NULL WHERE id = $1',
             [user.id]
         );
+        
+        invalidateUserCache(user.id);
 
         // Fetch user's name and send a welcome email (fire-and-forget)
         db.query('SELECT name FROM users WHERE id = $1', [user.id]).then(r => {

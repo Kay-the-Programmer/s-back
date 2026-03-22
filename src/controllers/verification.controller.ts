@@ -5,6 +5,7 @@ import fs from 'fs';
 import db from '../db_client';
 import { generateId } from '../utils/helpers';
 import { VerificationDocument } from '../types';
+import { invalidateUserCache } from '../middleware/auth.middleware';
 
 // Configure storage
 // Configure storage (Memory for cloud upload)
@@ -141,6 +142,8 @@ export const verifyPhone = async (req: express.Request, res: express.Response) =
 
         // Save the verified phone number
         await db.query('UPDATE users SET phone = $1 WHERE id = $2', [phoneNumber, user.id]);
+        
+        invalidateUserCache(user.id);
 
         return res.json({ message: 'Phone verified and saved successfully.', phoneNumber });
     } catch (error) {

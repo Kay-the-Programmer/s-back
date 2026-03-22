@@ -1,102 +1,82 @@
 import path from 'path';
-import fs from 'fs';
 import crypto from 'crypto';
-
-// Get the uploads directory path
-const UPLOADS_DIR = path.join(__dirname, '../../uploads');
-
-// Ensure uploads directory exists
-const ensureUploadsDirExists = (folder: string) => {
-    const fullPath = path.join(UPLOADS_DIR, folder);
-    if (!fs.existsSync(fullPath)) {
-        fs.mkdirSync(fullPath, { recursive: true });
-    }
-    return fullPath;
-};
+import { adminStorage } from '../firebase';
 
 export const storageService = {
     async uploadFile(file: Express.Multer.File, folder: string = 'products'): Promise<string> {
-        try {
-            // Ensure the folder exists
-            const uploadPath = ensureUploadsDirExists(folder);
+        if (!adminStorage) {
+            throw new Error('[Storage] Firebase Admin Storage is not initialized. Ensure FIREBASE_SERVICE_ACCOUNT is set.');
+        }
 
+        try {
             // Generate unique filename
             const uniqueSuffix = Date.now() + '-' + crypto.randomBytes(8).toString('hex');
             const ext = path.extname(file.originalname);
             const name = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9-_]/g, '_');
             const filename = `${name}-${uniqueSuffix}${ext}`;
-            const filePath = path.join(uploadPath, filename);
 
-            // Write the file buffer to disk
-            await fs.promises.writeFile(filePath, file.buffer);
+            // Full path inside the Firebase Storage bucket
+            const destination = `${folder}/${filename}`;
+            const fileRef = adminStorage.file(destination);
 
-            // Return the URL path that will be served by Express static middleware
-            // This assumes the backend serves /uploads as static files
-            const relativePath = `/uploads/${folder}/${filename}`;
+            // Upload the buffer directly to Firebase Storage
+            await fileRef.save(file.buffer, {
+                metadata: {
+                    contentType: file.mimetype,
+                },
+            });
 
-            console.log(`[Storage] File uploaded successfully: ${relativePath}`);
-            return relativePath;
+            // Make the file publicly readable
+            await fileRef.makePublic();
+
+            // Return the public download URL
+            const publicUrl = `https://storage.googleapis.com/${adminStorage.name}/${destination}`;
+            console.log(`[Storage] File uploaded to Firebase Storage: ${publicUrl}`);
+            return publicUrl;
         } catch (error) {
-            console.error('Error uploading file to local storage:', error);
+            console.error('[Storage] Error uploading file to Firebase Storage:', error);
             throw new Error('Failed to upload file');
         }
     },
 
     async deleteFile(fileUrl: string): Promise<void> {
+        if (!fileUrl || typeof fileUrl !== 'string') return;
+
         try {
-            // Handle empty or invalid URLs
-            if (!fileUrl || typeof fileUrl !== 'string') {
+            // Skip base64 or clearly non-storage URLs
+            if (fileUrl.startsWith('data:')) return;
+
+            // Handle Firebase Storage URLs
+            // e.g. https://storage.googleapis.com/bucket-name/folder/filename.jpg
+            if (fileUrl.includes('storage.googleapis.com') && adminStorage) {
+                const bucketName = adminStorage.name;
+                const prefix = `https://storage.googleapis.com/${bucketName}/`;
+                if (fileUrl.startsWith(prefix)) {
+                    const filePath = fileUrl.slice(prefix.length);
+                    try {
+                        await adminStorage.file(filePath).delete();
+                        console.log(`[Storage] File deleted from Firebase Storage: ${filePath}`);
+                    } catch (err: any) {
+                        if (err.code === 404) {
+                            console.log(`[Storage] File not found or already deleted: ${filePath}`);
+                        } else {
+                            throw err;
+                        }
+                    }
+                }
                 return;
             }
 
-            // Skip URLs that are not local uploads (e.g., external URLs, base64)
-            if (fileUrl.startsWith('data:') || fileUrl.includes('://')) {
-                return;
-            }
-
-            // Protect static assets in checking public/images
+            // Protect static assets
             if (fileUrl.startsWith('/images/')) {
                 console.log('[Storage] Skipping delete - preserving static asset:', fileUrl);
                 return;
             }
 
-            // Only handle local uploads paths
-            if (!fileUrl.startsWith('/uploads/')) {
-                console.log('[Storage] Skipping delete - not a local upload path:', fileUrl);
-                return;
-            }
-
-            // Convert URL path to file system path
-            // Remove '/uploads/' prefix to get relative path within UPLOADS_DIR
-            const relativePath = fileUrl.replace(/^\/uploads\//, '');
-            // Prevent directory traversal attacks
-            const filePath = path.join(UPLOADS_DIR, relativePath);
-
-            // Verify the resolved path is still within UPLOADS_DIR
-            if (!filePath.startsWith(UPLOADS_DIR)) {
-                console.warn(`[Storage] Security Warning: Attempted directory traversal deletion: ${fileUrl}`);
-                return;
-            }
-
-            // Check if file exists before attempting to delete
-            // Using fs.stat to check existence and ensure it's a file
-            try {
-                const stats = await fs.promises.stat(filePath);
-                if (stats.isFile()) {
-                    await fs.promises.unlink(filePath);
-                    console.log(`[Storage] File deleted successfully: ${fileUrl}`);
-                }
-            } catch (err: any) {
-                if (err.code === 'ENOENT') {
-                    // File already gone, which is fine
-                    console.log(`[Storage] File not found or already deleted: ${fileUrl}`);
-                } else {
-                    throw err;
-                }
-            }
+            console.log('[Storage] Skipping delete - unrecognized URL format:', fileUrl);
         } catch (error: any) {
-            console.error('Error deleting file from local storage:', error);
-            // Don't throw here to avoid blocking other operations
+            console.error('[Storage] Error deleting file:', error);
+            // Don't throw to avoid blocking other operations
         }
     }
 };

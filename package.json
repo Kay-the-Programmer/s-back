@@ -12,6 +12,7 @@
     "db:reset": "ts-node src/reset_db.ts"
   },
   "dependencies": {
+    "@google-cloud/storage": "^7.19.0",
     "@google/generative-ai": "^0.24.1",
     "@types/multer": "^2.0.0",
     "@types/socket.io": "^3.0.1",
