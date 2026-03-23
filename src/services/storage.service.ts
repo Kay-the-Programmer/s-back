@@ -1,68 +1,63 @@
-import path from 'path';
-import crypto from 'crypto';
-import { adminStorage } from '../firebase';
+import { v2 as cloudinary } from 'cloudinary';
+import streamifier from 'streamifier';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+});
 
 export const storageService = {
     async uploadFile(file: Express.Multer.File, folder: string = 'products'): Promise<string> {
-        if (!adminStorage) {
-            throw new Error('[Storage] Firebase Admin Storage is not initialized. Ensure FIREBASE_SERVICE_ACCOUNT is set.');
+        if (!process.env.CLOUDINARY_CLOUD_NAME) {
+            console.warn('[Storage] Cloudinary is not configured. Returning dummy URL.');
+            return `https://via.placeholder.com/800x800?text=Unconfigured+Cloudinary`;
         }
 
-        try {
-            // Generate unique filename
-            const uniqueSuffix = Date.now() + '-' + crypto.randomBytes(8).toString('hex');
-            const ext = path.extname(file.originalname);
-            const name = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9-_]/g, '_');
-            const filename = `${name}-${uniqueSuffix}${ext}`;
-
-            // Full path inside the Firebase Storage bucket
-            const destination = `${folder}/${filename}`;
-            const fileRef = adminStorage.file(destination);
-
-            // Upload the buffer directly to Firebase Storage
-            await fileRef.save(file.buffer, {
-                metadata: {
-                    contentType: file.mimetype,
+        return new Promise((resolve, reject) => {
+            const uploadStream = cloudinary.uploader.upload_stream(
+                {
+                    folder: `salepilot/${folder}`,
                 },
-            });
-
-            // Make the file publicly readable
-            await fileRef.makePublic();
-
-            // Return the public download URL
-            const publicUrl = `https://storage.googleapis.com/${adminStorage.name}/${destination}`;
-            console.log(`[Storage] File uploaded to Firebase Storage: ${publicUrl}`);
-            return publicUrl;
-        } catch (error) {
-            console.error('[Storage] Error uploading file to Firebase Storage:', error);
-            throw new Error('Failed to upload file');
-        }
+                (error, result) => {
+                    if (error) {
+                        console.error('[Storage] Error uploading file to Cloudinary:', error);
+                        return reject(new Error('Failed to upload file'));
+                    }
+                    if (!result) {
+                        return reject(new Error('No result from Cloudinary'));
+                    }
+                    console.log(`[Storage] File uploaded to Cloudinary: ${result.secure_url}`);
+                    resolve(result.secure_url);
+                }
+            );
+            streamifier.createReadStream(file.buffer).pipe(uploadStream);
+        });
     },
 
     async deleteFile(fileUrl: string): Promise<void> {
         if (!fileUrl || typeof fileUrl !== 'string') return;
 
         try {
-            // Skip base64 or clearly non-storage URLs
+            // Skip base64
             if (fileUrl.startsWith('data:')) return;
 
-            // Handle Firebase Storage URLs
-            // e.g. https://storage.googleapis.com/bucket-name/folder/filename.jpg
-            if (fileUrl.includes('storage.googleapis.com') && adminStorage) {
-                const bucketName = adminStorage.name;
-                const prefix = `https://storage.googleapis.com/${bucketName}/`;
-                if (fileUrl.startsWith(prefix)) {
-                    const filePath = fileUrl.slice(prefix.length);
-                    try {
-                        await adminStorage.file(filePath).delete();
-                        console.log(`[Storage] File deleted from Firebase Storage: ${filePath}`);
-                    } catch (err: any) {
-                        if (err.code === 404) {
-                            console.log(`[Storage] File not found or already deleted: ${filePath}`);
-                        } else {
-                            throw err;
-                        }
-                    }
+            // Handle Cloudinary URLs
+            // e.g. https://res.cloudinary.com/cloud_name/image/upload/v1234/salepilot/products/xyz.jpg
+            if (fileUrl.includes('cloudinary.com')) {
+                const splitUrl = fileUrl.split('/');
+                const uploadIndex = splitUrl.findIndex(part => part === 'upload');
+                
+                if (uploadIndex !== -1 && uploadIndex + 2 < splitUrl.length) {
+                    // Extract public_id starting after 'upload/v1234/'
+                    const publicIdWithExt = splitUrl.slice(uploadIndex + 2).join('/');
+                    const publicId = publicIdWithExt.split('.')[0]; // remove file extension
+                    
+                    await cloudinary.uploader.destroy(publicId);
+                    console.log(`[Storage] File deleted from Cloudinary: ${publicId}`);
                 }
                 return;
             }

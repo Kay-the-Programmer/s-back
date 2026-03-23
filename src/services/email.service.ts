@@ -1,5 +1,9 @@
 import nodemailer from 'nodemailer';
 import { adminDb } from '../firebase';
+import dns from 'node:dns';
+
+// Force node to resolve IPv4 addresses first to avoid ENETUNREACH when attempting to connect to IPv6 servers like smtp.gmail.com
+dns.setDefaultResultOrder('ipv4first');
 
 // ─── Nodemailer Configuration ──────────────────────────────────────────────────
 const getTransporter = () => {

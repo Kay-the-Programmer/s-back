@@ -11,7 +11,7 @@ const firebaseConfig = {
     apiKey: process.env.FIREBASE_API_KEY || "AIzaSyBqcS-rap5P5jRl7nhfdESKWEJtZb4Zy8c",
     authDomain: process.env.FIREBASE_AUTH_DOMAIN || "salepilot-ae09f.firebaseapp.com",
     projectId: process.env.FIREBASE_PROJECT_ID || "salepilot-ae09f",
-    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || "salepilot-ae09f.firebasestorage.app",
+    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || "salepilot-ae09f.appspot.com",
     messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID || "980903093215",
     appId: process.env.FIREBASE_APP_ID || "1:980903093215:web:2c821c0758a9ec70335a6a",
     measurementId: process.env.FIREBASE_MEASUREMENT_ID || "G-2885SSEE1Y"
