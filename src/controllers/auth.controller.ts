@@ -21,6 +21,7 @@ const generateToken = (id: string) => {
 import crypto from 'crypto';
 import { sendVerificationEmail, sendOTPVerificationEmail, sendPasswordResetEmail, sendWelcomeEmail } from '../services/email.service';
 import { adminApp } from '../firebase';
+import { referralService } from '../services/referral.service';
 
 // Helper to generate random token
 const generateRandomToken = () => {
@@ -95,11 +96,19 @@ export const registerUser = async (req: express.Request, res: express.Response) 
         // Generate verification OTP
         const verificationToken = generateOTP();
 
+        const referralCode = referralService.generateReferralCode();
+        const signupReferralCode = req.body.referralCode;
+
         const insertResult = await db.query(
-            'INSERT INTO users(id, name, email, password_hash, role, verification_token, is_verified) VALUES($1, $2, $3, $4, $5, $6, $7) RETURNING id, name, email, role, phone, is_verified',
-            [id, String(name), normEmail, password_hash, role, verificationToken, false]
+            'INSERT INTO users(id, name, email, password_hash, role, verification_token, is_verified, referral_code) VALUES($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, name, email, role, phone, is_verified, referral_code',
+            [id, String(name), normEmail, password_hash, role, verificationToken, false, referralCode]
         );
         const newUser = insertResult.rows[0];
+
+        // Process referral if provided
+        if (signupReferralCode) {
+            await referralService.processReferral(newUser.id, signupReferralCode);
+        }
 
         // Send OTP verification email
         try {
@@ -146,12 +155,19 @@ export const registerCustomer = async (req: express.Request, res: express.Respon
 
         // Verification logic
         const verificationToken = generateOTP();
+        const referralCode = referralService.generateReferralCode();
+        const signupReferralCode = req.body.referralCode;
 
         const insertResult = await db.query(
-            'INSERT INTO users(id, name, email, password_hash, role, phone, verification_token, is_verified) VALUES($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, name, email, role, phone, is_verified',
-            [id, String(name), normEmail, password_hash, role, phone || null, verificationToken, false]
+            'INSERT INTO users(id, name, email, password_hash, role, phone, verification_token, is_verified, referral_code) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, name, email, role, phone, is_verified, referral_code',
+            [id, String(name), normEmail, password_hash, role, phone || null, verificationToken, false, referralCode]
         );
         const newUser = insertResult.rows[0];
+
+        // Process referral if provided
+        if (signupReferralCode) {
+            await referralService.processReferral(newUser.id, signupReferralCode);
+        }
 
         // Send verification email
         try {
@@ -239,6 +255,9 @@ export const verifyEmail = async (req: express.Request, res: express.Response) =
         // Mark verified and clear token
         await db.query('UPDATE users SET is_verified = TRUE, verification_token = NULL WHERE id = $1', [user.id]);
         
+        // Trigger referral reward
+        await referralService.rewardReferrer(user.id);
+        
         invalidateUserCache(user.id);
 
         res.json({ message: 'Email verified successfully' });
@@ -275,6 +294,9 @@ export const verifyRegistration = async (req: express.Request, res: express.Resp
             'UPDATE users SET is_verified = TRUE, verification_token = NULL WHERE id = $1',
             [user.id]
         );
+
+        // Trigger referral reward
+        await referralService.rewardReferrer(user.id);
         
         invalidateUserCache(user.id);
 
@@ -487,14 +509,23 @@ export const googleLogin = async (req: express.Request, res: express.Response) =
             }
 
             const insertResult = await db.query(
-                'INSERT INTO users(id, name, email, password_hash, role, profile_picture) VALUES($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role, phone, profile_picture',
-                [id, String(name || 'Google User'), normEmail, password_hash, role, profilePicture]
+                'INSERT INTO users(id, name, email, password_hash, role, profile_picture, is_verified) VALUES($1, $2, $3, $4, $5, $6, $7) RETURNING id, name, email, role, phone, profile_picture, is_verified',
+                [id, String(name || 'Google User'), normEmail, password_hash, role, profilePicture, true]
             );
             user = insertResult.rows[0];
-        } else if (profilePicture && user.profile_picture !== profilePicture) {
-            // Update profile picture if it has changed
-            await db.query('UPDATE users SET profile_picture = $1 WHERE id = $2', [profilePicture, user.id]);
-            user.profile_picture = profilePicture;
+        } else {
+            // If user exists but is not verified, mark them as verified now that they've logged in via Google
+            if (!user.is_verified) {
+                await db.query('UPDATE users SET is_verified = TRUE WHERE id = $1', [user.id]);
+                user.is_verified = true;
+                invalidateUserCache(user.id);
+            }
+            
+            if (profilePicture && user.profile_picture !== profilePicture) {
+                // Update profile picture if it has changed
+                await db.query('UPDATE users SET profile_picture = $1 WHERE id = $2', [profilePicture, user.id]);
+                user.profile_picture = profilePicture;
+            }
         }
 
         // Generate App Token using EXISTING logic
@@ -509,6 +540,7 @@ export const googleLogin = async (req: express.Request, res: express.Response) =
             profile_picture: user.profile_picture,
             current_store_id: user.current_store_id,
             token: token,
+            is_verified: user.is_verified,
         });
         return res.json(userResponse);
 

@@ -114,9 +114,9 @@ const startServer = async () => {
     }, 60 * 60 * 1000);
 
     // Run periodic notifications every 24 hours
-    notificationSchedulerService.sendPeriodicTips().catch(err => console.error('[scheduler] Error in startup tips processing:', err));
+    notificationSchedulerService.sendPeriodicTips().catch((err: unknown) => console.error('[scheduler] Error in startup tips processing:', err));
     setInterval(() => {
-      notificationSchedulerService.sendPeriodicTips().catch(err => console.error('[scheduler] Error in periodic tips processing:', err));
+      notificationSchedulerService.sendPeriodicTips().catch((err: unknown) => console.error('[scheduler] Error in periodic tips processing:', err));
     }, 24 * 60 * 60 * 1000);
 
     // Use httpServer.listen instead of app.listen

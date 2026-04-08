@@ -25,7 +25,7 @@ const getTransporter = () => {
     } as any);
 };
 
-const sendEmail = async (to: string, subject: string, html: string, text?: string) => {
+export const sendEmail = async (to: string, subject: string, html: string, text?: string) => {
     const transporter = getTransporter();
 
     // Fallback: If no SMTP configured, log the email content to console and still write to Firestore

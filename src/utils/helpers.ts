@@ -77,7 +77,7 @@ export const toCamelCase = (obj: any): any => {
         return obj.map(toCamelCase);
     }
 
-    if (typeof obj !== 'object') {
+    if (typeof obj !== 'object' || obj instanceof Date) {
         return obj;
     }
 

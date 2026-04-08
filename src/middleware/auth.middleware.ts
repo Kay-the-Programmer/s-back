@@ -24,7 +24,8 @@ export const protect = async (req: express.Request, res: express.Response, next:
             // Try cache first unless this is an explicit freshness-critical endpoint (e.g., /api/auth/me)
             let dbUser: any | undefined;
             const now = Date.now();
-            const isFreshUserRequest = (req.originalUrl || req.url || '').includes('/api/auth/me');
+            const currentUrl = (req.originalUrl || req.url || '').toLowerCase();
+            const isFreshUserRequest = currentUrl.endsWith('/auth/me') || currentUrl.includes('/auth/me?');
             const cacheEntry = userCache.get(decoded.id);
             if (!isFreshUserRequest && cacheEntry && cacheEntry.expires > now && cacheEntry.user && cacheEntry.user.current_store_id) {
                 dbUser = cacheEntry.user;

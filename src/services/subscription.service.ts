@@ -110,12 +110,26 @@ export const initiatePayment = async (storeId: string, planId: string, method: s
     // Use a unique reference for Lenco
     const reference = `SP_SUB_${Date.now()}_${storeId.substring(0, 8).toUpperCase()}`;
 
+    // Apply available discount balance
+    const storeRes = await db.query('SELECT discount_balance FROM stores WHERE id = $1', [storeId]);
+    const availableDiscount = parseFloat(storeRes.rows[0]?.discount_balance || '0');
+    let finalAmount = plan.price;
+    let appliedDiscount = 0;
+
+    if (availableDiscount > 0) {
+        appliedDiscount = Math.min(availableDiscount, plan.price);
+        finalAmount = plan.price - appliedDiscount;
+        
+        // Deduct from store's balance
+        await db.query('UPDATE stores SET discount_balance = discount_balance - $1 WHERE id = $2', [appliedDiscount, storeId]);
+    }
+
     // Insert pending payment record
     await db.query(
         `INSERT INTO subscription_payments 
         (id, store_id, amount, currency, plan_id, method, reference, notes, created_at, status)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9)`,
-        [paymentId, storeId, amount, currency, planId, method, reference, `Plan: ${plan.name}, Phone: ${phoneNumber || 'N/A'}`, 'pending']
+        [paymentId, storeId, finalAmount, currency, planId, method, reference, `Plan: ${plan.name}, Discount applied: ${appliedDiscount}, Phone: ${phoneNumber || 'N/A'}`, 'pending']
     );
 
     let lencoResult = null;
@@ -123,7 +137,7 @@ export const initiatePayment = async (storeId: string, planId: string, method: s
         try {
             // Determine operator - simple logic or pass from frontend
             // For now, assume Airtel if it starts with 097/077 or MTN if 096/076
-            lencoResult = await LencoService.chargeMobileMoney(amount, reference, phoneNumber);
+            lencoResult = await LencoService.chargeMobileMoney(finalAmount, reference, phoneNumber);
         } catch (error) {
             console.error('Failed to trigger direct mobile money charge:', error);
             // We don't throw here, as we still have the reference and can fallback to widget if needed
@@ -133,7 +147,8 @@ export const initiatePayment = async (storeId: string, planId: string, method: s
     return {
         paymentId,
         reference,
-        amount,
+        amount: finalAmount,
+        appliedDiscount,
         currency,
         status: 'pending',
         lencoResult,

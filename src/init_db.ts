@@ -71,6 +71,17 @@ async function initializeDatabase() {
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='reset_password_expires') THEN
                     ALTER TABLE users ADD COLUMN reset_password_expires TIMESTAMPTZ;
                 END IF;
+
+                -- Add referral columns
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='referral_code') THEN
+                    ALTER TABLE users ADD COLUMN referral_code TEXT UNIQUE;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='referred_by') THEN
+                    ALTER TABLE users ADD COLUMN referred_by TEXT;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='created_at') THEN
+                    ALTER TABLE users ADD COLUMN created_at TIMESTAMPTZ DEFAULT NOW();
+                END IF;
             END $$;`
         );
         // Seed a default admin user if none exists (safe, idempotent)
@@ -139,6 +150,11 @@ async function initializeDatabase() {
                     SELECT 1 FROM information_schema.columns WHERE table_name='stores' AND column_name='subscription_status'
                 ) THEN
                     UPDATE stores SET subscription_status = COALESCE(subscription_status, 'trial');
+                END IF;
+
+                -- Add discount_balance column
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='stores' AND column_name='discount_balance') THEN
+                    ALTER TABLE stores ADD COLUMN discount_balance DECIMAL(10,2) DEFAULT 0;
                 END IF;
             END $$;`
         );
@@ -586,6 +602,31 @@ async function initializeDatabase() {
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_subscription_payments_store_id ON subscription_payments(store_id);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_subscription_payments_paid_created ON subscription_payments(COALESCE(paid_at, created_at));`);
+
+        // Referral rewards table
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS referral_rewards (
+                id TEXT PRIMARY KEY,
+                referrer_id TEXT NOT NULL REFERENCES users(id),
+                referred_user_id TEXT NOT NULL REFERENCES users(id),
+                reward_type TEXT NOT NULL DEFAULT 'discount',
+                reward_value DECIMAL(10,2) NOT NULL,
+                is_processed BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_referral_rewards_referrer_id ON referral_rewards(referrer_id);`);
+
+        // Notification logs for periodic tasks
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS periodic_notification_logs (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id),
+                notification_type TEXT NOT NULL,
+                sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_periodic_notifications_user_type ON periodic_notification_logs(user_id, notification_type);`);
         // Store settings (per-store)
         await client.query(`
             CREATE TABLE IF NOT EXISTS store_settings (

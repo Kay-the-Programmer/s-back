@@ -17,10 +17,10 @@ export const getUsers = async (req: express.Request, res: express.Response) => {
             // Superadmin can see all users (optionally filter by store via query.currentStoreId)
             const { currentStoreId } = (req.query || {}) as { currentStoreId?: string };
             if (currentStoreId) {
-                const result = await db.query('SELECT id, name, email, role FROM users WHERE current_store_id = $1 ORDER BY name', [currentStoreId]);
+                const result = await db.query('SELECT id, name, email, role, is_verified FROM users WHERE current_store_id = $1 ORDER BY name', [currentStoreId]);
                 return res.status(200).json(toCamelCase(result.rows));
             }
-            const result = await db.query('SELECT id, name, email, role FROM users ORDER BY name');
+            const result = await db.query('SELECT id, name, email, role, is_verified FROM users ORDER BY name');
             return res.status(200).json(toCamelCase(result.rows));
         }
 
@@ -40,7 +40,7 @@ export const getUsers = async (req: express.Request, res: express.Response) => {
 export const getUserById = async (req: express.Request, res: express.Response) => {
     try {
         if (isSuperAdmin(req)) {
-            const result = await db.query('SELECT id, name, email, role FROM users WHERE id = $1', [req.params.id]);
+            const result = await db.query('SELECT id, name, email, role, is_verified FROM users WHERE id = $1', [req.params.id]);
             if ((result.rowCount ?? 0) === 0) {
                 return res.status(404).json({ message: 'User not found' });
             }
@@ -50,7 +50,7 @@ export const getUserById = async (req: express.Request, res: express.Response) =
         if (!storeId) {
             return res.status(400).json({ message: 'No store selected. Set current store to manage users.' });
         }
-        const result = await db.query('SELECT id, name, email, role FROM users WHERE id = $1 AND current_store_id = $2', [req.params.id, storeId]);
+        const result = await db.query('SELECT id, name, email, role, is_verified FROM users WHERE id = $1 AND current_store_id = $2', [req.params.id, storeId]);
         if ((result.rowCount ?? 0) === 0) {
             return res.status(404).json({ message: 'User not found' });
         }
@@ -88,10 +88,13 @@ export const createUser = async (req: express.Request, res: express.Response) =>
         const salt = await bcrypt.genSalt(10);
         const password_hash = await bcrypt.hash(String(password), salt);
         const id = generateId('user');
+        // For staff, verification is not needed, so set is_verified to true and no token
+        const verificationToken = null;
+        const isVerified = true;
 
         const result = await db.query(
-            'INSERT INTO users (id, name, email, role, password_hash, current_store_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, name, email, role',
-            [id, String(name), String(email).toLowerCase(), String(role), password_hash, targetStoreId ?? null]
+            'INSERT INTO users (id, name, email, password_hash, role, current_store_id, verification_token, is_verified) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+            [id, String(name), String(email).toLowerCase(), password_hash, String(role), targetStoreId ?? null, verificationToken, isVerified]
         );
         const newUser = result.rows[0];
 
@@ -128,7 +131,7 @@ export const updateUser = async (req: express.Request, res: express.Response) =>
         }
 
         const result = await db.query(
-            'UPDATE users SET name=$1, email=$2, role=$3 WHERE id=$4 RETURNING id, name, email, role',
+            'UPDATE users SET name=$1, email=$2, role=$3 WHERE id=$4 RETURNING id, name, email, role, is_verified',
             [name, String(email).toLowerCase(), role, id]
         );
 
