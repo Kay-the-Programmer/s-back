@@ -4,13 +4,58 @@ import { protect } from '../middleware/auth.middleware';
 
 const router = express.Router();
 
-// Check if a store name is already taken
+/**
+ * @openapi
+ * /stores/check-name:
+ *   get:
+ *     tags: [Stores]
+ *     summary: Check if a store name is already taken
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: name
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Name availability status
+ */
 router.get('/check-name', protect, checkStoreName);
 
-// Register a new store for the current user and grant admin privileges
+/**
+ * @openapi
+ * /stores/register:
+ *   post:
+ *     tags: [Stores]
+ *     summary: Register a new store for the current user
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name: { type: string }
+ *               address: { type: string }
+ *     responses:
+ *       201:
+ *         description: Store registered
+ */
 router.post('/register', protect, registerStore);
 
-// Verify a newly registered store
+/**
+ * @openapi
+ * /stores/verify:
+ *   post:
+ *     tags: [Stores]
+ *     summary: Verify a newly registered store
+ *     security:
+ *       - bearerAuth: []
+ */
 router.post('/verify', protect, verifyStoreRegistration);
 
 export default router;

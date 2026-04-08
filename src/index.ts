@@ -12,6 +12,8 @@ import seedDatabase from './seed';
 import path from 'path';
 import SocketService from './services/socket.service';
 import './firebase';
+import swaggerUi from 'swagger-ui-express';
+import swaggerSpec from './swagger';
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -63,8 +65,10 @@ app.options('*', cors(corsOptions)); // Handle preflight
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// --- API Routes ---
 app.use('/api', apiRoutes);
+
+// --- Swagger Documentation ---
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // --- Basic Route ---
 app.get('/', (req: express.Request, res: express.Response) => {
@@ -90,6 +94,7 @@ const io = new Server(httpServer, {
 new SocketService(io);
 
 import { runRecurringExpenses } from './controllers/recurring-expenses.controller';
+import { notificationSchedulerService } from './services/notification-scheduler.service';
 
 const startServer = async () => {
   try {
@@ -107,6 +112,12 @@ const startServer = async () => {
         if (count > 0) console.log(`[recurring] Processed ${count} expenses`);
       }).catch(err => console.error('[recurring] Error in interval processing:', err));
     }, 60 * 60 * 1000);
+
+    // Run periodic notifications every 24 hours
+    notificationSchedulerService.sendPeriodicTips().catch(err => console.error('[scheduler] Error in startup tips processing:', err));
+    setInterval(() => {
+      notificationSchedulerService.sendPeriodicTips().catch(err => console.error('[scheduler] Error in periodic tips processing:', err));
+    }, 24 * 60 * 60 * 1000);
 
     // Use httpServer.listen instead of app.listen
     httpServer.listen(port, () => {
