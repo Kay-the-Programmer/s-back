@@ -1,6 +1,9 @@
 import swaggerJsdoc from 'swagger-jsdoc';
 import path from 'path';
-import { version } from '../package.json';
+
+// Use require to avoid TypeScript rootDir violation (package.json is outside src/)
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { version } = require('../package.json') as { version: string };
 
 const options: swaggerJsdoc.Options = {
   definition: {
