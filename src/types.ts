@@ -27,9 +27,8 @@ export interface Product {
   description: string;
   sku: string;
   barcode?: string;
-  // DEPRECATED: category: string;
   categoryId?: string;
-  price: number; // Retail Price
+  price: number;
   costPrice?: number;
   stock: number;
   unitOfMeasure?: 'unit' | 'kg';
