@@ -88,7 +88,8 @@ export const createProduct = async (req: express.Request, res: express.Response)
             name, description, sku, barcode, category_id, price, cost_price, stock,
             supplier_id, brand, reorder_point, status, custom_attributes,
             unit_of_measure, unitOfMeasure,
-            weight, dimensions, safety_stock, safetyStock, variants
+            weight, dimensions, safety_stock, safetyStock, variants,
+            carton_price, units_per_carton, cartons_received
         } = req.body;
 
         const files = req.files as Express.Multer.File[];
@@ -135,7 +136,11 @@ export const createProduct = async (req: express.Request, res: express.Response)
                 } catch {
                     return [];
                 }
-            })()
+            })(),
+            // Carton / bulk pricing
+            cartonPrice: carton_price && carton_price.toString().trim() ? parseFloat(carton_price.toString()) : null,
+            unitsPerCarton: units_per_carton && units_per_carton.toString().trim() ? parseInt(units_per_carton.toString(), 10) : null,
+            cartonsReceived: cartons_received && cartons_received.toString().trim() ? parseInt(cartons_received.toString(), 10) : null,
         };
 
         // Additional validation
@@ -148,8 +153,8 @@ export const createProduct = async (req: express.Request, res: express.Response)
         }
 
         const queryText = `
-            INSERT INTO products(id, name, description, sku, barcode, category_id, supplier_id, price, cost_price, stock, unit_of_measure, image_urls, brand, status, reorder_point, weight, dimensions, safety_stock, variants, custom_attributes, store_id)
-            VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+            INSERT INTO products(id, name, description, sku, barcode, category_id, supplier_id, price, cost_price, stock, unit_of_measure, image_urls, brand, status, reorder_point, weight, dimensions, safety_stock, variants, custom_attributes, store_id, carton_price, units_per_carton, cartons_received)
+            VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
             RETURNING *;
         `;
         const values = [
@@ -173,7 +178,10 @@ export const createProduct = async (req: express.Request, res: express.Response)
             processedValues.safetyStock,
             JSON.stringify(processedValues.variants || []),
             JSON.stringify(processedValues.customAttributes),
-            storeId
+            storeId,
+            processedValues.cartonPrice,
+            processedValues.unitsPerCarton,
+            processedValues.cartonsReceived,
         ];
 
         console.log('Executing query with values:', values);
@@ -274,6 +282,9 @@ export const updateProduct = async (req: express.Request, res: express.Response)
     const variants = body.variants;
     const existing_images = body.existing_images;
     const images_to_delete = body.images_to_delete;
+    const carton_price = body.carton_price || body.cartonPrice;
+    const units_per_carton = body.units_per_carton || body.unitsPerCarton;
+    const cartons_received = body.cartons_received || body.cartonsReceived;
 
     const files = (req.files as Express.Multer.File[]) || [];
 
@@ -341,8 +352,9 @@ export const updateProduct = async (req: express.Request, res: express.Response)
             UPDATE products
             SET name = $1, description = $2, sku = $3, barcode = $4, category_id = $5, supplier_id = $6, price = $7,
                 cost_price = $8, stock = $9, unit_of_measure = $10, image_urls = $11, brand = $12, status = $13, reorder_point = $14,
-                custom_attributes = $15, weight = $16, dimensions = $17, safety_stock = $18, variants = $19
-            WHERE id = $20 AND store_id = $21
+                custom_attributes = $15, weight = $16, dimensions = $17, safety_stock = $18, variants = $19,
+                carton_price = $20, units_per_carton = $21, cartons_received = $22
+            WHERE id = $23 AND store_id = $24
             RETURNING *;
         `;
 
@@ -366,6 +378,10 @@ export const updateProduct = async (req: express.Request, res: express.Response)
             dimensions || null,
             safety_stock != null && safety_stock !== '' ? parseInt(safety_stock.toString(), 10) : null,
             (() => { try { return JSON.stringify(typeof variants === 'string' ? JSON.parse(variants) : (variants || [])); } catch { return JSON.stringify([]); } })(),
+            // Carton / bulk pricing
+            carton_price != null && carton_price !== '' ? parseFloat(carton_price.toString()) : null,
+            units_per_carton != null && units_per_carton !== '' ? parseInt(units_per_carton.toString(), 10) : null,
+            cartons_received != null && cartons_received !== '' ? parseInt(cartons_received.toString(), 10) : null,
             id,
             storeId
         ];

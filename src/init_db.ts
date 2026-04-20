@@ -354,13 +354,17 @@ async function initializeDatabase() {
                 safety_stock INT,
                 variants JSONB DEFAULT '[]',
                 custom_attributes JSONB,
-                store_id TEXT
+                store_id TEXT,
+                carton_price NUMERIC(12,4),
+                units_per_carton INT,
+                cartons_received INT
             );
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_products_store_id ON products(store_id);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_products_store_id_status ON products(store_id, status);`);
 
         // Migration: Switch from global unique constraints to store-scoped unique indexes
+        // Migration: Add carton pricing fields
         await client.query(`
             DO $$
             BEGIN
@@ -375,6 +379,13 @@ async function initializeDatabase() {
                 -- Drop old unique indexes if they exist (sometimes named implicitly)
                 DROP INDEX IF EXISTS products_sku_key;
                 DROP INDEX IF EXISTS products_barcode_key;
+                
+                -- Add carton fields if missing
+                IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'products') THEN
+                    ALTER TABLE products ADD COLUMN IF NOT EXISTS carton_price NUMERIC(12,4) DEFAULT NULL;
+                    ALTER TABLE products ADD COLUMN IF NOT EXISTS units_per_carton INTEGER DEFAULT NULL;
+                    ALTER TABLE products ADD COLUMN IF NOT EXISTS cartons_received INTEGER DEFAULT NULL;
+                END IF;
             END $$;
         `);
 
