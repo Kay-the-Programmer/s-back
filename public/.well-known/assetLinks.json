@@ -1,0 +1,10 @@
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "space.salepilot",
+    "sha256_cert_fingerprints":
+    ["4C:9C:B9:67:C7:3D:E1:26:11:38:65:42:83:C5:D1:08:41:C5:09:49:39:93:BF:0C:9D:FD:8D:CF:17:FB:52:6D"]
+  }
+}]
+

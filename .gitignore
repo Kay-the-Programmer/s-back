@@ -49,3 +49,4 @@ available_models.txt
 !tsconfig.json
 !render.yaml
 !package-lock.json
+!public/.well-known/assetLinks.json
