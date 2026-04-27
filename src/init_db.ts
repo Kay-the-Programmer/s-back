@@ -655,7 +655,9 @@ async function initializeDatabase() {
                 enable_store_credit BOOLEAN NOT NULL,
                 payment_methods JSONB,
                 supplier_payment_methods JSONB,
-                is_online_store_enabled BOOLEAN NOT NULL DEFAULT TRUE
+                is_online_store_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                lenco_public_key TEXT,
+                lenco_secret_key TEXT
             );
         `);
         // Migrate legacy singleton settings table to per-store if needed
@@ -678,6 +680,8 @@ async function initializeDatabase() {
                     -- Add missing columns for existing tables
                     ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS supplier_payment_methods JSONB;
                     ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS is_online_store_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+                    ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS lenco_public_key TEXT;
+                    ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS lenco_secret_key TEXT;
 
                     IF NOT has_store_id THEN
                         -- Add store_id column

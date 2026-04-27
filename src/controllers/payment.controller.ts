@@ -6,6 +6,19 @@ import { auditService } from '../services/audit.service';
 import { accountingService } from '../services/accounting.service';
 
 /**
+ * Helper to fetch store's Lenco secret key
+ */
+const getStoreLencoKey = async (storeId: string): Promise<string | undefined> => {
+    try {
+        const result = await db.query('SELECT lenco_secret_key FROM store_settings WHERE store_id = $1', [storeId]);
+        return result.rows[0]?.lenco_secret_key || undefined;
+    } catch (error) {
+        console.error(`Error fetching Lenco key for store ${storeId}:`, error);
+        return undefined;
+    }
+};
+
+/**
  * Verify a Lenco payment transaction
  * POST /api/payments/lenco/verify
  * Body: { reference: string }
@@ -13,14 +26,21 @@ import { accountingService } from '../services/accounting.service';
 export const verifyPayment = async (req: Request, res: Response, next: NextFunction) => {
     const { reference } = req.body;
     try {
+        const storeId = (req as any).tenant?.storeId || (req as any).user?.currentStoreId;
+        if (!storeId) {
+            res.status(400).json({ status: false, message: 'Store context is required' });
+            return;
+        }
 
         if (!reference) {
             res.status(400).json({ status: false, message: 'Reference is required' });
             return;
         }
 
-        console.log(`Verifying Lenco payment: ${reference}`);
-        const transaction = await LencoService.verifyTransaction(reference);
+        const lencoSecretKey = await getStoreLencoKey(storeId);
+
+        console.log(`Verifying Lenco payment: ${reference} for store ${storeId}`);
+        const transaction = await LencoService.verifyTransaction(reference, lencoSecretKey);
 
         const lencoStatus = transaction.data?.status;
 
@@ -77,8 +97,11 @@ export const verifyPayment = async (req: Request, res: Response, next: NextFunct
  */
 export const getBanks = async (req: Request, res: Response, next: NextFunction) => {
     try {
+        const storeId = (req as any).tenant?.storeId || (req as any).user?.currentStoreId;
+        const lencoSecretKey = storeId ? await getStoreLencoKey(storeId) : undefined;
+
         const country = req.query.country as string || 'zm';
-        const banks = await LencoService.getBanks(country);
+        const banks = await LencoService.getBanks(country, lencoSecretKey);
         res.status(200).json(banks);
     } catch (error: any) {
         next(error);
@@ -198,6 +221,12 @@ export const initiatePayment = async (req: Request, res: Response) => {
 export const chargeMobileMoney = async (req: Request, res: Response) => {
     try {
         const { amount, reference, phone, operator } = req.body;
+        const storeId = (req as any).tenant?.storeId || (req as any).user?.currentStoreId;
+
+        if (!storeId) {
+            res.status(400).json({ status: false, message: 'Store context is required' });
+            return;
+        }
 
         if (!amount || !reference || !phone || !operator) {
             res.status(400).json({
@@ -207,7 +236,8 @@ export const chargeMobileMoney = async (req: Request, res: Response) => {
             return;
         }
 
-        const result = await LencoService.chargeMobileMoney(amount, reference, phone, operator);
+        const lencoSecretKey = await getStoreLencoKey(storeId);
+        const result = await LencoService.chargeMobileMoney(amount, reference, phone, operator, 'zm', lencoSecretKey);
 
         res.status(200).json(result);
     } catch (error: any) {
@@ -228,6 +258,11 @@ export const chargeMobileMoney = async (req: Request, res: Response) => {
 export const cancelPayment = async (req: Request, res: Response) => {
     try {
         const { reference } = req.body;
+        const storeId = (req as any).tenant?.storeId || (req as any).user?.currentStoreId;
+
+        if (!storeId) {
+            return res.status(400).json({ status: false, message: 'Store context is required' });
+        }
 
         if (!reference) {
             return res.status(400).json({
@@ -241,8 +276,10 @@ export const cancelPayment = async (req: Request, res: Response) => {
         // Note: For regular sales, we don't store pending references in the DB yet,
         // so we simply acknowledge the cancellation for the frontend to update its state.
 
+        const lencoSecretKey = await getStoreLencoKey(storeId);
+
         // Best effort to notify Lenco
-        await LencoService.cancelTransaction(reference);
+        await LencoService.cancelTransaction(reference, lencoSecretKey);
 
         res.status(200).json({
             status: true,

@@ -254,6 +254,10 @@ export interface StoreSettings {
   cashAccountId?: string;
   arAccountId?: string;
   apAccountId?: string;
+
+  // Lenco
+  lencoPublicKey?: string;
+  lencoSecretKey?: string;
 }
 
 // --- Accounting Types ---

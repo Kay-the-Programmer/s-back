@@ -1,5 +1,6 @@
 import express from 'express';
 import { getStoreNotifications, markAsRead } from '../controllers/notifications.controller';
+import { protect } from '../middleware/auth.middleware';
 
 const router = express.Router();
 
@@ -9,6 +10,8 @@ const router = express.Router();
  *   get:
  *     tags: [Notifications]
  *     summary: Get notifications for a specific store
+ *     security:
+ *       - bearerAuth: []
  *     parameters:
  *       - in: path
  *         name: storeId
@@ -18,8 +21,10 @@ const router = express.Router();
  *     responses:
  *       200:
  *         description: List of store notifications
+ *       401:
+ *         description: Unauthorized
  */
-router.get('/stores/:storeId', getStoreNotifications);
+router.get('/stores/:storeId', protect, getStoreNotifications);
 
 /**
  * @openapi
@@ -27,6 +32,8 @@ router.get('/stores/:storeId', getStoreNotifications);
  *   patch:
  *     tags: [Notifications]
  *     summary: Mark a notification as read
+ *     security:
+ *       - bearerAuth: []
  *     parameters:
  *       - in: path
  *         name: id
@@ -36,7 +43,9 @@ router.get('/stores/:storeId', getStoreNotifications);
  *     responses:
  *       200:
  *         description: Notification marked as read
+ *       401:
+ *         description: Unauthorized
  */
-router.patch('/:id/read', markAsRead);
+router.patch('/:id/read', protect, markAsRead);
 
 export default router;

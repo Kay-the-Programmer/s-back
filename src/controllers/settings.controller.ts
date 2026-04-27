@@ -39,11 +39,13 @@ export const getSettings = async (req: express.Request, res: express.Response) =
                     { id: 'cash', name: 'CASH' },
                     { id: 'airtel', name: 'AIRTEL' },
                     { id: 'mtn', name: 'MTN' }
-                ]
+                ],
+                lencoPublicKey: '',
+                lencoSecretKey: ''
             };
             const insert = await db.query(
-                `INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                `INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled, lenco_public_key, lenco_secret_key)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
                  RETURNING *;`,
                 [
                     storeId,
@@ -60,7 +62,9 @@ export const getSettings = async (req: express.Request, res: express.Response) =
                     defaults.enableStoreCredit,
                     JSON.stringify(defaults.paymentMethods),
                     JSON.stringify(defaults.supplierPaymentMethods),
-                    true // Default is_online_store_enabled
+                    true, // Default is_online_store_enabled
+                    defaults.lencoPublicKey,
+                    defaults.lencoSecretKey
                 ]
             );
             return res.status(200).json(toCamelCase(insert.rows[0]));
@@ -96,8 +100,8 @@ export const updateSettings = async (req: express.Request, res: express.Response
         newSettings.enableStoreCredit = newSettings.enableStoreCredit === true;
 
         const query = `
-            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled, lenco_public_key, lenco_secret_key)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             ON CONFLICT (store_id) DO UPDATE SET
                                            name = EXCLUDED.name,
                                            address = EXCLUDED.address,
@@ -112,7 +116,9 @@ export const updateSettings = async (req: express.Request, res: express.Response
                                            enable_store_credit = EXCLUDED.enable_store_credit,
                                            payment_methods = EXCLUDED.payment_methods,
                                            supplier_payment_methods = EXCLUDED.supplier_payment_methods,
-                                           is_online_store_enabled = EXCLUDED.is_online_store_enabled
+                                           is_online_store_enabled = EXCLUDED.is_online_store_enabled,
+                                           lenco_public_key = EXCLUDED.lenco_public_key,
+                                           lenco_secret_key = EXCLUDED.lenco_secret_key
             RETURNING *;
         `;
         const values = [
@@ -120,7 +126,9 @@ export const updateSettings = async (req: express.Request, res: express.Response
             newSettings.name, newSettings.address, newSettings.phone, newSettings.email, newSettings.website,
             newSettings.taxRate, JSON.stringify(newSettings.currency), newSettings.receiptMessage, newSettings.lowStockThreshold,
             newSettings.skuPrefix, newSettings.enableStoreCredit, JSON.stringify(newSettings.paymentMethods), JSON.stringify(newSettings.supplierPaymentMethods),
-            newSettings.isOnlineStoreEnabled ?? true
+            newSettings.isOnlineStoreEnabled ?? true,
+            newSettings.lencoPublicKey,
+            newSettings.lencoSecretKey
         ];
 
         const result = await db.query(query, values);

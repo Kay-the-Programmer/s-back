@@ -88,10 +88,11 @@ export const toCamelCase = (obj: any): any => {
             let value = obj[key];
 
             // Format timestamp fields - check for common timestamp field names
+            // Exclude Lenco keys which might contain date-like strings but are not timestamps
             if ((key === 'timestamp' || key === 'created_at' || key === 'updated_at' ||
                 key === 'ordered_at' || key === 'expected_at' || key === 'date' ||
                 key === 'due_date' || key === 'received_at' || key === 'start_time' ||
-                key === 'end_time') && value) {
+                key === 'end_time') && value && (key as any) !== 'lenco_public_key' && (key as any) !== 'lenco_secret_key') {
 
                 // Handle both string and Date object timestamps
                 if (value instanceof Date) {

@@ -1,43 +1,37 @@
 import axios from 'axios';
 
-class LencoService {
+export class LencoService {
   private _baseUrl: string | null = null;
   private _secretKey: string | null = null;
   private _loggedEnv = false;
 
-  private get baseUrl(): string {
-    if (!this._baseUrl) {
-      const envUrl = process.env.LENCO_API_BASE_URL;
-      const key = this.secretKey;
+  private getBaseUrl(secretKey?: string): string {
+    const envUrl = process.env.LENCO_API_BASE_URL;
+    const key = secretKey || this.getSecretKey();
 
-      if (envUrl) {
-        this._baseUrl = envUrl.replace(/\/+$/, '');
-      } else {
-        // Auto-detect based on key
-        if (key.startsWith('sk_test') || key.startsWith('851685')) { // Known sandbox prefix for this user
-          this._baseUrl = 'https://sandbox.lenco.co/access/v2';
-        } else {
-          this._baseUrl = 'https://api.lenco.co/access/v2';
-        }
-      }
+    if (envUrl) {
+      return envUrl.replace(/\/+$/, '');
     }
-    return this._baseUrl;
+
+    // Auto-detect based on key
+    if (key.startsWith('sk_test') || key.startsWith('851685')) { // Known sandbox prefix for this user
+      return 'https://sandbox.lenco.co/access/v2';
+    } else {
+      return 'https://api.lenco.co/access/v2';
+    }
   }
 
-  private get secretKey(): string {
-    if (!this._secretKey) {
-      this._secretKey = process.env.LENCO_SECRET_KEY || '';
-    }
-    return this._secretKey;
+  private getSecretKey(): string {
+    return process.env.LENCO_SECRET_KEY || '';
   }
 
-  private logEnvOnce() {
+  private logEnvOnce(secretKey?: string) {
     if (this._loggedEnv) return;
     this._loggedEnv = true;
 
-    const key = this.secretKey;
+    const key = secretKey || this.getSecretKey();
     const maskedKey = key ? `${key.substring(0, 6)}...${key.substring(key.length - 4)}` : 'NOT SET';
-    const currentBaseUrl = this.baseUrl;
+    const currentBaseUrl = this.getBaseUrl(key);
 
     console.log(`[LencoService] Initialized with BaseURL: ${currentBaseUrl} and Masked Key: ${maskedKey}`);
 
@@ -104,13 +98,15 @@ class LencoService {
     return 'airtel';
   }
 
-  async chargeMobileMoney(amount: number, reference: string, phone: string, operator?: string, country: string = 'zm') {
-    this.logEnvOnce();
+  async chargeMobileMoney(amount: number, reference: string, phone: string, operator?: string, country: string = 'zm', secretKey?: string) {
+    const key = secretKey || this.getSecretKey();
+    this.logEnvOnce(key);
     try {
       const normalizedPhone = this.normalizePhone(phone);
       const detectedOperator = operator || this.detectOperator(normalizedPhone);
 
-      const url = `${this.baseUrl}/collections/mobile-money`;
+      const baseUrl = this.getBaseUrl(key);
+      const url = `${baseUrl}/collections/mobile-money`;
       console.log(`Lenco charging mobile money: ${normalizedPhone} (${detectedOperator}) URL: ${url}`);
 
       const response = await axios.post(url, {
@@ -122,7 +118,7 @@ class LencoService {
         bearer: 'merchant' // Default to merchant bearing the fee
       }, {
         headers: {
-          Authorization: `Bearer ${this.secretKey}`,
+          Authorization: `Bearer ${key}`,
           'Accept': 'application/json',
           'Content-Type': 'application/json',
         },
@@ -139,14 +135,16 @@ class LencoService {
     }
   }
 
-  async verifyTransaction(reference: string) {
-    this.logEnvOnce();
+  async verifyTransaction(reference: string, secretKey?: string) {
+    const key = secretKey || this.getSecretKey();
+    this.logEnvOnce(key);
     try {
-      const url = `${this.baseUrl}/collections/status/${reference}`;
+      const baseUrl = this.getBaseUrl(key);
+      const url = `${baseUrl}/collections/status/${reference}`;
       console.log(`Lenco verifying URL: ${url}`);
       const response = await axios.get(url, {
         headers: {
-          Authorization: `Bearer ${this.secretKey}`,
+          Authorization: `Bearer ${key}`,
           'Accept': 'application/json',
           'Content-Type': 'application/json',
         },
@@ -168,18 +166,20 @@ class LencoService {
    * Attempt to cancel a transaction (Best effort)
    * @param reference The transaction reference
    */
-  async cancelTransaction(reference: string) {
-    this.logEnvOnce();
+  async cancelTransaction(reference: string, secretKey?: string) {
+    const key = secretKey || this.getSecretKey();
+    this.logEnvOnce(key);
     try {
       // Note: Lenco public API doesn't explicitly document a cancellation endpoint for mobile money.
       // This is a best-effort attempt to notify them if such an endpoint exists (un-documented/future-proof).
       // We also log it so we can track if users are cancelling frequently.
       console.log(`[LencoService] Cancellation requested for reference: ${reference}`);
 
-      const url = `${this.baseUrl}/collections/status/${reference}/cancel`;
+      const baseUrl = this.getBaseUrl(key);
+      const url = `${baseUrl}/collections/status/${reference}/cancel`;
       await axios.post(url, {}, {
         headers: {
-          Authorization: `Bearer ${this.secretKey}`,
+          Authorization: `Bearer ${key}`,
           'Accept': 'application/json',
         },
       }).catch(err => {
@@ -197,12 +197,14 @@ class LencoService {
    * Get banks list
    * @param country country code i.e zm
    */
-  async getBanks(country: string = 'zm') {
-    this.logEnvOnce();
+  async getBanks(country: string = 'zm', secretKey?: string) {
+    const key = secretKey || this.getSecretKey();
+    this.logEnvOnce(key);
     try {
-      const response = await axios.get(`${this.baseUrl}/banks?country=${country}`, {
+      const baseUrl = this.getBaseUrl(key);
+      const response = await axios.get(`${baseUrl}/banks?country=${country}`, {
         headers: {
-          Authorization: `Bearer ${this.secretKey}`,
+          Authorization: `Bearer ${key}`,
         },
       });
       return response.data;
@@ -213,4 +215,5 @@ class LencoService {
   }
 }
 
-export default new LencoService();
+export const lencoService = new LencoService();
+export default lencoService;

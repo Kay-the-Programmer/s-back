@@ -16,9 +16,15 @@ export const invalidateUserCache = (userId: string) => {
 
 export const protect = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
     let token;
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+    const authHeader = req.headers.authorization;
+    const url = req.originalUrl || req.url;
+    
+    console.log(`[auth] Request to ${url} | Auth header: ${authHeader ? 'present' : 'missing'}`);
+
+    if (authHeader && authHeader.startsWith('Bearer')) {
         try {
-            token = req.headers.authorization.split(' ')[1];
+            token = authHeader.split(' ')[1];
+            console.log(`[auth] Token found: ${token.substring(0, 10)}...`);
             const decoded = jwt.verify(token, JWT_SECRET) as { id: string };
 
             // Try cache first unless this is an explicit freshness-critical endpoint (e.g., /api/auth/me)
@@ -94,14 +100,21 @@ export const protect = async (req: express.Request, res: express.Response, next:
             }
 
             next();
-        } catch (error) {
-            console.error(error);
-            res.status(401).json({ message: 'Not authorized, token failed' });
+        } catch (error: any) {
+            console.error('[auth] JWT verification failed:', error.message);
+            return res.status(401).json({ 
+                message: 'Not authorized, token failed', 
+                details: error.message,
+                code: 'TOKEN_INVALID'
+            });
         }
     }
 
     if (!token) {
-        res.status(401).json({ message: 'Not authorized, no token' });
+        return res.status(401).json({ 
+            message: 'Not authorized, no token',
+            code: 'NO_TOKEN'
+        });
     }
 };
 

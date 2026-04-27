@@ -35,12 +35,14 @@ export class StoreInitService {
             enableStoreCredit: false,
             paymentMethods: paymentMethods,
             supplierPaymentMethods: paymentMethods,
-            isOnlineStoreEnabled: true
+            isOnlineStoreEnabled: true,
+            lencoPublicKey: '',
+            lencoSecretKey: ''
         };
 
         const query = `
-            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled, lenco_public_key, lenco_secret_key)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             ON CONFLICT (store_id) DO NOTHING;
         `;
 
@@ -48,7 +50,7 @@ export class StoreInitService {
             storeId, defaults.name, defaults.address, defaults.phone, defaults.email, defaults.website,
             defaults.taxRate, JSON.stringify(defaults.currency), defaults.receiptMessage, defaults.lowStockThreshold,
             defaults.skuPrefix, defaults.enableStoreCredit, JSON.stringify(defaults.paymentMethods), JSON.stringify(defaults.supplierPaymentMethods),
-            defaults.isOnlineStoreEnabled
+            defaults.isOnlineStoreEnabled, defaults.lencoPublicKey, defaults.lencoSecretKey
         ]);
     }
 
