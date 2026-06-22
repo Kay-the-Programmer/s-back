@@ -2,6 +2,43 @@ import express from 'express';
 import db from '../db_client';
 import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
+import { getEnabledModules, setEnabledModules } from '../services/entitlements.service';
+
+/**
+ * Grant or revoke premium add-on modules for a store (the controlled "unlock at
+ * a fee" path — the platform enables a module after the store pays for it).
+ */
+export const setStoreModules = async (req: express.Request, res: express.Response) => {
+    const { id } = req.params;
+    const { enabledModules } = req.body as { enabledModules?: string[] };
+    if (!Array.isArray(enabledModules)) {
+        return res.status(400).json({ message: 'enabledModules must be an array of module ids.' });
+    }
+    try {
+        const exists = await db.query('SELECT 1 FROM store_settings WHERE store_id = $1', [id]);
+        if (exists.rowCount === 0) {
+            return res.status(404).json({ message: 'Store settings not found. The store must finish setup first.' });
+        }
+        const saved = await setEnabledModules(id, enabledModules);
+        await auditService.log(req.user!, 'Store Modules Updated', `Store ${id}: [${saved.join(', ')}]`);
+        return res.status(200).json({ storeId: id, enabledModules: saved });
+    } catch (e: any) {
+        console.error('Error updating store modules', e);
+        return res.status(500).json({ message: 'Failed to update store modules.' });
+    }
+};
+
+/** Read the premium modules granted to a store. */
+export const getStoreModules = async (req: express.Request, res: express.Response) => {
+    const { id } = req.params;
+    try {
+        const enabledModules = await getEnabledModules(id);
+        return res.status(200).json({ storeId: id, enabledModules });
+    } catch (e: any) {
+        console.error('Error reading store modules', e);
+        return res.status(500).json({ message: 'Failed to read store modules.' });
+    }
+};
 
 export const listStores = async (req: express.Request, res: express.Response) => {
   try {

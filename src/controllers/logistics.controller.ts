@@ -155,6 +155,20 @@ export const getShipments = async (req: Request, res: Response) => {
     }
 };
 
+// Public: track a shipment by tracking number (no auth, no store scope).
+export const trackShipment = async (req: Request, res: Response) => {
+    try {
+        const { trackingNumber } = req.params;
+        if (!trackingNumber) return res.status(400).json({ message: 'Tracking number is required' });
+        const shipment = await LogisticsService.trackByNumber(trackingNumber);
+        if (!shipment) return res.status(404).json({ message: 'No shipment found for that tracking number.' });
+        res.json(shipment);
+    } catch (error: any) {
+        console.error('Track shipment error:', error);
+        res.status(500).json({ message: 'Failed to track shipment' });
+    }
+};
+
 export const getShipmentById = async (req: Request, res: Response) => {
     try {
         const storeId = getStoreId(req);

@@ -1,5 +1,5 @@
 import express from 'express';
-import { registerStore, checkStoreName, verifyStoreRegistration } from '../controllers/stores.controller';
+import { registerStore, checkStoreName, verifyStoreRegistration, requestStoreSetupOtp } from '../controllers/stores.controller';
 import { protect } from '../middleware/auth.middleware';
 
 const router = express.Router();
@@ -23,6 +23,28 @@ const router = express.Router();
  *         description: Name availability status
  */
 router.get('/check-name', protect, checkStoreName);
+
+/**
+ * @openapi
+ * /stores/request-otp:
+ *   post:
+ *     tags: [Stores]
+ *     summary: Email a verification code for store setup (creates no store)
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               name: { type: string }
+ *     responses:
+ *       200:
+ *         description: Verification code sent
+ */
+router.post('/request-otp', protect, requestStoreSetupOtp);
 
 /**
  * @openapi

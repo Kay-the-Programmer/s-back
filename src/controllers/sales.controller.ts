@@ -112,6 +112,102 @@ export const getSales = async (req: express.Request, res: express.Response) => {
 };
 
 
+/**
+ * Quick "Hustle Mode" sale — records freeform amounts with no catalogue
+ * products. Server-side ensures per-store catch-all products exist (category is
+ * nullable and price 0 is allowed via direct SQL, unlike the createProduct
+ * controller), so it never depends on client product creation.
+ */
+export const createQuickSale = async (req: express.Request, res: express.Response) => {
+    const client = await db._pool.connect();
+    try {
+        const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
+        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+
+        const { items, paymentMethod } = req.body as {
+            items: { name: string; amount: number; type: 'sale' | 'service'; quantity?: number }[];
+            paymentMethod?: string;
+        };
+        if (!Array.isArray(items) || items.length === 0) {
+            return res.status(400).json({ message: 'No items provided' });
+        }
+
+        await client.query('BEGIN');
+
+        // Ensure the per-store catch-all products exist (FK target for sale_items).
+        const ensureProduct = async (sku: string, name: string): Promise<string> => {
+            const found = await client.query('SELECT id FROM products WHERE sku = $1 AND store_id = $2 LIMIT 1', [sku, storeId]);
+            if (found.rows[0]) return found.rows[0].id;
+            const id = generateId('prod');
+            await client.query(
+                `INSERT INTO products (id, name, description, sku, price, cost_price, stock, status, store_id, image_urls)
+                 VALUES ($1, $2, $3, $4, 0, 0, 0, 'active', $5, '{}')`,
+                [id, name, 'Hustle Mode catch-all item', sku, storeId]
+            );
+            return id;
+        };
+        const saleProductId = await ensureProduct('HUSTLE-QUICK', 'Quick Sale');
+        const serviceProductId = await ensureProduct('HUSTLE-SVC', 'Quick Service');
+
+        const total = items.reduce((a, it) => a + (Number(it.amount) || 0) * (it.quantity || 1), 0);
+        const transactionId = generateId('SALE');
+        const timestamp = new Date().toISOString();
+
+        await client.query(
+            `INSERT INTO sales(transaction_id, "timestamp", customer_id, total, subtotal, tax, discount, store_credit_used, payment_status, amount_paid, due_date, refund_status, store_id)
+             VALUES ($1, $2, NULL, $3, $3, 0, 0, 0, 'paid', $3, NULL, 'none', $4)`,
+            [transactionId, timestamp, total, storeId]
+        );
+
+        const cart: any[] = [];
+        for (const it of items) {
+            const pid = it.type === 'service' ? serviceProductId : saleProductId;
+            const qty = it.quantity || 1;
+            const price = Number(it.amount) || 0;
+            await client.query(
+                'INSERT INTO sale_items(sale_id, product_id, quantity, price_at_sale, cost_at_sale, store_id) VALUES ($1, $2, $3, $4, 0, $5)',
+                [transactionId, pid, qty, price, storeId]
+            );
+            cart.push({ productId: pid, name: it.name, sku: it.type === 'service' ? 'HUSTLE-SVC' : 'HUSTLE-QUICK', price, quantity: qty, costPrice: 0 });
+        }
+
+        const payId = generateId('pay');
+        await client.query(
+            'INSERT INTO payments(id, sale_id, date, amount, method, reference, store_id) VALUES ($1, $2, $3, $4, $5, NULL, $6)',
+            [payId, transactionId, timestamp, total, paymentMethod || 'Cash', storeId]
+        );
+
+        // Best-effort accounting — isolated by a savepoint so a books failure
+        // never blocks recording the sale.
+        await client.query('SAVEPOINT acc');
+        try {
+            await accountingService.recordSale(
+                { transactionId, timestamp, total, subtotal: total, tax: 0, discount: 0, paymentStatus: 'paid', amountPaid: total, storeCreditUsed: 0, cart } as any,
+                client, storeId
+            );
+        } catch (accErr) {
+            await client.query('ROLLBACK TO SAVEPOINT acc');
+            console.error('Quick sale accounting skipped:', accErr);
+        }
+
+        try { await auditService.log(req.user!, 'Quick Sale', `Transaction ID: ${transactionId}, Total: ${Number(total).toFixed(2)}`, client); } catch { /* non-fatal */ }
+
+        await client.query('COMMIT');
+
+        res.status(201).json({
+            transactionId, timestamp, total, subtotal: total, tax: 0, discount: 0,
+            paymentStatus: 'paid', amountPaid: total, refundStatus: 'none', channel: 'pos',
+            cart, payments: [{ id: payId, amount: total, method: paymentMethod || 'Cash', date: timestamp }],
+        });
+    } catch (error: any) {
+        try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+        console.error('Quick sale error:', error);
+        res.status(500).json({ message: 'Failed to record quick sale' });
+    } finally {
+        client.release();
+    }
+};
+
 export const createSale = async (req: express.Request, res: express.Response) => {
     const client = await db._pool.connect();
     const { payments, ...saleData } = req.body as Sale;

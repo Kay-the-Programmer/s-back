@@ -21,17 +21,87 @@ export const checkStoreName = async (req: express.Request, res: express.Response
   }
 };
 
-export const registerStore = async (req: express.Request, res: express.Response) => {
-
+/**
+ * Sends a verification code to the current user's email WITHOUT creating a store.
+ * This lets us verify ownership of the email before any store row is persisted, so an
+ * abandoned setup never leaves an unverified store sitting on the chosen name.
+ */
+export const requestStoreSetupOtp = async (req: express.Request, res: express.Response) => {
   try {
     const user = req.user!;
-    const { name, phone, address, planId = 'plan_basic', paymentMethod = 'LENCO' } = req.body || {};
+    const { name } = req.body || {};
 
     if (!user || !user.id) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
     if (!name || String(name).trim().length < 2) {
       return res.status(400).json({ message: 'Store name is required' });
+    }
+    if (!user.email) {
+      return res.status(400).json({ message: 'Your account has no email on file to send a verification code to.' });
+    }
+
+    // Re-check name availability at request time for a fast, friendly failure.
+    const existing = await db.query('SELECT id FROM stores WHERE LOWER(trim(name)) = LOWER($1) LIMIT 1', [String(name).trim()]);
+    if (existing.rows.length > 0) {
+      return res.status(400).json({ message: 'A store with this name already exists. Please choose a different name.' });
+    }
+
+    const otp = crypto.randomInt(100000, 999999).toString();
+    const expires = new Date();
+    expires.setHours(expires.getHours() + 1); // short-lived; the whole setup happens in one sitting
+
+    await db.query(
+      'UPDATE users SET store_setup_otp = $1, store_setup_otp_expires = $2, last_verification_sent_at = NOW() WHERE id = $3',
+      [otp, expires, user.id]
+    );
+
+    // Fire and forget OTP email
+    sendStoreOTPVerificationEmail(user.email, String(name).trim(), otp).catch(console.error);
+
+    // Mask the email so the UI can show "code sent to j***@example.com" without exposing it fully.
+    const [local, domain] = String(user.email).split('@');
+    const maskedEmail = domain ? `${local.slice(0, 1)}***@${domain}` : undefined;
+
+    return res.status(200).json({ message: 'Verification code sent', email: maskedEmail });
+  } catch (error) {
+    console.error('Error requesting store setup OTP:', error);
+    return res.status(500).json({ message: 'Error sending verification code' });
+  }
+};
+
+export const registerStore = async (req: express.Request, res: express.Response) => {
+
+  try {
+    const user = req.user!;
+    const { name, phone, address, planId = 'plan_basic', paymentMethod = 'LENCO', otp } = req.body || {};
+
+    if (!user || !user.id) {
+      return res.status(401).json({ message: 'Unauthorized' });
+    }
+    if (!name || String(name).trim().length < 2) {
+      return res.status(400).json({ message: 'Store name is required' });
+    }
+
+    // If an OTP is supplied, this is the deferred-creation setup flow: the email is verified
+    // up front and the store is created here, atomically, in a single request. We validate the
+    // code BEFORE writing anything. (When no OTP is supplied we keep the legacy behaviour so the
+    // public self-service signup in Register.tsx is unaffected.)
+    const hasOtp = otp !== undefined && otp !== null && String(otp).trim() !== '';
+    if (hasOtp) {
+      const urow = (await db.query(
+        'SELECT store_setup_otp, store_setup_otp_expires FROM users WHERE id = $1',
+        [user.id]
+      )).rows[0];
+      if (!urow || !urow.store_setup_otp) {
+        return res.status(400).json({ message: 'No verification in progress. Please request a new code.' });
+      }
+      if (urow.store_setup_otp !== String(otp).trim()) {
+        return res.status(400).json({ message: 'Invalid verification code.' });
+      }
+      if (new Date(urow.store_setup_otp_expires) < new Date()) {
+        return res.status(400).json({ message: 'Verification code has expired. Please request a new one.' });
+      }
     }
 
     // 1. Check for uniqueness
@@ -45,24 +115,29 @@ export const registerStore = async (req: express.Request, res: express.Response)
 
     await db.query('BEGIN');
     try {
-      // 2. Insert store with selected plan and 'trial' status by default until payment
+      // 2. Insert store with selected plan and 'trial' status by default until payment.
+      // When the email was verified up front (hasOtp), the store is created already verified and
+      // we skip the legacy "store OTP" email. Otherwise we keep the old verify-after-create flow.
       const subscriptionStatus = plan.price === 0 ? 'active' : 'trial';
-      const otp = crypto.randomInt(100000, 999999).toString();
-      const expires = new Date();
-      expires.setHours(expires.getHours() + 24);
+      const storeOtp = hasOtp ? null : crypto.randomInt(100000, 999999).toString();
+      const storeOtpExpires = hasOtp ? null : (() => { const e = new Date(); e.setHours(e.getHours() + 24); return e; })();
 
       await db.query(
-        "INSERT INTO stores (id, name, status, subscription_status, subscription_plan, is_verified, verification_token, verification_token_expires) VALUES ($1, $2, 'active', $3, $4, false, $5, $6)",
-        [storeId, String(name).trim(), subscriptionStatus, planId, otp, expires]
+        "INSERT INTO stores (id, name, status, subscription_status, subscription_plan, is_verified, verification_token, verification_token_expires) VALUES ($1, $2, 'active', $3, $4, $5, $6, $7)",
+        [storeId, String(name).trim(), subscriptionStatus, planId, hasOtp, storeOtp, storeOtpExpires]
       );
 
-      // Fire and forget OTP email
-      if (user.email) {
-        sendStoreOTPVerificationEmail(user.email, String(name).trim(), otp).catch(console.error);
+      // Fire and forget OTP email (legacy verify-after-create path only)
+      if (!hasOtp && user.email) {
+        sendStoreOTPVerificationEmail(user.email, String(name).trim(), storeOtp!).catch(console.error);
       }
 
-      // 3. Make the registering user an admin for now (global role) and set current store
-      await db.query('UPDATE users SET role = $1, current_store_id = $2 WHERE id = $3', ['admin', storeId, user.id]);
+      // 3. Make the registering user an admin for now (global role), set current store, and
+      //    clear any pending setup OTP now that it has been consumed.
+      await db.query(
+        'UPDATE users SET role = $1, current_store_id = $2, store_setup_otp = NULL, store_setup_otp_expires = NULL WHERE id = $3',
+        ['admin', storeId, user.id]
+      );
 
       invalidateUserCache(user.id);
 

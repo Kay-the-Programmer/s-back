@@ -4,6 +4,7 @@ import { User } from '../types';
 import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { invalidateUserCache } from '../middleware/auth.middleware';
+import { MODULES, FREE_SEATS, isModuleEnabled } from '../services/entitlements.service';
 import bcrypt from 'bcryptjs';
 
 // Helper: determine if requester is superadmin
@@ -83,6 +84,21 @@ export const createUser = async (req: express.Request, res: express.Response) =>
                 return res.status(400).json({ message: 'No store selected. Set current store to create users.' });
             }
             targetStoreId = requester.currentStoreId;
+        }
+
+        // Premium seat gate: adding an extra user beyond the free allotment
+        // requires the Team Members add-on. Superadmin bypasses (platform-level).
+        if (!isSuperAdmin(req) && targetStoreId) {
+            const seatRes = await db.query('SELECT COUNT(*)::int AS c FROM users WHERE current_store_id = $1', [targetStoreId]);
+            const usedSeats = seatRes.rows[0]?.c ?? 0;
+            const entitled = await isModuleEnabled(targetStoreId, MODULES.TEAM_MEMBERS);
+            if (!entitled && usedSeats >= FREE_SEATS) {
+                return res.status(402).json({
+                    message: `Your plan includes ${FREE_SEATS} user seat. Unlock Team Members to add more staff.`,
+                    code: 'MODULE_LOCKED',
+                    module: MODULES.TEAM_MEMBERS,
+                });
+            }
         }
 
         const salt = await bcrypt.genSalt(10);

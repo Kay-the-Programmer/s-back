@@ -64,6 +64,15 @@ async function initializeDatabase() {
                     ALTER TABLE users ADD COLUMN last_verification_sent_at TIMESTAMPTZ;
                 END IF;
 
+                -- Add store-setup OTP columns (verify email before a store is created,
+                -- so an abandoned setup never leaves an unverified store occupying the name)
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='store_setup_otp') THEN
+                    ALTER TABLE users ADD COLUMN store_setup_otp TEXT;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='store_setup_otp_expires') THEN
+                    ALTER TABLE users ADD COLUMN store_setup_otp_expires TIMESTAMPTZ;
+                END IF;
+
                 -- Add password reset columns
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='reset_password_token') THEN
                     ALTER TABLE users ADD COLUMN reset_password_token TEXT;
@@ -436,6 +445,26 @@ async function initializeDatabase() {
         await client.query(`CREATE INDEX IF NOT EXISTS idx_sales_store_id_timestamp ON sales(store_id, "timestamp");`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_sales_fulfillment_status ON sales(fulfillment_status);`);
 
+        // SMS message log (Africa's Talking). Store-scoped CRM messaging history.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS sms_messages (
+                id TEXT PRIMARY KEY,
+                store_id TEXT,
+                customer_id TEXT,
+                recipient TEXT NOT NULL,
+                message TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                provider TEXT DEFAULT 'africastalking',
+                provider_message_id TEXT,
+                cost TEXT,
+                error TEXT,
+                sent_by TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_sms_messages_store_created ON sms_messages(store_id, created_at);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_sms_messages_customer ON sms_messages(customer_id);`);
+
         // Migration for existing sales table
         await client.query(`
             DO $$
@@ -660,6 +689,9 @@ async function initializeDatabase() {
                 lenco_secret_key TEXT
             );
         `);
+        // Premium add-on entitlements (modular packaging). Empty by default, so
+        // gated features such as SMS messaging start locked until granted.
+        await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS enabled_modules TEXT[] NOT NULL DEFAULT '{}';`);
         // Migrate legacy singleton settings table to per-store if needed
         await client.query(`
             DO $$

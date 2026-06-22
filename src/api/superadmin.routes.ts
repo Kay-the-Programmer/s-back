@@ -1,5 +1,5 @@
 import express from 'express';
-import { listStores, updateStore, createNotification, listSystemNotifications, getNotificationStatus, listRevenueSummary, listSubscriptionPayments, recordSubscriptionPayment, getStoreDetails, sendStoreNotification } from '../controllers/superadmin.controller';
+import { listStores, updateStore, createNotification, listSystemNotifications, getNotificationStatus, listRevenueSummary, listSubscriptionPayments, recordSubscriptionPayment, getStoreDetails, sendStoreNotification, setStoreModules, getStoreModules } from '../controllers/superadmin.controller';
 import { handleSuperAdminChat } from '../controllers/ai.controller';
 import { protect, superAdminOnly } from '../middleware/auth.middleware';
 
@@ -58,6 +58,21 @@ router.patch('/stores/:id', protect, superAdminOnly, updateStore);
  *           type: string
  */
 router.post('/stores/:id/notifications', protect, superAdminOnly, sendStoreNotification);
+
+/**
+ * @openapi
+ * /superadmin/stores/{id}/modules:
+ *   get:
+ *     tags: [Super Admin]
+ *     summary: Get premium modules granted to a store
+ *     security: [{ bearerAuth: [] }]
+ *   put:
+ *     tags: [Super Admin]
+ *     summary: Grant/revoke premium modules for a store (unlock at a fee)
+ *     security: [{ bearerAuth: [] }]
+ */
+router.get('/stores/:id/modules', protect, superAdminOnly, getStoreModules);
+router.put('/stores/:id/modules', protect, superAdminOnly, setStoreModules);
 
 /**
  * @openapi

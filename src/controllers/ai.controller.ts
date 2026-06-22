@@ -4,6 +4,7 @@ import axios from 'axios';
 import db from '../db_client';
 import { logAiUsage } from '../middleware/ai-limit.middleware';
 import { SUBSCRIPTION_PLANS } from '../services/subscription.service';
+import { MODULES, isModuleEnabled } from '../services/entitlements.service';
 
 
 if (!process.env.API_KEY) {
@@ -602,20 +603,20 @@ async function analyzeAnomalies(storeId: string) {
 
     // Top Product anomaly
     const topProductAnomaly = await db.query(
-        `WITH last_sales AS (
-            SELECT si.product_id, SUM(si.quantity) as qty
-            FROM sale_items si
-            JOIN sales s ON si.sale_id = s.transaction_id AND si.store_id = s.store_id
-            WHERE si.store_id = $1 AND DATE(s."timestamp") >= $2
-            GROUP BY si.product_id
-            ORDER BY qty DESC LIMIT 1
-        ),
-        prev_sales AS (
-            SELECT si.product_id, SUM(si.quantity) as qty
-            FROM sale_items si
-            JOIN sales s ON si.sale_id = s.transaction_id AND si.store_id = s.store_id
-            WHERE si.store_id = $1 AND DATE(s."timestamp") >= $3 AND DATE(s."timestamp") < $2
-            GROUP BY si.product_id
+        `WITH last_sales AS (
+            SELECT si.product_id, SUM(si.quantity) as qty
+            FROM sale_items si
+            JOIN sales s ON si.sale_id = s.transaction_id AND si.store_id = s.store_id
+            WHERE si.store_id = $1 AND DATE(s."timestamp") >= $2
+            GROUP BY si.product_id
+            ORDER BY qty DESC LIMIT 1
+        ),
+        prev_sales AS (
+            SELECT si.product_id, SUM(si.quantity) as qty
+            FROM sale_items si
+            JOIN sales s ON si.sale_id = s.transaction_id AND si.store_id = s.store_id
+            WHERE si.store_id = $1 AND DATE(s."timestamp") >= $3 AND DATE(s."timestamp") < $2
+            GROUP BY si.product_id
         )
         SELECT p.name, ls.qty as current_qty, ps.qty as prev_qty
         FROM last_sales ls
@@ -861,6 +862,15 @@ export const handleChat = async (req: express.Request, res: express.Response) =>
         // Allow SuperAdmin to proceed without storeId
         if (!storeId && user?.role !== 'superadmin') {
             return res.status(400).json({ message: 'Store context is required' });
+        }
+
+        // Premium gate: the AI Business Assistant is a paid add-on (modular
+        // packaging). Superadmin/platform chat is exempt. Mirrors sms.controller.
+        if (storeId && user?.role !== 'superadmin' && !(await isModuleEnabled(storeId, MODULES.AI_ASSISTANT))) {
+            return res.status(402).json({
+                message: 'The AI Business Assistant is a premium add-on. Upgrade your plan to unlock it.',
+                module: MODULES.AI_ASSISTANT,
+            });
         }
 
         if (!process.env.API_KEY) {

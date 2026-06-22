@@ -33,6 +33,7 @@ import logisticsRoutes from './logistics.routes';
 
 
 import whatsappRoutes from './whatsapp.routes';
+import smsRoutes from './sms.routes';
 
 const router = express.Router();
 
@@ -68,6 +69,7 @@ router.use('/payments', paymentRoutes);
 router.use('/recurring-expenses', recurringExpenseRoutes);
 router.use('/logistics', logisticsRoutes);
 router.use('/whatsapp', whatsappRoutes);
+router.use('/sms', smsRoutes);
 
 
 // A simple health check endpoint

@@ -198,5 +198,28 @@ export const LogisticsService = {
         const query = `DELETE FROM shipments WHERE id = $1 AND store_id = $2 RETURNING id`;
         const result = await db.query(query, [id, storeId]);
         return result.rows[0];
+    },
+
+    /**
+     * Public lookup by tracking number (no store scope, no auth). Returns only
+     * the fields that are safe to show a recipient tracking their delivery.
+     */
+    async trackByNumber(trackingNumber: string) {
+        const query = `
+      SELECT s.tracking_number, s.status, s.method, s.destination, s.recipient_name,
+             s.created_at, s.updated_at,
+             c.company_name as courier_name,
+             b.driver_name as bus_driver_name, b.number_plate as bus_number_plate,
+             ss.name as store_name
+      FROM shipments s
+      LEFT JOIN couriers c ON s.courier_id = c.id
+      LEFT JOIN buses b ON s.bus_id = b.id
+      LEFT JOIN store_settings ss ON ss.store_id = s.store_id
+      WHERE LOWER(s.tracking_number) = LOWER($1)
+      ORDER BY s.created_at DESC
+      LIMIT 1
+    `;
+        const result = await db.query(query, [trackingNumber.trim()]);
+        return result.rows[0];
     }
 };

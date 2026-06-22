@@ -13,10 +13,26 @@ import {
     getShipments,
     getShipmentById,
     updateShipmentStatus,
-    deleteShipment
+    deleteShipment,
+    trackShipment
 } from '../controllers/logistics.controller';
 
 const router = express.Router();
+
+/**
+ * @openapi
+ * /logistics/track/{trackingNumber}:
+ *   get:
+ *     tags: [Logistics]
+ *     summary: Public shipment tracking by tracking number (no auth)
+ *     parameters:
+ *       - in: path
+ *         name: trackingNumber
+ *         required: true
+ *         schema: { type: string }
+ */
+// Public — must be registered BEFORE the protect middleware below.
+router.get('/track/:trackingNumber', trackShipment);
 
 router.use(protect);
 

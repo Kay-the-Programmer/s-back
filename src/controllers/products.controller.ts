@@ -232,11 +232,45 @@ export const createProduct = async (req: express.Request, res: express.Response)
         const pgErr = error as any;
         if (pgErr && pgErr.code === '23505') { // unique_violation
             const constraint: string = pgErr.constraint || '';
+
+            // Idempotency support: when a client retries a successful create
+            // (e.g. after a network blip lost the original response), we hit
+            // this branch because the SKU/barcode is already in our table.
+            // Include the existing row in the response so the caller can
+            // reconcile its `local-*` placeholder with the canonical record.
+            const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
+            const sku = (req.body?.sku || '').toString().trim();
+            const barcode = (req.body?.barcode || '').toString().trim();
+            let existing: any = null;
+            if (storeId) {
+                try {
+                    if (constraint.includes('sku') && sku) {
+                        const r = await db.query(
+                            'SELECT * FROM products WHERE store_id = $1 AND sku = $2',
+                            [storeId, sku],
+                        );
+                        existing = r.rows[0] || null;
+                    } else if (constraint.includes('barcode') && barcode) {
+                        const r = await db.query(
+                            'SELECT * FROM products WHERE store_id = $1 AND barcode = $2',
+                            [storeId, barcode],
+                        );
+                        existing = r.rows[0] || null;
+                    }
+                } catch { /* best-effort lookup; fall through */ }
+            }
+
             if (constraint.includes('sku')) {
-                return res.status(409).json({ message: 'A product with this SKU already exists. Please use a unique SKU.' });
+                return res.status(409).json({
+                    message: 'A product with this SKU already exists. Please use a unique SKU.',
+                    existingProduct: existing ? toCamelCase(existing) : null,
+                });
             }
             if (constraint.includes('barcode')) {
-                return res.status(409).json({ message: 'A product with this barcode already exists.' });
+                return res.status(409).json({
+                    message: 'A product with this barcode already exists.',
+                    existingProduct: existing ? toCamelCase(existing) : null,
+                });
             }
             return res.status(409).json({ message: 'Duplicate value violates a unique constraint.' });
         }
@@ -293,16 +327,23 @@ export const updateProduct = async (req: express.Request, res: express.Response)
         if (!storeId) {
             return res.status(400).json({ message: 'Store context required' });
         }
-        const currentProductResult = await db.query('SELECT stock, cost_price, image_urls FROM products WHERE id = $1 AND store_id = $2', [id, storeId]);
+        // Fetch the FULL current row so we can fall back to existing values
+        // for any column the caller didn't include in the request body.
+        // Without this, PUT acts as a destructive replace — sending an
+        // update that omits `stock` would null it out and violate the
+        // NOT NULL constraint. Required for partial updates (e.g. the
+        // desktop client updating only box config, or only price).
+        const currentProductResult = await db.query('SELECT * FROM products WHERE id = $1 AND store_id = $2', [id, storeId]);
         if (currentProductResult.rowCount === 0) {
             return res.status(404).json({ message: 'Product not found' });
         }
 
-        const oldStock = parseFloat(currentProductResult.rows[0].stock || 0);
-        const oldCost = parseFloat(currentProductResult.rows[0].cost_price || 0);
+        const currentRow = currentProductResult.rows[0];
+        const oldStock = parseFloat(currentRow.stock || 0);
+        const oldCost = parseFloat(currentRow.cost_price || 0);
         const oldInventoryValue = oldStock * oldCost;
 
-        const dbImageUrls = currentProductResult.rows[0].image_urls;
+        const dbImageUrls = currentRow.image_urls;
         let currentImageUrls: string[] = [];
         if (Array.isArray(dbImageUrls)) {
             currentImageUrls = dbImageUrls;
@@ -358,32 +399,67 @@ export const updateProduct = async (req: express.Request, res: express.Response)
             RETURNING *;
         `;
 
+        // Helper: pick the body value if it was supplied (non-undefined/non-empty),
+        // otherwise fall back to whatever is currently in the DB. Treats empty
+        // strings as "not provided" since multipart form-data tends to send "".
+        const pick = <T>(bodyVal: any, dbVal: T, transform?: (v: any) => T): T => {
+            if (bodyVal === undefined || bodyVal === null || bodyVal === '') return dbVal;
+            return transform ? transform(bodyVal) : (bodyVal as T);
+        };
+
+        // Variants comes in as a JSON-encoded string from multipart and as a
+        // raw array from JSON requests — normalize either to a string column.
+        const variantsValue = variants === undefined || variants === null
+            ? currentRow.variants
+            : (() => {
+                  try {
+                      return JSON.stringify(
+                          typeof variants === 'string' ? JSON.parse(variants) : variants,
+                      );
+                  } catch {
+                      return currentRow.variants;
+                  }
+              })();
+
+        const customAttrsValue = custom_attributes === undefined
+            ? currentRow.custom_attributes
+            : JSON.stringify(customAttributesObj);
+
         const values = [
-            name || null,
-            description || null,
-            sku || null,
-            barcode || null,
-            category_id || null,
-            supplier_id || null,
-            price != null ? parseFloat(price.toString()) : null,
-            cost_price != null ? parseFloat(cost_price.toString()) : null,
-            stock != null ? parseFloat(stock.toString()) : null,
-            (unit_of_measure || 'unit').toString().toLowerCase() === 'kg' ? 'kg' : 'unit',
-            finalImageUrls,
-            brand || null,
-            status || 'active',
-            reorder_point != null ? parseInt(reorder_point.toString(), 10) : null,
-            JSON.stringify(customAttributesObj),
-            weight != null && weight !== '' ? parseFloat(weight.toString()) : null,
-            dimensions || null,
-            safety_stock != null && safety_stock !== '' ? parseInt(safety_stock.toString(), 10) : null,
-            (() => { try { return JSON.stringify(typeof variants === 'string' ? JSON.parse(variants) : (variants || [])); } catch { return JSON.stringify([]); } })(),
+            pick(name, currentRow.name),
+            pick(description, currentRow.description),
+            pick(sku, currentRow.sku),
+            pick(barcode, currentRow.barcode),
+            pick(category_id, currentRow.category_id),
+            pick(supplier_id, currentRow.supplier_id),
+            pick(price, currentRow.price, (v) => parseFloat(v.toString())),
+            pick(cost_price, currentRow.cost_price, (v) => parseFloat(v.toString())),
+            pick(stock, currentRow.stock, (v) => parseFloat(v.toString())),
+            pick(
+                unit_of_measure,
+                currentRow.unit_of_measure || 'unit',
+                (v) => (v.toString().toLowerCase() === 'kg' ? 'kg' : 'unit'),
+            ),
+            // image_urls: if the request didn't touch images at all, preserve
+            // existing. The earlier block already handles the file/delete case
+            // and writes finalImageUrls accordingly.
+            (files.length > 0 || images_to_delete || existing_images || body.imageUrls)
+                ? finalImageUrls
+                : currentRow.image_urls,
+            pick(brand, currentRow.brand),
+            pick(status, currentRow.status || 'active'),
+            pick(reorder_point, currentRow.reorder_point, (v) => parseInt(v.toString(), 10)),
+            customAttrsValue,
+            pick(weight, currentRow.weight, (v) => parseFloat(v.toString())),
+            pick(dimensions, currentRow.dimensions),
+            pick(safety_stock, currentRow.safety_stock, (v) => parseInt(v.toString(), 10)),
+            variantsValue,
             // Carton / bulk pricing
-            carton_price != null && carton_price !== '' ? parseFloat(carton_price.toString()) : null,
-            units_per_carton != null && units_per_carton !== '' ? parseInt(units_per_carton.toString(), 10) : null,
-            cartons_received != null && cartons_received !== '' ? parseInt(cartons_received.toString(), 10) : null,
+            pick(carton_price, currentRow.carton_price, (v) => parseFloat(v.toString())),
+            pick(units_per_carton, currentRow.units_per_carton, (v) => parseInt(v.toString(), 10)),
+            pick(cartons_received, currentRow.cartons_received, (v) => parseInt(v.toString(), 10)),
             id,
-            storeId
+            storeId,
         ];
 
         const client = await (db as any)._pool.connect();
@@ -520,7 +596,32 @@ export const archiveProduct = async (req: express.Request, res: express.Response
         }
 
         const product = productResult.rows[0];
-        const newStatus = product.status === 'active' ? 'archived' : 'active';
+
+        // Idempotency: clients can pass `targetStatus` in the body to set an
+        // absolute state instead of relying on a toggle. This makes the call
+        // safe to retry — re-sending the same target produces the same final
+        // state regardless of how many times it lands at the server.
+        //
+        // Fallback: if `targetStatus` is missing or malformed, behave the
+        // way old callers expect (toggle the current state).
+        const requested = (req.body && (req.body as any).targetStatus) as
+            | string
+            | undefined;
+        const validTargets = ['active', 'archived'];
+        const newStatus = (requested && validTargets.includes(requested))
+            ? requested
+            : (product.status === 'active' ? 'archived' : 'active');
+
+        // No-op when already in the target state. Return the current row so
+        // the client can update its mirror; skip the audit log entry since
+        // nothing changed.
+        if (product.status === newStatus) {
+            const current = await db.query(
+                'SELECT * FROM products WHERE id = $1 AND store_id = $2',
+                [id, storeId],
+            );
+            return res.status(200).json(toCamelCase(current.rows[0]));
+        }
 
         const updateResult = await db.query('UPDATE products SET status = $1 WHERE id = $2 AND store_id = $3 RETURNING *', [newStatus, id, storeId]);
 

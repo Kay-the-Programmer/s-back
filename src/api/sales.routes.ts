@@ -1,8 +1,11 @@
 import express from 'express';
-import { getSales, createSale, recordPayment, updateFulfillmentStatus } from '../controllers/sales.controller';
+import { getSales, createSale, createQuickSale, recordPayment, updateFulfillmentStatus } from '../controllers/sales.controller';
 import { protect, canPerformSales } from '../middleware/auth.middleware';
 
 const router = express.Router();
+
+// Hustle Mode quick sale (freeform amounts, no catalogue products required).
+router.post('/quick', protect, canPerformSales, createQuickSale);
 
 /**
  * @openapi
