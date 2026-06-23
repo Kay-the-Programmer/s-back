@@ -1,6 +1,6 @@
 
 import express from 'express';
-import { verifyWebhook, handleWebhook, getConfiguration, updateConfiguration, getConversations, getMessages, sendManualMessage, getSupportContact, updateSupportContact } from '../controllers/whatsapp.controller';
+import { verifyWebhook, handleWebhook, getConfiguration, updateConfiguration, getStatus, getConversations, getMessages, getMessageHistory, sendManualMessage, getSupportContact, updateSupportContact } from '../controllers/whatsapp.controller';
 import { protect, requirePermission } from '../middleware/auth.middleware';
 
 const router = express.Router();
@@ -66,6 +66,35 @@ router.use(protect);
  */
 router.get('/config', requirePermission('messaging:read'), getConfiguration);
 router.put('/config', requirePermission('messaging:manage'), updateConfiguration);
+
+/**
+ * @openapi
+ * /whatsapp/status:
+ *   get:
+ *     tags: [WhatsApp]
+ *     summary: WhatsApp connection status for the current store (no secrets)
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: "{ configured, enabled, entitled, displayPhoneNumber }"
+ */
+router.get('/status', requirePermission('messaging:read'), getStatus);
+
+/**
+ * @openapi
+ * /whatsapp/messages:
+ *   get:
+ *     tags: [WhatsApp]
+ *     summary: WhatsApp message history for the store (optionally by customer)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: customerId
+ *         schema: { type: string }
+ */
+router.get('/messages', requirePermission('messaging:read'), getMessageHistory);
 
 /**
  * @openapi

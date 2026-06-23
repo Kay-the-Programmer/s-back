@@ -280,6 +280,23 @@ export class WhatsAppService {
 
         return id;
     }
+
+    /**
+     * Update an outbound message's delivery state from a webhook `statuses[]`
+     * event (sent → delivered → read, or failed). Keyed on the WhatsApp message
+     * id (`wamid.*`) returned when we sent it. Best-effort — never throws.
+     */
+    async updateMessageStatus(whatsappMessageId: string, status: string): Promise<void> {
+        if (!whatsappMessageId || !status) return;
+        try {
+            await db.query(
+                'UPDATE whatsapp_messages SET status = $1 WHERE whatsapp_message_id = $2',
+                [status, whatsappMessageId]
+            );
+        } catch (error: any) {
+            console.warn('[whatsapp] failed to update message status (non-fatal):', error.message);
+        }
+    }
 }
 
 export default new WhatsAppService();

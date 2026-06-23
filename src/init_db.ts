@@ -1493,10 +1493,13 @@ async function initializeDatabase() {
                 business_hours JSONB,
                 away_message TEXT,
                 greeting_message TEXT,
+                display_phone_number TEXT,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             );
         `);
+        // Older deployments created whatsapp_config before display_phone_number existed.
+        await client.query(`ALTER TABLE whatsapp_config ADD COLUMN IF NOT EXISTS display_phone_number TEXT;`);
 
         await client.query(`
             CREATE TABLE IF NOT EXISTS whatsapp_conversations (

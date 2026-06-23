@@ -62,7 +62,12 @@ const corsOptions: cors.CorsOptions = {
 };
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions)); // Handle preflight
-app.use(express.json({ limit: '50mb' }));
+// Capture the raw request body so webhook handlers can verify signatures
+// (e.g. WhatsApp's X-Hub-Signature-256 must be computed over the exact bytes).
+app.use(express.json({
+    limit: '50mb',
+    verify: (req, _res, buf) => { (req as any).rawBody = buf; },
+}));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 app.use('/api', apiRoutes);

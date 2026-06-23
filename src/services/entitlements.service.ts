@@ -7,6 +7,7 @@ import db from '../db_client';
  */
 export const MODULES = {
     SMS_MESSAGING: 'sms_messaging',
+    WHATSAPP_MESSAGING: 'whatsapp_messaging',
     TEAM_MEMBERS: 'team_members',
     AUTO_REORDER: 'auto_reorder',
     AI_ASSISTANT: 'ai_assistant',

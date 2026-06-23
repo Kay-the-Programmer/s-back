@@ -49,12 +49,16 @@ const MODULE_SEED: CatalogModule[] = [
     { id: MODULES.AUTO_REORDER,    name: 'Auto Reorder & POs',       description: 'Auto-generate purchase orders from low-stock alerts.',                    price: 80,  currency: 'ZMW', pages: [],             independentlyPurchasable: true, isCore: false, active: true, sortOrder: 4 },
     { id: MODULES.QUICK_IMPORT,    name: 'Quick Import',             description: 'Bulk-import products and build purchase orders from lists fast.',         price: 40,  currency: 'ZMW', pages: [],             independentlyPurchasable: true, isCore: false, active: true, sortOrder: 5 },
     { id: MODULES.SMS_MESSAGING,   name: 'SMS Messaging',            description: 'Send SMS to customers directly from the app.',                            price: 90,  currency: 'ZMW', pages: [],             independentlyPurchasable: true, isCore: false, active: true, sortOrder: 6 },
-    { id: MODULES.PUBLIC_TRACKING, name: 'Public Shipment Tracking', description: 'Let customers track their deliveries via a public link.',                 price: 50,  currency: 'ZMW', pages: [],             independentlyPurchasable: true, isCore: false, active: true, sortOrder: 7 },
-    { id: MODULES.UNLIMITED_PRODUCTS, name: 'Unlimited Products',    description: 'Remove the free 100-product limit — add as many products as you like.',   price: 100, currency: 'ZMW', pages: [],             independentlyPurchasable: true, isCore: false, active: true, sortOrder: 8 },
+    { id: MODULES.WHATSAPP_MESSAGING, name: 'WhatsApp Messaging',     description: 'Chat with customers on WhatsApp Business — two-way inbox right inside the CRM.', price: 110, currency: 'ZMW', pages: [],         independentlyPurchasable: true, isCore: false, active: true, sortOrder: 7 },
+    { id: MODULES.PUBLIC_TRACKING, name: 'Public Shipment Tracking', description: 'Let customers track their deliveries via a public link.',                 price: 50,  currency: 'ZMW', pages: [],             independentlyPurchasable: true, isCore: false, active: true, sortOrder: 8 },
+    { id: MODULES.UNLIMITED_PRODUCTS, name: 'Unlimited Products',    description: 'Remove the free 100-product limit — add as many products as you like.',   price: 100, currency: 'ZMW', pages: [],             independentlyPurchasable: true, isCore: false, active: true, sortOrder: 9 },
 ];
 
 /** Module that, when present in a store's entitlements, lifts the free product cap. */
 const UNLIMITED_PRODUCTS_SEED = MODULE_SEED[MODULE_SEED.length - 1];
+
+/** WhatsApp add-on — backfilled into already-seeded catalogs (see seed step). */
+const WHATSAPP_MESSAGING_SEED = MODULE_SEED.find(m => m.id === MODULES.WHATSAPP_MESSAGING)!;
 
 const PLAN_SEED: CatalogPlan[] = [
     {
@@ -164,6 +168,12 @@ export const ensureCatalogSeeded = async (): Promise<void> => {
         if (exists.rowCount === 0) {
             await writeModule(UNLIMITED_PRODUCTS_SEED);
             console.log('[catalog] added Unlimited Products add-on to existing catalog.');
+        }
+        // Likewise backfill the WhatsApp Messaging add-on for the CRM.
+        const waExists = await db.query('SELECT 1 FROM catalog_modules WHERE id = $1', [WHATSAPP_MESSAGING_SEED.id]);
+        if (waExists.rowCount === 0) {
+            await writeModule(WHATSAPP_MESSAGING_SEED);
+            console.log('[catalog] added WhatsApp Messaging add-on to existing catalog.');
         }
     }
     const pCount = await db.query('SELECT COUNT(*)::int AS n FROM catalog_plans');

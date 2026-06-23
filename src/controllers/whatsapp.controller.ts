@@ -1,8 +1,52 @@
 
 import express from 'express';
+import crypto from 'crypto';
 import whatsAppService from '../services/whatsapp.service';
 import whatsAppAIService from '../services/whatsapp-ai.service';
 import db from '../db_client';
+import { MODULES, isModuleEnabled } from '../services/entitlements.service';
+import { auditService } from '../services/audit.service';
+
+/**
+ * Meta app secret used to validate webhook payload signatures (X-Hub-Signature-256).
+ * Single-app model: one platform app secret validates every store's webhooks.
+ * If unset, validation is skipped (dev convenience) — set it in production.
+ */
+const WHATSAPP_APP_SECRET = process.env.WHATSAPP_APP_SECRET || process.env.APP_SECRET || '';
+
+/**
+ * Verify the X-Hub-Signature-256 header is an HMAC-SHA256 of the raw request body
+ * keyed with the app secret. Returns true when valid OR when no secret is
+ * configured (so early testing isn't blocked). Constant-time comparison.
+ */
+const isValidSignature = (req: express.Request): boolean => {
+    if (!WHATSAPP_APP_SECRET) {
+        console.warn('[whatsapp] WHATSAPP_APP_SECRET not set — skipping webhook signature check.');
+        return true;
+    }
+    const header = req.header('x-hub-signature-256') || '';
+    const raw = (req as any).rawBody as Buffer | undefined;
+    if (!header || !raw) return false;
+    const expected = 'sha256=' + crypto.createHmac('sha256', WHATSAPP_APP_SECRET).update(raw).digest('hex');
+    if (header.length !== expected.length) return false;
+    try {
+        return crypto.timingSafeEqual(Buffer.from(header), Buffer.from(expected));
+    } catch {
+        return false;
+    }
+};
+
+/**
+ * DEV OVERRIDE: WhatsApp messaging is free while the team is building/testing the
+ * CRM integration, so no one hits the premium paywall. Defaults to FREE; set
+ * `WHATSAPP_FREE=false` in the environment (and `VITE_WHATSAPP_FREE=false` on the
+ * frontend) to re-enable the paid add-on before charging for it.
+ */
+const WHATSAPP_FREE = process.env.WHATSAPP_FREE !== 'false';
+
+/** Whether a store may use WhatsApp — honours the dev free-override. */
+const isWhatsappEntitled = async (storeId?: string | null): Promise<boolean> =>
+    WHATSAPP_FREE || isModuleEnabled(storeId, MODULES.WHATSAPP_MESSAGING);
 
 // Webhook Verification (GET)
 export const verifyWebhook = async (req: express.Request, res: express.Response) => {
@@ -43,6 +87,12 @@ export const verifyWebhook = async (req: express.Request, res: express.Response)
 // Webhook Event Handler (POST)
 export const handleWebhook = async (req: express.Request, res: express.Response) => {
     try {
+        // Reject forged payloads before trusting any of their contents.
+        if (!isValidSignature(req)) {
+            console.warn('[whatsapp] webhook signature mismatch — rejecting.');
+            return res.sendStatus(401);
+        }
+
         const body = req.body;
 
         // Meta Cloud API payloads
@@ -123,8 +173,10 @@ export const handleWebhook = async (req: express.Request, res: express.Response)
                             }
                         }
                     } else if (value.statuses) {
-                        // Handle message status updates (sent, delivered, read)
-                        // TODO: Update whatsapp_messages table status based on message_id
+                        // Handle message status updates (sent, delivered, read, failed)
+                        for (const status of value.statuses) {
+                            await whatsAppService.updateMessageStatus(status.id, status.status);
+                        }
                     }
                 }
             }
@@ -147,7 +199,12 @@ export const getConfiguration = async (req: express.Request, res: express.Respon
         if (!storeId) return res.status(400).json({ message: 'Store ID required' });
 
         const config = await whatsAppService.getStoreConfig(storeId);
-        res.json(config || {});
+        if (!config) return res.json({});
+
+        // The Meta access token is a secret and must never be echoed back to the
+        // browser (write-only). Tell the UI only whether one is set.
+        const { access_token, ...rest } = config;
+        res.json({ ...rest, access_token: '', access_token_set: !!(access_token && access_token !== 'system') });
     } catch (error) {
         res.status(500).json({ message: 'Failed to fetch config' });
     }
@@ -158,10 +215,46 @@ export const updateConfiguration = async (req: express.Request, res: express.Res
         const storeId = req.user?.currentStoreId;
         if (!storeId) return res.status(400).json({ message: 'Store ID required' });
 
-        await whatsAppService.updateStoreConfig(storeId, req.body);
+        // Write-only secret: a blank token means "keep the existing one" — never
+        // overwrite a stored token with an empty value.
+        const payload = { ...req.body };
+        if (!payload.access_token || !String(payload.access_token).trim()) {
+            delete payload.access_token;
+        }
+
+        await whatsAppService.updateStoreConfig(storeId, payload);
         res.json({ message: 'Configuration updated successfully' });
     } catch (error) {
         res.status(500).json({ message: 'Failed to update config' });
+    }
+};
+
+/**
+ * Lightweight, no-secrets connection status for the CRM. Mirrors GET /sms/config:
+ * tells the client whether WhatsApp is connected, switched on, and entitled —
+ * so it can show the right inbox/upsell state without ever seeing credentials.
+ */
+export const getStatus = async (req: express.Request, res: express.Response) => {
+    try {
+        const storeId = req.user?.currentStoreId;
+        const entitled = await isWhatsappEntitled(storeId);
+
+        let configured = false;
+        let enabled = false;
+        let displayPhoneNumber: string | null = null;
+
+        if (storeId) {
+            const config = await whatsAppService.getStoreConfig(storeId);
+            if (config) {
+                configured = !!(config.access_token && config.phone_number_id);
+                enabled = !!config.is_enabled;
+                displayPhoneNumber = config.display_phone_number || null;
+            }
+        }
+
+        res.json({ configured, enabled, entitled, displayPhoneNumber });
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to fetch WhatsApp status' });
     }
 };
 
@@ -212,28 +305,106 @@ export const getMessages = async (req: express.Request, res: express.Response) =
     }
 };
 
+/**
+ * Send an outbound WhatsApp message. Accepts two shapes:
+ *   • Reply in a thread (inbox):   { conversationId, content }
+ *   • New message to a customer:   { to, message, customerId }
+ * The superadmin support desk passes `system: true` to act as the platform.
+ */
 export const sendManualMessage = async (req: express.Request, res: express.Response) => {
     try {
         const storeId = req.user?.currentStoreId;
-        const { conversationId, content, system } = req.body;
+        const { conversationId, content, message, to, customerId, system } = req.body as {
+            conversationId?: string; content?: string; message?: string;
+            to?: string; customerId?: string; system?: boolean;
+        };
         const isSystemRequest = system === true && req.user?.role === 'superadmin';
 
         if (!storeId && !isSystemRequest) return res.status(400).json({ message: 'Store ID required' });
 
         const targetStoreId = (isSystemRequest ? 'system' : storeId) as string;
 
-        // Get customer phone from conversation
-        const conv = await db.query('SELECT customer_phone FROM whatsapp_conversations WHERE id = $1 AND store_id = $2', [conversationId, targetStoreId]);
-        if (conv.rows.length === 0) return res.status(404).json({ message: 'Conversation not found' });
+        // Premium gate for store users (the platform support desk is exempt).
+        // Bypassed while WHATSAPP_FREE is on (dev/testing).
+        if (!isSystemRequest && !(await isWhatsappEntitled(storeId))) {
+            return res.status(402).json({
+                success: false,
+                message: 'WhatsApp messaging is a premium feature. Unlock it to message customers.',
+                code: 'MODULE_LOCKED',
+                module: MODULES.WHATSAPP_MESSAGING,
+            });
+        }
 
-        const to = conv.rows[0].customer_phone;
+        const body = (content ?? message ?? '').trim();
+        if (!body) return res.status(400).json({ success: false, message: 'Message text is required.' });
 
-        await whatsAppService.sendTextMessage(targetStoreId, to, content);
-        await whatsAppService.logMessage(conversationId, targetStoreId, 'outbound', 'text', content, undefined, 'sent', false);
+        // Resolve the conversation + recipient phone.
+        let convId = conversationId;
+        let recipient: string;
 
-        res.json({ message: 'Message sent' });
+        if (convId) {
+            const conv = await db.query('SELECT customer_phone FROM whatsapp_conversations WHERE id = $1 AND store_id = $2', [convId, targetStoreId]);
+            if (conv.rows.length === 0) return res.status(404).json({ success: false, message: 'Conversation not found' });
+            recipient = conv.rows[0].customer_phone;
+        } else {
+            if (!to || !to.trim()) return res.status(400).json({ success: false, message: 'A recipient phone number is required.' });
+            recipient = to.trim();
+            convId = await whatsAppService.getOrCreateConversation(targetStoreId, recipient);
+            // Link the CRM customer if the caller knows it (don't clobber an existing link).
+            if (customerId) {
+                await db.query(
+                    'UPDATE whatsapp_conversations SET customer_id = COALESCE(customer_id, $1) WHERE id = $2',
+                    [customerId, convId],
+                );
+            }
+        }
+
+        const apiResp = await whatsAppService.sendTextMessage(targetStoreId, recipient, body);
+        const waMessageId = apiResp?.messages?.[0]?.id;
+        await whatsAppService.logMessage(convId!, targetStoreId, 'outbound', 'text', body, waMessageId, 'sent', false);
+
+        if (req.user) {
+            auditService.log(req.user, 'WhatsApp Sent', `To ${recipient}${customerId ? ` (customer ${customerId})` : ''}`)
+                .catch(() => { /* audit is best-effort */ });
+        }
+
+        res.json({ success: true, conversationId: convId, messageId: waMessageId || null, status: 'sent' });
     } catch (error: any) {
-        res.status(500).json({ message: error.message || 'Failed to send message' });
+        // A Meta API rejection (e.g. outside the 24h window) is a 502, not a server bug.
+        res.status(502).json({ success: false, message: error.message || 'Failed to send message' });
+    }
+};
+
+/**
+ * WhatsApp message history for the current store, optionally filtered to one CRM
+ * customer (joined through the conversation). Reserved for a profile timeline.
+ */
+export const getMessageHistory = async (req: express.Request, res: express.Response) => {
+    try {
+        const storeId = req.user?.currentStoreId;
+        if (!storeId) return res.status(400).json({ message: 'No store selected.' });
+        const { customerId } = req.query as { customerId?: string };
+
+        let result;
+        if (customerId) {
+            result = await db.query(
+                `SELECT m.* FROM whatsapp_messages m
+                 JOIN whatsapp_conversations c ON m.conversation_id = c.id
+                 WHERE c.store_id = $1 AND c.customer_id = $2
+                 ORDER BY m.created_at DESC LIMIT 200`,
+                [storeId, customerId],
+            );
+        } else {
+            result = await db.query(
+                'SELECT * FROM whatsapp_messages WHERE store_id = $1 ORDER BY created_at DESC LIMIT 200',
+                [storeId],
+            );
+        }
+        res.json(result.rows);
+    } catch (error: any) {
+        // Table may not exist yet on an un-migrated deployment — empty, not 500.
+        console.warn('[whatsapp] history query failed:', error.message);
+        res.json([]);
     }
 };
 
