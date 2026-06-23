@@ -1,7 +1,7 @@
 
 import express from 'express';
 import { verifyWebhook, handleWebhook, getConfiguration, updateConfiguration, getConversations, getMessages, sendManualMessage, getSupportContact, updateSupportContact } from '../controllers/whatsapp.controller';
-import { protect } from '../middleware/auth.middleware';
+import { protect, requirePermission } from '../middleware/auth.middleware';
 
 const router = express.Router();
 
@@ -64,8 +64,8 @@ router.use(protect);
  *               phoneNumberId: { type: string }
  *               accessToken: { type: string }
  */
-router.get('/config', getConfiguration);
-router.put('/config', updateConfiguration);
+router.get('/config', requirePermission('messaging:read'), getConfiguration);
+router.put('/config', requirePermission('messaging:manage'), updateConfiguration);
 
 /**
  * @openapi
@@ -79,7 +79,7 @@ router.put('/config', updateConfiguration);
  *       200:
  *         description: List of conversations
  */
-router.get('/conversations', getConversations);
+router.get('/conversations', requirePermission('messaging:read'), getConversations);
 
 /**
  * @openapi
@@ -96,7 +96,7 @@ router.get('/conversations', getConversations);
  *         schema:
  *           type: string
  */
-router.get('/conversations/:id/messages', getMessages);
+router.get('/conversations/:id/messages', requirePermission('messaging:read'), getMessages);
 
 /**
  * @openapi
@@ -116,7 +116,7 @@ router.get('/conversations/:id/messages', getMessages);
  *               to: { type: string }
  *               message: { type: string }
  */
-router.post('/send', sendManualMessage);
+router.post('/send', requirePermission('messaging:send'), sendManualMessage);
 
 /**
  * @openapi
@@ -132,7 +132,7 @@ router.post('/send', sendManualMessage);
  *     security:
  *       - bearerAuth: []
  */
-router.get('/support-contact', getSupportContact);
-router.put('/support-contact', updateSupportContact);
+router.get('/support-contact', requirePermission('messaging:read'), getSupportContact);
+router.put('/support-contact', requirePermission('messaging:manage'), updateSupportContact);
 
 export default router;

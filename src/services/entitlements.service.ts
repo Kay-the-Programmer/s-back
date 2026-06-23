@@ -11,12 +11,18 @@ export const MODULES = {
     AUTO_REORDER: 'auto_reorder',
     AI_ASSISTANT: 'ai_assistant',
     QUICK_IMPORT: 'quick_import',
+    ADVANCED_REPORTS: 'advanced_reports',
+    PUBLIC_TRACKING: 'public_tracking',
+    UNLIMITED_PRODUCTS: 'unlimited_products',
 } as const;
 
 export type ModuleId = typeof MODULES[keyof typeof MODULES];
 
 /** User seats included for free (the owner). Extra seats need TEAM_MEMBERS. */
 export const FREE_SEATS = 1;
+
+/** Products allowed on the free core. Going beyond needs UNLIMITED_PRODUCTS. */
+export const FREE_PRODUCT_LIMIT = parseInt(process.env.FREE_PRODUCT_LIMIT || '100', 10);
 
 /** All modules currently granted to a store (empty when none / unknown). */
 export const getEnabledModules = async (storeId?: string | null): Promise<string[]> => {
@@ -43,4 +49,21 @@ export const setEnabledModules = async (storeId: string, modules: string[]): Pro
     const clean = Array.from(new Set((modules || []).filter(m => typeof m === 'string' && m.trim()).map(m => m.trim())));
     await db.query('UPDATE store_settings SET enabled_modules = $1 WHERE store_id = $2', [clean, storeId]);
     return clean;
+};
+
+/** Add modules to a store's granted set (union) — used when an add-on is purchased. */
+export const addEnabledModules = async (storeId: string, modules: string[]): Promise<string[]> => {
+    const current = await getEnabledModules(storeId);
+    const next = Array.from(new Set([...current, ...(modules || []).filter(m => typeof m === 'string' && m.trim())]));
+    await db.query('UPDATE store_settings SET enabled_modules = $1 WHERE store_id = $2', [next, storeId]);
+    return next;
+};
+
+/** Remove specific modules from a store's granted set (leaves everything else intact). */
+export const removeEnabledModules = async (storeId: string, modules: string[]): Promise<string[]> => {
+    const current = await getEnabledModules(storeId);
+    const remove = new Set(modules || []);
+    const next = current.filter(m => !remove.has(m));
+    await db.query('UPDATE store_settings SET enabled_modules = $1 WHERE store_id = $2', [next, storeId]);
+    return next;
 };

@@ -95,11 +95,18 @@ new SocketService(io);
 
 import { runRecurringExpenses } from './controllers/recurring-expenses.controller';
 import { notificationSchedulerService } from './services/notification-scheduler.service';
+import { runSubscriptionLifecycle } from './services/subscription-lifecycle.service';
+import { runAddonRenewals } from './services/module-purchase.service';
+import { runPlanRenewals } from './services/subscription.service';
+import { ensureCatalogSeeded } from './services/catalog.service';
 
 const startServer = async () => {
   try {
     await initializeDatabase();
     await seedDatabase();
+
+    // Seed the configurable commerce catalog (add-on modules + plans) if empty.
+    await ensureCatalogSeeded().catch(err => console.error('[catalog] seed failed:', err));
 
     // Process recurring expenses on startup
     runRecurringExpenses().then(count => {
@@ -118,6 +125,23 @@ const startServer = async () => {
     setInterval(() => {
       notificationSchedulerService.sendPeriodicTips().catch((err: unknown) => console.error('[scheduler] Error in periodic tips processing:', err));
     }, 24 * 60 * 60 * 1000);
+
+    // Expire lapsed trials / unpaid renewals every 6 hours (downgrades to past_due
+    // and revokes premium add-ons; core POS stays free). This is what makes the
+    // freemium model actually enforce — without it, trials never end.
+    runSubscriptionLifecycle().catch(err => console.error('[lifecycle] Error on startup run:', err));
+    setInterval(() => {
+      runSubscriptionLifecycle().catch(err => console.error('[lifecycle] Error in interval run:', err));
+    }, 6 * 60 * 60 * 1000);
+
+    // Auto-renew / dunning for à-la-carte add-ons AND subscription plans (initiate
+    // near expiry, confirm pending charges, remind manual renewers). Every 12 hours.
+    const runRenewals = () => {
+      runAddonRenewals().catch(err => console.error('[renewal] add-on error:', err));
+      runPlanRenewals().catch(err => console.error('[plan-renewal] error:', err));
+    };
+    runRenewals();
+    setInterval(runRenewals, 12 * 60 * 60 * 1000);
 
     // Use httpServer.listen instead of app.listen
     httpServer.listen(port, () => {

@@ -1,6 +1,6 @@
 import express from 'express';
 import { getSales, createSale, createQuickSale, recordPayment, updateFulfillmentStatus } from '../controllers/sales.controller';
-import { protect, canPerformSales } from '../middleware/auth.middleware';
+import { protect, canPerformSales, requirePermission } from '../middleware/auth.middleware';
 
 const router = express.Router();
 
@@ -44,7 +44,7 @@ router.post('/quick', protect, canPerformSales, createQuickSale);
  *               paymentMethod: { type: string }
  */
 router.route('/')
-    .get(protect, getSales)
+    .get(protect, requirePermission('sales:read'), getSales)
     .post(protect, canPerformSales, createSale);
 
 router.route('/:id/payments')

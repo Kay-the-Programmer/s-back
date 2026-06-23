@@ -250,20 +250,17 @@ export const getSupportContact = async (req: express.Request, res: express.Respo
         }
 
         const config = result.rows[0];
-        // Decrypt the token correctly using the service before sending back if needed for UI (though usually not returned plainly)
-        // For settings page, we may want to show if it's set or part of it, or just allow overwrite.
-        // We will return it, but maybe the service method should be used for safety. Let's use the decrypt from service.
-        let accessToken = config.access_token;
-        if (accessToken) {
-            accessToken = await whatsAppService.getStoreConfig('system').then(c => c?.access_token || '');
-        }
+        // The Meta access token is a secret and is never returned to the browser (write-only).
+        // We only tell the UI whether one is configured so it can show a hint.
+        const hasToken = !!(config.access_token && config.access_token !== 'system');
 
         res.json({
             phone: config.display_phone_number,
             message: config.greeting_message,
             phone_number_id: config.phone_number_id,
             webhook_verify_token: config.webhook_verify_token,
-            access_token: accessToken || ''
+            access_token: '',
+            access_token_set: hasToken
         });
     } catch (error) {
         res.status(500).json({ message: 'Failed to fetch support contact' });
@@ -280,13 +277,20 @@ export const updateSupportContact = async (req: express.Request, res: express.Re
 
         if (!phone) return res.status(400).json({ message: 'Phone number is required' });
 
+        // Write-only secret: a blank token means "keep the existing one" rather than wiping it.
+        let tokenToStore = (access_token || '').trim();
+        if (!tokenToStore) {
+            const existing = await whatsAppService.getStoreConfig('system');
+            tokenToStore = existing?.access_token || 'system';
+        }
+
         await whatsAppService.updateStoreConfig('system', {
             store_id: 'system',
             display_phone_number: phone,
             greeting_message: message,
             phone_number_id: phone_number_id || 'system_placeholder',
             webhook_verify_token: webhook_verify_token || 'system',
-            access_token: access_token || 'system',
+            access_token: tokenToStore,
             is_enabled: true,
             auto_reply_enabled: false
         });

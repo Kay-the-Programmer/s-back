@@ -6,6 +6,14 @@ import dotenv from 'dotenv';
 import { invalidateUserCache } from '../middleware/auth.middleware';
 import LencoService from './lenco.service';
 import { adminDb } from '../firebase';
+import { setEnabledModules } from './entitlements.service';
+import {
+    getPlans as getCatalogPlans,
+    getPlan as getCatalogPlan,
+    modulesForPlan as catalogModulesForPlan,
+    CatalogPlan,
+} from './catalog.service';
+import { processSuccessfulModulePayment } from './module-purchase.service';
 
 dotenv.config();
 
@@ -78,13 +86,52 @@ export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
     }
 ];
 
-export const getPlans = async () => {
+const catalogToSubscriptionPlan = (p: CatalogPlan): SubscriptionPlan => ({
+    id: p.id,
+    name: p.name,
+    price: p.price,
+    currency: p.currency,
+    interval: p.interval,
+    description: p.description,
+    features: p.features,
+    aiRequestsLimit: p.aiRequestsLimit,
+});
+
+/** Live plans for the pricing UI — Super-Admin-edited catalog, falling back to constants. */
+export const getPlans = async (): Promise<SubscriptionPlan[]> => {
+    try {
+        const plans = await getCatalogPlans(false);
+        if (plans.length) return plans.map(catalogToSubscriptionPlan);
+    } catch (e: any) {
+        console.warn('[subscription] catalog plans unavailable, using constants:', e.message);
+    }
     return SUBSCRIPTION_PLANS;
 };
 
+/** Static lookup (constants only) — kept for back-compat callers that need it sync. */
 export const getPlanById = (planId: string) => {
     return SUBSCRIPTION_PLANS.find(p => p.id === planId);
 };
+
+/** Effective plan (price/features) from the catalog, falling back to constants. */
+export const getEffectivePlan = async (planId: string): Promise<SubscriptionPlan | undefined> => {
+    try {
+        const p = await getCatalogPlan(planId);
+        if (p) return catalogToSubscriptionPlan(p);
+    } catch { /* fall through to constants */ }
+    return SUBSCRIPTION_PLANS.find(p => p.id === planId);
+};
+
+export type BillingCycle = 'monthly' | 'annual';
+
+/** Annual discount, e.g. 20 = pay 12 months at 20% off (≈ 9.6 months). */
+export const ANNUAL_DISCOUNT_PERCENT = parseInt(process.env.ANNUAL_DISCOUNT_PERCENT || '20', 10);
+
+const normalizeCycle = (c?: string): BillingCycle => (c === 'annual' || c === 'year' || c === 'yearly' ? 'annual' : 'monthly');
+
+/** The amount to charge for a plan given the billing cycle (annual applies the discount). */
+export const chargeForCycle = (monthlyPrice: number, cycle: BillingCycle): number =>
+    cycle === 'annual' ? Math.round(monthlyPrice * 12 * (1 - ANNUAL_DISCOUNT_PERCENT / 100)) : monthlyPrice;
 
 export const subscriptionService = {
     getPlans,
@@ -99,37 +146,39 @@ export const subscriptionService = {
     }) as any
 };
 
-export const initiatePayment = async (storeId: string, planId: string, method: string, phoneNumber?: string) => {
-    const plan = SUBSCRIPTION_PLANS.find(p => p.id === planId);
+export const initiatePayment = async (storeId: string, planId: string, method: string, phoneNumber?: string, billingCycle?: string) => {
+    // Charge the Super-Admin-configured price (catalog), not a hardcoded constant.
+    const plan = await getEffectivePlan(planId);
     if (!plan) throw new Error('Invalid plan selected');
 
+    const cycle = normalizeCycle(billingCycle);
+    const baseCharge = chargeForCycle(plan.price, cycle); // annual applies the discount
     const paymentId = `pay_${uuidv4()}`;
-    const amount = plan.price;
     const currency = plan.currency;
 
     // Use a unique reference for Lenco
     const reference = `SP_SUB_${Date.now()}_${storeId.substring(0, 8).toUpperCase()}`;
 
-    // Apply available discount balance
+    // Apply available discount balance against the (possibly annual) charge.
     const storeRes = await db.query('SELECT discount_balance FROM stores WHERE id = $1', [storeId]);
     const availableDiscount = parseFloat(storeRes.rows[0]?.discount_balance || '0');
-    let finalAmount = plan.price;
+    let finalAmount = baseCharge;
     let appliedDiscount = 0;
 
     if (availableDiscount > 0) {
-        appliedDiscount = Math.min(availableDiscount, plan.price);
-        finalAmount = plan.price - appliedDiscount;
-        
+        appliedDiscount = Math.min(availableDiscount, baseCharge);
+        finalAmount = baseCharge - appliedDiscount;
+
         // Deduct from store's balance
         await db.query('UPDATE stores SET discount_balance = discount_balance - $1 WHERE id = $2', [appliedDiscount, storeId]);
     }
 
-    // Insert pending payment record
+    // Insert pending payment record (billing_cycle drives the period extended on success)
     await db.query(
-        `INSERT INTO subscription_payments 
-        (id, store_id, amount, currency, plan_id, method, reference, notes, created_at, status)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9)`,
-        [paymentId, storeId, finalAmount, currency, planId, method, reference, `Plan: ${plan.name}, Discount applied: ${appliedDiscount}, Phone: ${phoneNumber || 'N/A'}`, 'pending']
+        `INSERT INTO subscription_payments
+        (id, store_id, amount, currency, plan_id, method, reference, notes, billing_cycle, created_at, status)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), $10)`,
+        [paymentId, storeId, finalAmount, currency, planId, method, reference, `Plan: ${plan.name} (${cycle}), Discount applied: ${appliedDiscount}, Phone: ${phoneNumber || 'N/A'}`, cycle, 'pending']
     );
 
     let lencoResult = null;
@@ -191,6 +240,12 @@ const processSuccessfulPayment = async (reference: string, lencoDetails: any) =>
     const payment = paymentRes.rows[0];
     const storeId = payment.store_id;
 
+    // Add-on purchases are tagged with module_ids — process them as à-la-carte
+    // grants (their own billing periods) rather than a plan subscription.
+    if (Array.isArray(payment.module_ids) && payment.module_ids.length > 0) {
+        return processSuccessfulModulePayment(reference, lencoDetails);
+    }
+
     if (payment.status === 'completed') {
         return payment.id; // Already processed
     }
@@ -201,19 +256,37 @@ const processSuccessfulPayment = async (reference: string, lencoDetails: any) =>
         ['completed', lencoDetails.lencoReference, payment.id]
     );
 
-    // 3. Update store subscription status
-    const endDate = new Date();
-    endDate.setMonth(endDate.getMonth() + 1);
+    // 3. Extend the subscription from the LATER of now / current end (so a renewal
+    //    stacks on top of remaining time instead of truncating it), and grant the
+    //    plan's add-on modules so paying actually unlocks features.
+    const planId = payment.plan_id || 'plan_pro';
+    const curRes = await db.query('SELECT subscription_ends_at FROM stores WHERE id = $1', [storeId]);
+    const curEnd = curRes.rows[0]?.subscription_ends_at ? new Date(curRes.rows[0].subscription_ends_at) : null;
+    const base = curEnd && curEnd.getTime() > Date.now() ? curEnd : new Date();
+    const endDate = new Date(base);
+    // Annual payments extend a full year; monthly extend one month.
+    endDate.setMonth(endDate.getMonth() + (payment.billing_cycle === 'annual' ? 12 : 1));
 
     await db.query(
-        `UPDATE stores 
-         SET subscription_status = 'active', 
+        `UPDATE stores
+         SET subscription_status = 'active',
              subscription_plan = $1,
-             subscription_ends_at = $2, 
-             updated_at = NOW() 
+             subscription_ends_at = $2,
+             subscription_billing_cycle = $4,
+             plan_renewal_attempts = 0,
+             updated_at = NOW()
          WHERE id = $3`,
-        [payment.plan_id || 'plan_pro', endDate, storeId]
+        [planId, endDate, storeId, payment.billing_cycle || 'monthly']
     );
+
+    // Reconcile the tier checkout with the entitlement system: grant the modules
+    // this plan includes (free-core + paid add-ons model). Without this, a paying
+    // customer would still hit every premium paywall.
+    try {
+        await setEnabledModules(storeId, await catalogModulesForPlan(planId));
+    } catch (modErr) {
+        console.error('Failed to grant plan modules after payment:', modErr);
+    }
 
     // 4. Invalidate cache for users of this store (or just the processing user)
     // For simplicity, we invalidate the cache if we had a userId, but we don't have it here easily.
@@ -323,18 +396,25 @@ export const processMockPayment = async (paymentId: string) => {
         ['completed', paymentId]
     );
 
+    const planId = payment.plan_id || 'plan_pro';
     const endDate = new Date();
-    endDate.setMonth(endDate.getMonth() + 1);
+    endDate.setMonth(endDate.getMonth() + (payment.billing_cycle === 'annual' ? 12 : 1));
 
     await db.query(
-        `UPDATE stores 
-         SET subscription_status = 'active', 
+        `UPDATE stores
+         SET subscription_status = 'active',
              subscription_plan = $1,
-             subscription_ends_at = $2, 
-             updated_at = NOW() 
+             subscription_ends_at = $2,
+             updated_at = NOW()
          WHERE id = $3`,
-        [payment.plan_id || 'plan_pro', endDate, storeId]
+        [planId, endDate, storeId]
     );
+
+    try {
+        await setEnabledModules(storeId, await catalogModulesForPlan(planId));
+    } catch (modErr) {
+        console.error('Failed to grant plan modules after mock payment:', modErr);
+    }
 
     return { success: true, newStatus: 'active', expiresAt: endDate };
 };
@@ -348,14 +428,18 @@ export const getSubscriptionHistory = async (storeId: string) => {
     );
 
     return result.rows.map(row => {
+        const isAddon = Array.isArray(row.module_ids) && row.module_ids.length > 0;
         const plan = SUBSCRIPTION_PLANS.find(p => p.id === row.plan_id) || SUBSCRIPTION_PLANS[1];
+        const planName = isAddon
+            ? (row.module_ids.length > 1 ? `Add-ons (${row.module_ids.length})` : 'Add-on')
+            : `${plan.name}${row.billing_cycle === 'annual' ? ' (yearly)' : ''}`;
         const startDate = new Date(row.created_at);
         const endDate = new Date(startDate);
         endDate.setMonth(endDate.getMonth() + 1); // Approximation
 
         return {
             id: row.id,
-            planName: plan.name,
+            planName,
             amount: parseFloat(row.amount),
             currency: row.currency,
             status: row.status === 'completed' ? 'succeeded' : row.status,
@@ -368,5 +452,162 @@ export const getSubscriptionHistory = async (storeId: string) => {
             invoiceUrl: '#' // We handle generation on frontend
         };
     });
+};
+
+// --- Plan auto-renew & dunning ----------------------------------------------
+
+const PLAN_RENEW_LEAD_DAYS = parseInt(process.env.PLAN_RENEW_LEAD_DAYS || '3', 10);
+const PLAN_RENEW_RETRY_HOURS = parseInt(process.env.PLAN_RENEW_RETRY_HOURS || '24', 10);
+const PLAN_RENEW_MAX_ATTEMPTS = parseInt(process.env.PLAN_RENEW_MAX_ATTEMPTS || '3', 10);
+// Global kill-switch: when false the job only reminds (no auto-initiated charge).
+const PLAN_AUTO_CHARGE = (process.env.PLAN_AUTO_CHARGE ?? 'true') !== 'false';
+
+/** Whether the store's plan currently auto-renews. */
+export const getPlanAutoRenew = async (storeId: string): Promise<boolean> => {
+    const r = await db.query('SELECT plan_auto_renew FROM stores WHERE id = $1', [storeId]);
+    return r.rowCount ? r.rows[0].plan_auto_renew !== false : true;
+};
+
+/** Turn plan auto-renew on/off for a store. */
+export const setPlanAutoRenew = async (storeId: string, autoRenew: boolean): Promise<void> => {
+    await db.query('UPDATE stores SET plan_auto_renew = $1, updated_at = NOW() WHERE id = $2', [autoRenew, storeId]);
+};
+
+const planOwnerPhone = async (storeId: string): Promise<string | null> => {
+    const r = await db.query('SELECT u.phone FROM stores s JOIN users u ON u.id = s.owner_id WHERE s.id = $1', [storeId]);
+    return r.rows[0]?.phone || null;
+};
+
+const pushToStore = async (storeId: string, title: string, body: string) => {
+    try {
+        const users = await db.query('SELECT id FROM users WHERE current_store_id = $1', [storeId]);
+        const userIds = users.rows.map((u: any) => u.id as string);
+        if (userIds.length === 0) return;
+        const { pushService } = await import('./push.service');
+        await pushService.sendToUsers(userIds, { title, body, url: '/settings/subscription' }).catch(() => {});
+    } catch { /* best effort */ }
+};
+
+/**
+ * Auto-renew & dunning for subscription PLANS (mirrors the add-on renewal job).
+ * Mobile-money has no stored mandate, so renewals are *initiated* near expiry and
+ * the merchant approves a USSD prompt — never a silent debit. Phases:
+ *   1. Confirm pending plan-renewal charges (extend on success via the normal flow).
+ *   2. Initiate renewals for auto-renew stores nearing expiry (capped + spaced).
+ *   3. Remind stores whose plan will lapse but have auto-renew off.
+ */
+export const runPlanRenewals = async (): Promise<number> => {
+    let actions = 0;
+
+    // --- Phase 1: confirm pending plan renewals ------------------------------
+    await db.query(
+        `UPDATE subscription_payments SET status = 'failed'
+          WHERE status = 'pending' AND reference LIKE 'SP_RENEW_PLAN_%'
+            AND created_at < NOW() - INTERVAL '2 days'`
+    );
+    const pending = await db.query(
+        `SELECT reference FROM subscription_payments
+          WHERE status = 'pending' AND reference LIKE 'SP_RENEW_PLAN_%'
+            AND created_at > NOW() - INTERVAL '2 days'`
+    );
+    for (const row of pending.rows) {
+        try {
+            const resp = await LencoService.verifyTransaction(row.reference);
+            if (resp?.status && resp?.data?.status === 'successful') {
+                await processSuccessfulPayment(row.reference, resp.data);
+                actions++;
+            } else if (resp?.data?.status === 'failed') {
+                await db.query(`UPDATE subscription_payments SET status = 'failed' WHERE reference = $1`, [row.reference]);
+            }
+        } catch (e: any) {
+            console.warn(`[plan-renewal] verify failed for ${row.reference}:`, e.message);
+        }
+    }
+
+    // --- Phase 2: initiate renewals near expiry ------------------------------
+    const due = await db.query(
+        `SELECT s.id, s.subscription_plan, s.subscription_billing_cycle
+           FROM stores s
+          WHERE s.subscription_status = 'active' AND s.plan_auto_renew = TRUE
+            AND s.subscription_plan IS NOT NULL
+            AND s.subscription_ends_at > NOW()
+            AND s.subscription_ends_at <= NOW() + make_interval(days => $1)
+            AND s.plan_renewal_attempts < $2
+            AND (s.plan_last_renewal_at IS NULL OR s.plan_last_renewal_at < NOW() - make_interval(hours => $3))
+            AND NOT EXISTS (
+                SELECT 1 FROM subscription_payments sp
+                 WHERE sp.store_id = s.id AND sp.status = 'pending' AND sp.reference LIKE 'SP_RENEW_PLAN_%'
+            )`,
+        [PLAN_RENEW_LEAD_DAYS, PLAN_RENEW_MAX_ATTEMPTS, PLAN_RENEW_RETRY_HOURS]
+    );
+
+    for (const store of due.rows) {
+        const storeId = store.id as string;
+        try {
+            const plan = await getEffectivePlan(store.subscription_plan);
+            if (!plan) continue;
+            const cycle = normalizeCycle(store.subscription_billing_cycle);
+            const amount = chargeForCycle(plan.price, cycle);
+            if (amount <= 0) continue; // free plan — nothing to charge
+
+            const phone = await planOwnerPhone(storeId);
+            const reference = `SP_RENEW_PLAN_${Date.now()}_${storeId.substring(0, 8).toUpperCase()}`;
+            const paymentId = `pay_${uuidv4()}`;
+
+            await db.query(
+                `INSERT INTO subscription_payments
+                    (id, store_id, amount, currency, plan_id, method, reference, notes, billing_cycle, created_at, status)
+                 VALUES ($1, $2, $3, $4, $5, 'mobile-money', $6, $7, $8, NOW(), 'pending')`,
+                [paymentId, storeId, amount, plan.currency, store.subscription_plan, reference, `Auto-renew: ${plan.name} (${cycle})`, cycle]
+            );
+
+            let charged = false;
+            if (PLAN_AUTO_CHARGE && phone) {
+                try { await LencoService.chargeMobileMoney(amount, reference, phone); charged = true; }
+                catch (e: any) { console.warn(`[plan-renewal] charge init failed for ${storeId}:`, e.message); }
+            }
+
+            await db.query(
+                `UPDATE stores SET plan_renewal_attempts = plan_renewal_attempts + 1,
+                        plan_last_renewal_at = NOW(), plan_last_renewal_reference = $2 WHERE id = $1`,
+                [storeId, reference]
+            );
+
+            await pushToStore(
+                storeId,
+                charged ? `Renewing your ${plan.name} plan` : `Your ${plan.name} plan renews soon`,
+                charged
+                    ? `Approve the prompt on your phone to keep your ${plan.name} plan active (${plan.currency} ${amount}).`
+                    : `Your ${plan.name} plan is about to expire. Open SalePilot to renew it.`,
+            );
+            actions++;
+        } catch (e: any) {
+            console.error(`[plan-renewal] initiate failed for ${storeId}:`, e.message);
+        }
+    }
+
+    // --- Phase 3: remind stores with auto-renew OFF --------------------------
+    const manual = await db.query(
+        `SELECT id, subscription_plan FROM stores
+          WHERE subscription_status = 'active' AND plan_auto_renew = FALSE
+            AND subscription_plan IS NOT NULL
+            AND subscription_ends_at > NOW()
+            AND subscription_ends_at <= NOW() + make_interval(days => $1)
+            AND (plan_last_renewal_at IS NULL OR plan_last_renewal_at < NOW() - make_interval(hours => $2))`,
+        [PLAN_RENEW_LEAD_DAYS, PLAN_RENEW_RETRY_HOURS]
+    );
+    for (const store of manual.rows) {
+        try {
+            await db.query('UPDATE stores SET plan_last_renewal_at = NOW() WHERE id = $1', [store.id]);
+            const plan = await getEffectivePlan(store.subscription_plan);
+            await pushToStore(store.id, `${plan?.name || 'Your plan'} expires soon`, 'Auto-renew is off. Renew in SalePilot to keep your plan.');
+            actions++;
+        } catch (e: any) {
+            console.warn(`[plan-renewal] manual reminder failed for ${store.id}:`, e.message);
+        }
+    }
+
+    if (actions) console.log(`[plan-renewal] processed ${actions} action(s).`);
+    return actions;
 };
 

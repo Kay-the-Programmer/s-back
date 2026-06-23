@@ -1,5 +1,5 @@
 import express from 'express';
-import { protect } from '../middleware/auth.middleware';
+import { protect, requirePermission } from '../middleware/auth.middleware';
 import {
     createCourier,
     getCouriers,
@@ -34,7 +34,9 @@ const router = express.Router();
 // Public — must be registered BEFORE the protect middleware below.
 router.get('/track/:trackingNumber', trackShipment);
 
-router.use(protect);
+// Everything below requires authentication and logistics access (store team
+// roles only — customers/suppliers are excluded). Public tracking is above.
+router.use(protect, requirePermission('logistics:read'));
 
 /**
  * @openapi

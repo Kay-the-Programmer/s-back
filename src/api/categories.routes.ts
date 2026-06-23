@@ -1,6 +1,6 @@
 import express from 'express';
 import { getCategories, createCategory, updateCategory, deleteCategory } from '../controllers/categories.controller';
-import { protect, canManageInventory } from '../middleware/auth.middleware';
+import { protect, canManageInventory, requirePermission } from '../middleware/auth.middleware';
 
 const router = express.Router();
 
@@ -34,7 +34,7 @@ const router = express.Router();
  *         description: Category created
  */
 router.route('/')
-    .get(protect, getCategories)
+    .get(protect, requirePermission('inventory:read'), getCategories)
     .post(protect, canManageInventory, createCategory);
 
 /**

@@ -2,6 +2,12 @@ import jwt from 'jsonwebtoken';
 import db from '../db_client';
 import express from 'express';
 import { User } from '../types';
+import { authorize, requirePermission, roleHasPermission, Role } from '../auth/rbac';
+
+// Re-export the centralized RBAC helpers so routes can import everything
+// authorization-related from a single module if they prefer.
+export { authorize, requirePermission, requireAnyPermission, roleHasPermission, ROLE_PERMISSIONS, permissionsForRole } from '../auth/rbac';
+export type { Role, Permission } from '../auth/rbac';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'CHANGE_ME_DEV_ONLY';
 
@@ -159,38 +165,32 @@ export const optionalProtect = async (req: express.Request, res: express.Respons
     next();
 };
 
-export const adminOnly = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if (req.user && (req.user.role === 'admin' || req.user.role === 'superadmin')) {
-        next();
-    } else {
-        res.status(403).json({ message: 'Forbidden: Admin access required' });
-    }
-};
+/**
+ * Legacy role guards — retained for backwards compatibility but now implemented
+ * in terms of the centralized RBAC matrix (see src/auth/rbac.ts). Prefer
+ * `requirePermission(...)` in new code.
+ */
 
-export const superAdminOnly = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if (req.user && req.user.role === 'superadmin') {
-        next();
-    } else {
-        res.status(403).json({ message: 'Forbidden: Superadmin access required' });
-    }
-};
+// Admin-level store management (also satisfied by the platform superadmin).
+export const adminOnly = authorize('admin', 'superadmin');
 
-export const canManageInventory = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if (req.user && (req.user.role === 'admin' || req.user.role === 'inventory_manager')) {
-        next();
-    } else {
-        res.status(403).json({ message: 'Forbidden: Inventory management access required' });
-    }
-};
+// Platform-only surface.
+export const superAdminOnly = authorize('superadmin');
 
+// Anyone who can manage inventory (admin, inventory_manager, superadmin).
+export const canManageInventory = requirePermission('inventory:manage');
+
+// Anyone who can operate the POS, with the additional email-verification gate.
+// Requirement: an unverified non-admin must verify their email before selling.
 export const canPerformSales = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if (req.user && (req.user.role === 'admin' || req.user.role === 'staff')) {
-        if (!req.user.isVerified && req.user.role !== 'admin') { // Admins can bypass? Maybe not. Let's block implies 'features to sale' so probably staff.
-            // Requirement: "if they dont verify the email after sometime they wont be allowed to use the features to sale products"
-            return res.status(403).json({ message: 'Forbidden: Email verification required to perform sales.', code: 'EMAIL_NOT_VERIFIED' });
-        }
-        next();
-    } else {
-        res.status(403).json({ message: 'Forbidden: Sales access required' });
+    if (!req.user) {
+        return res.status(401).json({ message: 'Not authorized, no token', code: 'NO_TOKEN' });
     }
+    if (!roleHasPermission(req.user.role as Role, 'sales:perform')) {
+        return res.status(403).json({ message: 'Forbidden: Sales access required', code: 'FORBIDDEN' });
+    }
+    if (!req.user.isVerified && req.user.role !== 'admin' && req.user.role !== 'superadmin') {
+        return res.status(403).json({ message: 'Forbidden: Email verification required to perform sales.', code: 'EMAIL_NOT_VERIFIED' });
+    }
+    next();
 };

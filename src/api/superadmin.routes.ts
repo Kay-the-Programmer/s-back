@@ -1,6 +1,10 @@
 import express from 'express';
 import { listStores, updateStore, createNotification, listSystemNotifications, getNotificationStatus, listRevenueSummary, listSubscriptionPayments, recordSubscriptionPayment, getStoreDetails, sendStoreNotification, setStoreModules, getStoreModules } from '../controllers/superadmin.controller';
 import { handleSuperAdminChat } from '../controllers/ai.controller';
+import {
+    listCatalogModules, saveCatalogModule, removeCatalogModule,
+    listCatalogPlans, saveCatalogPlan, removeCatalogPlan,
+} from '../controllers/catalog.controller';
 import { protect, superAdminOnly } from '../middleware/auth.middleware';
 
 const router = express.Router();
@@ -146,5 +150,27 @@ router.post('/revenue/payments', protect, superAdminOnly, recordSubscriptionPaym
  *       - bearerAuth: []
  */
 router.post('/ai/chat', protect, superAdminOnly, handleSuperAdminChat);
+
+/**
+ * @openapi
+ * /superadmin/catalog/modules:
+ *   get: { tags: [Super Admin], summary: List add-on modules (catalog), security: [{ bearerAuth: [] }] }
+ *   post: { tags: [Super Admin], summary: Create or update an add-on module, security: [{ bearerAuth: [] }] }
+ */
+router.get('/catalog/modules', protect, superAdminOnly, listCatalogModules);
+router.post('/catalog/modules', protect, superAdminOnly, saveCatalogModule);
+router.put('/catalog/modules/:id', protect, superAdminOnly, saveCatalogModule);
+router.delete('/catalog/modules/:id', protect, superAdminOnly, removeCatalogModule);
+
+/**
+ * @openapi
+ * /superadmin/catalog/plans:
+ *   get: { tags: [Super Admin], summary: List subscription plans (catalog), security: [{ bearerAuth: [] }] }
+ *   post: { tags: [Super Admin], summary: Create or update a subscription plan, security: [{ bearerAuth: [] }] }
+ */
+router.get('/catalog/plans', protect, superAdminOnly, listCatalogPlans);
+router.post('/catalog/plans', protect, superAdminOnly, saveCatalogPlan);
+router.put('/catalog/plans/:id', protect, superAdminOnly, saveCatalogPlan);
+router.delete('/catalog/plans/:id', protect, superAdminOnly, removeCatalogPlan);
 
 export default router;

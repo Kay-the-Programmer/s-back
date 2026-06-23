@@ -5,6 +5,7 @@ import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { accountingService } from '../services/accounting.service';
 import { storageService } from '../services/storage.service';
+import { MODULES, FREE_PRODUCT_LIMIT, isModuleEnabled } from '../services/entitlements.service';
 import path from "path";
 import fs from "fs";
 
@@ -81,6 +82,20 @@ export const createProduct = async (req: express.Request, res: express.Response)
         if (!storeId) {
             return res.status(400).json({ message: 'Store context required' });
         }
+
+        // Freemium product cap: the free core allows FREE_PRODUCT_LIMIT products;
+        // going beyond needs the Unlimited Products add-on (402 -> upgrade prompt).
+        if (!(await isModuleEnabled(storeId, MODULES.UNLIMITED_PRODUCTS))) {
+            const countRes = await db.query('SELECT COUNT(*)::int AS c FROM products WHERE store_id = $1', [storeId]);
+            if ((countRes.rows[0]?.c ?? 0) >= FREE_PRODUCT_LIMIT) {
+                return res.status(402).json({
+                    message: `Your free plan includes ${FREE_PRODUCT_LIMIT} products. Unlock Unlimited Products to add more.`,
+                    code: 'MODULE_LOCKED',
+                    module: MODULES.UNLIMITED_PRODUCTS,
+                });
+            }
+        }
+
         console.log('Creating product with data:', req.body);
         console.log('Files received:', req.files);
 

@@ -1,11 +1,12 @@
 import express from 'express';
-import { protect } from '../middleware/auth.middleware';
+import { protect, requirePermission } from '../middleware/auth.middleware';
 import * as recurringExpensesController from '../controllers/recurring-expenses.controller';
 
 const router = express.Router();
 
-// All routes require authentication and store context
-router.use(protect);
+// Recurring expenses are financial records — restricted to roles that can
+// manage expenses (admin / superadmin).
+router.use(protect, requirePermission('expenses:manage'));
 
 /**
  * @openapi

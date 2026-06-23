@@ -48,7 +48,7 @@ export interface User {
   name: string;
   email: string;
   phone?: string | null;
-  role: 'superadmin' | 'admin' | 'staff' | 'inventory_manager' | 'customer';
+  role: 'superadmin' | 'admin' | 'staff' | 'inventory_manager' | 'customer' | 'supplier';
   currentStoreId?: string; // Multi-tenant: currently selected store ID
   isVerified?: boolean;
   subscriptionStatus?: 'trial' | 'active' | 'past_due' | 'canceled';

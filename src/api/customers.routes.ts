@@ -1,6 +1,6 @@
 import express from 'express';
 import { getCustomers, createCustomer, updateCustomer, deleteCustomer, getCustomerById } from '../controllers/customers.controller';
-import { protect, adminOnly } from '../middleware/auth.middleware';
+import { protect, requirePermission } from '../middleware/auth.middleware';
 
 const router = express.Router();
 
@@ -31,8 +31,8 @@ const router = express.Router();
  *         description: Customer created
  */
 router.route('/')
-    .get(protect, getCustomers)
-    .post(protect, createCustomer);
+    .get(protect, requirePermission('customers:read'), getCustomers)
+    .post(protect, requirePermission('customers:create'), createCustomer);
 
 /**
  * @openapi
@@ -60,8 +60,8 @@ router.route('/')
  *       - bearerAuth: []
  */
 router.route('/:id')
-    .get(protect, getCustomerById)
-    .put(protect, adminOnly, updateCustomer)
-    .delete(protect, adminOnly, deleteCustomer);
+    .get(protect, requirePermission('customers:read'), getCustomerById)
+    .put(protect, requirePermission('customers:manage'), updateCustomer)
+    .delete(protect, requirePermission('customers:manage'), deleteCustomer);
 
 export default router;

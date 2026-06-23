@@ -9,7 +9,7 @@ import {
     archiveProduct,
     lookupExternalProduct,
 } from '../controllers/products.controller';
-import { protect, canManageInventory } from '../middleware/auth.middleware';
+import { protect, canManageInventory, requirePermission } from '../middleware/auth.middleware';
 import upload from '../middleware/upload.middleware';
 
 const router = express.Router();
@@ -53,7 +53,7 @@ const router = express.Router();
  *                   format: binary
  */
 router.route('/')
-    .get(protect, getProducts)
+    .get(protect, requirePermission('inventory:read'), getProducts)
     .post(protect, canManageInventory, upload.array('images', 5), createProduct);
 
 /**
@@ -76,12 +76,12 @@ router.route('/')
  *     summary: Delete a product
  */
 router.route('/:id')
-    .get(protect, getProductById)
+    .get(protect, requirePermission('inventory:read'), getProductById)
     .put(protect, canManageInventory, upload.array('images', 5), updateProduct)
     .delete(protect, canManageInventory, deleteProduct);
 
 router.patch('/:id/stock', protect, canManageInventory, adjustStock);
 router.patch('/:id/archive', protect, canManageInventory, archiveProduct);
-router.get('/external-lookup/:barcode', protect, lookupExternalProduct);
+router.get('/external-lookup/:barcode', protect, requirePermission('inventory:read'), lookupExternalProduct);
 
 export default router;

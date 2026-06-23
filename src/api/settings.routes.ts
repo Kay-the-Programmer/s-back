@@ -1,6 +1,6 @@
 import express from 'express';
 import { getSettings, updateSettings } from '../controllers/settings.controller';
-import { protect, adminOnly } from '../middleware/auth.middleware';
+import { protect, adminOnly, requirePermission } from '../middleware/auth.middleware';
 
 const router = express.Router();
 
@@ -40,7 +40,7 @@ const router = express.Router();
  *         description: Updated settings
  */
 router.route('/')
-    .get(protect, getSettings)
+    .get(protect, requirePermission('settings:read'), getSettings)
     .put(protect, adminOnly, updateSettings);
 
 export default router;

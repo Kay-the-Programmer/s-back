@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import db from '../db_client';
-import { SUBSCRIPTION_PLANS } from '../services/subscription.service';
+import { SUBSCRIPTION_PLANS, getEffectivePlan } from '../services/subscription.service';
 
 export const checkAiLimit = async (req: Request, res: Response, next: NextFunction) => {
     try {
@@ -32,7 +32,8 @@ export const checkAiLimit = async (req: Request, res: Response, next: NextFuncti
             });
         }
 
-        const plan = SUBSCRIPTION_PLANS.find(p => p.id === subscription_plan) || SUBSCRIPTION_PLANS[0]; // Default to basic if not set
+        // Read the Super-Admin-configured limit from the catalog (falls back to constants).
+        const plan = (subscription_plan ? await getEffectivePlan(subscription_plan) : undefined) || SUBSCRIPTION_PLANS[0];
 
         if (plan.aiRequestsLimit === -1) {
             return next(); // Unlimited

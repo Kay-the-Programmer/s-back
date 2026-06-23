@@ -3,9 +3,11 @@ import crypto from 'crypto';
 import db from '../db_client';
 import { generateId, toCamelCase } from '../utils/helpers';
 import { storeInitService } from '../services/store-init.service';
-import { subscriptionService, SUBSCRIPTION_PLANS } from '../services/subscription.service';
+import { subscriptionService, SUBSCRIPTION_PLANS, getEffectivePlan } from '../services/subscription.service';
 import { sendStoreOTPVerificationEmail } from '../services/email.service';
 import { invalidateUserCache } from '../middleware/auth.middleware';
+import { setEnabledModules } from '../services/entitlements.service';
+import { TRIAL_MODULES, TRIAL_DAYS } from '../services/plan-modules';
 
 export const checkStoreName = async (req: express.Request, res: express.Response) => {
   try {
@@ -111,7 +113,7 @@ export const registerStore = async (req: express.Request, res: express.Response)
     }
 
     const storeId = generateId('store');
-    const plan = subscriptionService.getPlanById(planId) || SUBSCRIPTION_PLANS[0];
+    const plan = (await getEffectivePlan(planId)) || SUBSCRIPTION_PLANS[0];
 
     await db.query('BEGIN');
     try {
@@ -119,12 +121,18 @@ export const registerStore = async (req: express.Request, res: express.Response)
       // When the email was verified up front (hasOtp), the store is created already verified and
       // we skip the legacy "store OTP" email. Otherwise we keep the old verify-after-create flow.
       const subscriptionStatus = plan.price === 0 ? 'active' : 'trial';
+      // Free intro trial of premium add-ons: paid plans start as a time-boxed
+      // trial so the user can taste premium before paying. Free plans (price 0)
+      // get core only and never expire (NULL ends_at).
+      const trialEndsAt = subscriptionStatus === 'trial'
+        ? (() => { const e = new Date(); e.setDate(e.getDate() + TRIAL_DAYS); return e; })()
+        : null;
       const storeOtp = hasOtp ? null : crypto.randomInt(100000, 999999).toString();
       const storeOtpExpires = hasOtp ? null : (() => { const e = new Date(); e.setHours(e.getHours() + 24); return e; })();
 
       await db.query(
-        "INSERT INTO stores (id, name, status, subscription_status, subscription_plan, is_verified, verification_token, verification_token_expires) VALUES ($1, $2, 'active', $3, $4, $5, $6, $7)",
-        [storeId, String(name).trim(), subscriptionStatus, planId, hasOtp, storeOtp, storeOtpExpires]
+        "INSERT INTO stores (id, name, status, subscription_status, subscription_plan, subscription_ends_at, is_verified, verification_token, verification_token_expires) VALUES ($1, $2, 'active', $3, $4, $5, $6, $7, $8)",
+        [storeId, String(name).trim(), subscriptionStatus, planId, trialEndsAt, hasOtp, storeOtp, storeOtpExpires]
       );
 
       // Fire and forget OTP email (legacy verify-after-create path only)
@@ -141,9 +149,20 @@ export const registerStore = async (req: express.Request, res: express.Response)
 
       invalidateUserCache(user.id);
 
-      // 4. Initialize the new store with defaults
+      // 4. Initialize the new store with defaults (creates the store_settings row)
       const businessTypes = req.body.businessTypes || [];
       await storeInitService.initializeNewStore(storeId, String(name).trim(), businessTypes, phone, address);
+
+      // Grant the premium add-ons for the duration of the intro trial so the user
+      // experiences the paid features. The lifecycle job revokes these at trial end
+      // unless they pay (which re-grants the plan's modules).
+      if (subscriptionStatus === 'trial') {
+        try {
+          await setEnabledModules(storeId, [...TRIAL_MODULES]);
+        } catch (modErr) {
+          console.error('Failed to grant trial modules:', modErr);
+        }
+      }
 
       await db.query('COMMIT');
 

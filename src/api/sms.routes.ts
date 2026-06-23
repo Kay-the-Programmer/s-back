@@ -1,6 +1,6 @@
 import express from 'express';
 import { sendSms, getSmsHistory, getSmsConfig } from '../controllers/sms.controller';
-import { protect } from '../middleware/auth.middleware';
+import { protect, requirePermission } from '../middleware/auth.middleware';
 
 const router = express.Router();
 
@@ -15,7 +15,7 @@ const router = express.Router();
  *     responses:
  *       200: { description: SMS config status }
  */
-router.get('/config', protect, getSmsConfig);
+router.get('/config', protect, requirePermission('messaging:read'), getSmsConfig);
 
 /**
  * @openapi
@@ -41,7 +41,7 @@ router.get('/config', protect, getSmsConfig);
  *       400: { description: Validation error }
  *       503: { description: SMS not configured }
  */
-router.post('/send', protect, sendSms);
+router.post('/send', protect, requirePermission('messaging:send'), sendSms);
 
 /**
  * @openapi
@@ -58,6 +58,6 @@ router.post('/send', protect, sendSms);
  *     responses:
  *       200: { description: List of sent messages }
  */
-router.get('/', protect, getSmsHistory);
+router.get('/', protect, requirePermission('messaging:read'), getSmsHistory);
 
 export default router;

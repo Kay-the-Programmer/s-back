@@ -1,6 +1,6 @@
 import express from 'express';
 import { generateDescription, handleChat, generatePoster, proxyImage, getPlatformInsight, getAiUsage } from '../controllers/ai.controller';
-import { protect } from '../middleware/auth.middleware';
+import { protect, requirePermission } from '../middleware/auth.middleware';
 import { checkAiLimit } from '../middleware/ai-limit.middleware';
 
 const router = express.Router();
@@ -17,7 +17,7 @@ const router = express.Router();
  *       200:
  *         description: AI usage data
  */
-router.get('/usage', protect, getAiUsage);
+router.get('/usage', protect, requirePermission('ai:use'), getAiUsage);
 
 /**
  * @openapi
@@ -39,7 +39,7 @@ router.get('/usage', protect, getAiUsage);
  *       200:
  *         description: Generated description
  */
-router.post('/generate-description', protect, checkAiLimit, generateDescription);
+router.post('/generate-description', protect, requirePermission('ai:use'), checkAiLimit, generateDescription);
 
 /**
  * @openapi
@@ -58,7 +58,7 @@ router.post('/generate-description', protect, checkAiLimit, generateDescription)
  *             properties:
  *               message: { type: string }
  */
-router.post('/chat', protect as any, handleChat as any);
+router.post('/chat', protect as any, requirePermission('ai:use') as any, handleChat as any);
 
 /**
  * @openapi
@@ -69,7 +69,8 @@ router.post('/chat', protect as any, handleChat as any);
  *     security:
  *       - bearerAuth: []
  */
-router.get('/platform-insight', protect as any, getPlatformInsight as any);
+// Platform-wide insight is a superadmin-only surface.
+router.get('/platform-insight', protect as any, requirePermission('platform:manage') as any, getPlatformInsight as any);
 
 /**
  * @openapi
@@ -89,7 +90,7 @@ router.get('/platform-insight', protect as any, getPlatformInsight as any);
  *               productName: { type: string }
  *               description: { type: string }
  */
-router.post('/generate-poster', protect, generatePoster);
+router.post('/generate-poster', protect, requirePermission('ai:use'), generatePoster);
 
 /**
  * @openapi
