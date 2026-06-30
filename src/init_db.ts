@@ -1535,6 +1535,22 @@ async function initializeDatabase() {
         await client.query(`CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_conversation_id ON whatsapp_messages(conversation_id);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_store_id ON whatsapp_messages(store_id);`);
 
+        // Facebook Page connection for the Social Marketing suite (one Page per store).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS facebook_config (
+                store_id TEXT PRIMARY KEY REFERENCES stores(id),
+                page_id TEXT,
+                page_name TEXT,
+                page_access_token TEXT,        -- Encrypted (long-lived Page token)
+                user_access_token TEXT,        -- Encrypted (long-lived user token)
+                instagram_business_id TEXT,
+                is_enabled BOOLEAN DEFAULT TRUE,
+                connected_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        `);
+
         await client.query(`
             CREATE TABLE IF NOT EXISTS ai_usage_logs (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

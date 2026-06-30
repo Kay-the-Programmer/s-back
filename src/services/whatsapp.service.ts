@@ -184,7 +184,10 @@ export class WhatsAppService {
             throw new Error('WhatsApp not configured or enabled for this store');
         }
 
-        const url = `https://graph.facebook.com/v18.0/${config.phone_number_id}/messages`;
+        // Graph API version is overridable so we can bump it without a code change
+        // when Meta deprecates an older one.
+        const version = process.env.WHATSAPP_GRAPH_API_VERSION || 'v21.0';
+        const url = `https://graph.facebook.com/${version}/${config.phone_number_id}/messages`;
 
         try {
             const response = await axios.post(url, {
@@ -200,8 +203,30 @@ export class WhatsAppService {
 
             return response.data;
         } catch (error: any) {
+            const apiErr = error.response?.data?.error;
             console.error('Meta API Error:', error.response?.data || error.message);
-            throw new Error('Failed to send WhatsApp message: ' + (error.response?.data?.error?.message || error.message));
+
+            if (apiErr) {
+                const code = apiErr.code;
+                const detail = `${apiErr.message || 'Unknown error'}${code != null ? ` (code ${code}${apiErr.error_subcode ? `/${apiErr.error_subcode}` : ''})` : ''}`;
+                // Token/permission failures: give an actionable hint instead of a bare relay.
+                if (apiErr.type === 'OAuthException' || code === 190 || code === 200 || code === 10 || code === 0) {
+                    throw new Error(
+                        `WhatsApp authentication failed: ${detail}. The access token is invalid, expired, or lacks the ` +
+                        `whatsapp_business_messaging permission. Reconnect with a permanent System User token in WhatsApp → Connect.`,
+                    );
+                }
+                // Test/development mode: only verified test recipients can be messaged.
+                if (code === 131030) {
+                    throw new Error(
+                        `Recipient not allowed: ${detail}. Your WhatsApp app is in test mode, which only sends to numbers ` +
+                        `added as test recipients in Meta. Add this number to the allowed list, or take the app Live with a ` +
+                        `registered business number to message any customer.`,
+                    );
+                }
+                throw new Error(`Failed to send WhatsApp message: ${detail}`);
+            }
+            throw new Error('Failed to send WhatsApp message: ' + (error.message || 'network error'));
         }
     }
 
