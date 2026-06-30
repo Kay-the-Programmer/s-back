@@ -53,6 +53,7 @@ const MODULE_SEED: CatalogModule[] = [
     { id: MODULES.SOCIAL_MARKETING, name: 'Social Marketing',        description: 'Manage your Facebook Page — publish posts, moderate comments and see engagement insights.', price: 120, currency: 'ZMW', pages: ['marketing'], independentlyPurchasable: true, isCore: false, active: true, sortOrder: 8 },
     { id: MODULES.PUBLIC_TRACKING, name: 'Public Shipment Tracking', description: 'Let customers track their deliveries via a public link.',                 price: 50,  currency: 'ZMW', pages: [],             independentlyPurchasable: true, isCore: false, active: true, sortOrder: 9 },
     { id: MODULES.UNLIMITED_PRODUCTS, name: 'Unlimited Products',    description: 'Remove the free 100-product limit — add as many products as you like.',   price: 100, currency: 'ZMW', pages: [],             independentlyPurchasable: true, isCore: false, active: true, sortOrder: 10 },
+    { id: MODULES.PAYMENT_GATEWAY,    name: 'Accept Mobile Money',      description: 'Take Airtel & MTN mobile-money payments at checkout. Connect your own Lenco account and get paid directly.', price: 60, currency: 'ZMW', pages: [], independentlyPurchasable: true, isCore: false, active: true, sortOrder: 11 },
 ];
 
 /** Module that, when present in a store's entitlements, lifts the free product cap. */
@@ -63,6 +64,9 @@ const WHATSAPP_MESSAGING_SEED = MODULE_SEED.find(m => m.id === MODULES.WHATSAPP_
 
 /** Social Marketing add-on — backfilled into already-seeded catalogs. */
 const SOCIAL_MARKETING_SEED = MODULE_SEED.find(m => m.id === MODULES.SOCIAL_MARKETING)!;
+
+/** Accept Mobile Money add-on — backfilled into already-seeded catalogs. */
+const PAYMENT_GATEWAY_SEED = MODULE_SEED.find(m => m.id === MODULES.PAYMENT_GATEWAY)!;
 
 const PLAN_SEED: CatalogPlan[] = [
     {
@@ -184,6 +188,12 @@ export const ensureCatalogSeeded = async (): Promise<void> => {
         if (smExists.rowCount === 0) {
             await writeModule(SOCIAL_MARKETING_SEED);
             console.log('[catalog] added Social Marketing add-on to existing catalog.');
+        }
+        // And the Accept Mobile Money (payment gateway) add-on.
+        const pgExists = await db.query('SELECT 1 FROM catalog_modules WHERE id = $1', [PAYMENT_GATEWAY_SEED.id]);
+        if (pgExists.rowCount === 0) {
+            await writeModule(PAYMENT_GATEWAY_SEED);
+            console.log('[catalog] added Accept Mobile Money add-on to existing catalog.');
         }
     }
     const pCount = await db.query('SELECT COUNT(*)::int AS n FROM catalog_plans');

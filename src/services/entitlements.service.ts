@@ -16,6 +16,7 @@ export const MODULES = {
     ADVANCED_REPORTS: 'advanced_reports',
     PUBLIC_TRACKING: 'public_tracking',
     UNLIMITED_PRODUCTS: 'unlimited_products',
+    PAYMENT_GATEWAY: 'payment_gateway',
 } as const;
 
 export type ModuleId = typeof MODULES[keyof typeof MODULES];

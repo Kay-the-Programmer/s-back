@@ -1,6 +1,7 @@
 
 import express from 'express';
 import { verifyWebhook, handleWebhook, getConfiguration, updateConfiguration, getStatus, getConversations, getMessages, getMessageHistory, sendManualMessage, getSupportContact, updateSupportContact } from '../controllers/whatsapp.controller';
+import { getCampaigns, postCampaign, patchCampaignStatus, removeCampaign, runCampaign } from '../controllers/whatsapp-campaign.controller';
 import { protect, requirePermission } from '../middleware/auth.middleware';
 
 const router = express.Router();
@@ -95,6 +96,13 @@ router.get('/status', requirePermission('messaging:read'), getStatus);
  *         schema: { type: string }
  */
 router.get('/messages', requirePermission('messaging:read'), getMessageHistory);
+
+// Marketing campaigns / automation
+router.get('/campaigns', requirePermission('messaging:read'), getCampaigns);
+router.post('/campaigns', requirePermission('messaging:manage'), postCampaign);
+router.post('/campaigns/:id/status', requirePermission('messaging:manage'), patchCampaignStatus);
+router.post('/campaigns/:id/run', requirePermission('messaging:manage'), runCampaign);
+router.delete('/campaigns/:id', requirePermission('messaging:manage'), removeCampaign);
 
 /**
  * @openapi

@@ -132,9 +132,20 @@ async function initializeDatabase() {
                 verification_documents JSONB DEFAULT '[]',
                 verification_token TEXT,
                 verification_token_expires TIMESTAMPTZ,
+                owner_id TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
+        `);
+        // Multi-store ownership: which user owns/registered each store (enables the
+        // Multi-Store Manager to list a user's businesses). Added after the fact.
+        await client.query(`ALTER TABLE stores ADD COLUMN IF NOT EXISTS owner_id TEXT;`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_stores_owner ON stores(owner_id);`);
+        // Best-effort backfill: the admin currently pointing at a store becomes its owner.
+        await client.query(`
+            UPDATE stores s SET owner_id = u.id
+            FROM users u
+            WHERE s.owner_id IS NULL AND u.current_store_id = s.id AND u.role IN ('admin','superadmin');
         `);
         // For existing DBs, ensure columns exist with proper defaults
         await client.query(`
@@ -837,6 +848,21 @@ async function initializeDatabase() {
 
         await client.query(`CREATE INDEX IF NOT EXISTS idx_po_reception_items_store_id_reception_id ON po_reception_items(store_id, reception_id);`);
 
+        // Order lists — Hustle "Quick Lists": lightweight shopping/restock checklists
+        // that need no supplier or catalogue. Items are stored inline as JSONB.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS order_lists (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT 'Order list',
+                items JSONB NOT NULL DEFAULT '[]'::jsonb,
+                created_at BIGINT NOT NULL,
+                imported_at BIGINT,
+                store_id TEXT NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_order_lists_store_id ON order_lists(store_id);`);
+
         // Offers (Location-based)
         await client.query(`
             CREATE TABLE IF NOT EXISTS offers (
@@ -1534,6 +1560,48 @@ async function initializeDatabase() {
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_conversation_id ON whatsapp_messages(conversation_id);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_whatsapp_messages_store_id ON whatsapp_messages(store_id);`);
+
+        // WhatsApp marketing campaigns (scheduled / recurring / triggered automations).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS whatsapp_campaigns (
+                id TEXT PRIMARY KEY,
+                store_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                type TEXT NOT NULL DEFAULT 'one_off' CHECK (type IN ('one_off','recurring','trigger')),
+                status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','scheduled','active','paused','completed','cancelled')),
+                segment TEXT NOT NULL DEFAULT 'all',
+                segment_params JSONB,
+                message_mode TEXT NOT NULL DEFAULT 'text' CHECK (message_mode IN ('text','template')),
+                message_text TEXT,
+                template_name TEXT,
+                template_lang TEXT DEFAULT 'en_US',
+                template_params JSONB,
+                scheduled_at TIMESTAMPTZ,
+                recurrence TEXT,
+                trigger_event TEXT,
+                trigger_params JSONB,
+                last_run_at TIMESTAMPTZ,
+                next_run_at TIMESTAMPTZ,
+                sent_count INT NOT NULL DEFAULT 0,
+                created_by TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_wa_campaigns_store ON whatsapp_campaigns(store_id);`);
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS whatsapp_campaign_sends (
+                id TEXT PRIMARY KEY,
+                campaign_id TEXT NOT NULL REFERENCES whatsapp_campaigns(id) ON DELETE CASCADE,
+                store_id TEXT NOT NULL,
+                customer_id TEXT,
+                phone TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'sent',
+                error TEXT,
+                sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_wa_campaign_sends_lookup ON whatsapp_campaign_sends(campaign_id, customer_id);`);
 
         // Facebook Page connection for the Social Marketing suite (one Page per store).
         await client.query(`

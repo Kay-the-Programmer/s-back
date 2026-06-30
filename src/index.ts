@@ -31,7 +31,6 @@ const allowedOrigins: (string | RegExp)[] = [
   'http://localhost:3000',
   'http://localhost',
   'https://localhost',
-  'capacitor://localhost',
 ].filter(Boolean) as (string | RegExp)[];
 
 
@@ -57,7 +56,11 @@ const corsOptions: cors.CorsOptions = {
     }
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-firebase-appcheck'],
+  // 'x-idempotency-key' is sent by the web client on every mutation (and on
+  // offline-queue replays) so the server can dedupe retried writes. It MUST be
+  // allowed here or the CORS preflight fails and every cross-origin mutation
+  // (including POST /auth/google sign-in) is blocked by the browser.
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-firebase-appcheck', 'x-idempotency-key'],
   credentials: true,
 };
 app.use(cors(corsOptions));
@@ -147,6 +150,14 @@ const startServer = async () => {
     };
     runRenewals();
     setInterval(runRenewals, 12 * 60 * 60 * 1000);
+
+    // WhatsApp marketing automation: send due scheduled/recurring campaigns and
+    // evaluate triggers (win-back, welcome, post-purchase) every 5 minutes.
+    const { runDueCampaigns } = await import('./services/whatsapp-campaign.service');
+    runDueCampaigns().catch(err => console.error('[wa-campaign] startup run error:', err));
+    setInterval(() => {
+      runDueCampaigns().catch(err => console.error('[wa-campaign] interval error:', err));
+    }, 5 * 60 * 1000);
 
     // Use httpServer.listen instead of app.listen
     httpServer.listen(port, () => {

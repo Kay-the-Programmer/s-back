@@ -131,8 +131,8 @@ export const registerStore = async (req: express.Request, res: express.Response)
       const storeOtpExpires = hasOtp ? null : (() => { const e = new Date(); e.setHours(e.getHours() + 24); return e; })();
 
       await db.query(
-        "INSERT INTO stores (id, name, status, subscription_status, subscription_plan, subscription_ends_at, is_verified, verification_token, verification_token_expires) VALUES ($1, $2, 'active', $3, $4, $5, $6, $7, $8)",
-        [storeId, String(name).trim(), subscriptionStatus, planId, trialEndsAt, hasOtp, storeOtp, storeOtpExpires]
+        "INSERT INTO stores (id, name, status, subscription_status, subscription_plan, subscription_ends_at, is_verified, verification_token, verification_token_expires, owner_id) VALUES ($1, $2, 'active', $3, $4, $5, $6, $7, $8, $9)",
+        [storeId, String(name).trim(), subscriptionStatus, planId, trialEndsAt, hasOtp, storeOtp, storeOtpExpires, user.id]
       );
 
       // Fire and forget OTP email (legacy verify-after-create path only)
@@ -234,5 +234,51 @@ export const verifyStoreRegistration = async (req: express.Request, res: express
   } catch (error) {
     console.error('Error verifying store OTP:', error);
     return res.status(500).json({ message: 'Error verifying store OTP' });
+  }
+};
+
+// ── Multi-Store Manager ───────────────────────────────────────────────────────
+
+/** Every business the current user owns (for the Multi-Store Manager). */
+export const getMyStores = async (req: express.Request, res: express.Response) => {
+  try {
+    const userId = req.user!.id;
+    const currentStoreId = req.user?.currentStoreId;
+    const result = await db.query(
+      `SELECT id, name, status, subscription_status, subscription_plan, subscription_ends_at, is_verified, created_at
+       FROM stores WHERE owner_id = $1 ORDER BY created_at ASC`,
+      [userId],
+    );
+    const stores = result.rows.map((s: any) => ({
+      id: s.id,
+      name: s.name,
+      status: s.status,
+      subscriptionStatus: s.subscription_status,
+      subscriptionPlan: s.subscription_plan,
+      subscriptionEndsAt: s.subscription_ends_at,
+      isVerified: s.is_verified,
+      createdAt: s.created_at,
+      isCurrent: s.id === currentStoreId,
+    }));
+    res.json(stores);
+  } catch (error: any) {
+    console.warn('[stores] my-stores failed:', error.message);
+    res.json([]);
+  }
+};
+
+/** Switch the active business — only among stores the user owns. */
+export const switchStore = async (req: express.Request, res: express.Response) => {
+  try {
+    const userId = req.user!.id;
+    const { storeId } = req.body || {};
+    if (!storeId) return res.status(400).json({ message: 'storeId is required' });
+    const owns = await db.query('SELECT id FROM stores WHERE id = $1 AND owner_id = $2', [storeId, userId]);
+    if ((owns.rowCount ?? 0) === 0) return res.status(403).json({ message: 'You do not have access to that business.' });
+    await db.query('UPDATE users SET current_store_id = $1 WHERE id = $2', [storeId, userId]);
+    invalidateUserCache(userId);
+    res.json({ success: true, storeId });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message || 'Failed to switch business.' });
   }
 };

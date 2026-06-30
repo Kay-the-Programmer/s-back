@@ -237,6 +237,25 @@ export class WhatsAppService {
         });
     }
 
+    /**
+     * Send an approved template message — the only way to message a customer
+     * outside the 24h service window (i.e. proactive marketing). `bodyParams`
+     * fill the template's {{1}}, {{2}}… body variables in order.
+     */
+    async sendTemplateMessage(storeId: string, to: string, templateName: string, langCode = 'en_US', bodyParams: string[] = []): Promise<any> {
+        const components = bodyParams.length
+            ? [{ type: 'body', parameters: bodyParams.map(t => ({ type: 'text', text: t })) }]
+            : [];
+        return this.sendMessage(storeId, to, {
+            type: 'template',
+            template: {
+                name: templateName,
+                language: { code: langCode },
+                ...(components.length ? { components } : {}),
+            },
+        });
+    }
+
     // --- Conversation & Message Storage ---
 
     async getOrCreateConversation(storeId: string, customerPhone: string, customerName?: string): Promise<string> {
