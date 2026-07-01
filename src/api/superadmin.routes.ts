@@ -5,6 +5,10 @@ import {
     listCatalogModules, saveCatalogModule, removeCatalogModule,
     listCatalogPlans, saveCatalogPlan, removeCatalogPlan,
 } from '../controllers/catalog.controller';
+import {
+    listCampaigns, saveCampaign, removeCampaign,
+} from '../controllers/upsell-campaign.controller';
+import { getUpsellAnalytics } from '../controllers/upsell-analytics.controller';
 import { protect, superAdminOnly } from '../middleware/auth.middleware';
 
 const router = express.Router();
@@ -172,5 +176,23 @@ router.get('/catalog/plans', protect, superAdminOnly, listCatalogPlans);
 router.post('/catalog/plans', protect, superAdminOnly, saveCatalogPlan);
 router.put('/catalog/plans/:id', protect, superAdminOnly, saveCatalogPlan);
 router.delete('/catalog/plans/:id', protect, superAdminOnly, removeCatalogPlan);
+
+/**
+ * @openapi
+ * /superadmin/upsell-campaigns:
+ *   get: { tags: [Super Admin], summary: List upsell campaigns (incl. drafts), security: [{ bearerAuth: [] }] }
+ *   post: { tags: [Super Admin], summary: Create or update an upsell campaign, security: [{ bearerAuth: [] }] }
+ */
+router.get('/upsell-campaigns', protect, superAdminOnly, listCampaigns);
+router.post('/upsell-campaigns', protect, superAdminOnly, saveCampaign);
+router.put('/upsell-campaigns/:id', protect, superAdminOnly, saveCampaign);
+router.delete('/upsell-campaigns/:id', protect, superAdminOnly, removeCampaign);
+
+/**
+ * @openapi
+ * /superadmin/upsell-analytics:
+ *   get: { tags: [Super Admin], summary: Upsell campaign funnel (per campaign + variant), security: [{ bearerAuth: [] }] }
+ */
+router.get('/upsell-analytics', protect, superAdminOnly, getUpsellAnalytics);
 
 export default router;

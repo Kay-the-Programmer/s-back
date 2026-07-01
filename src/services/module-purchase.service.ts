@@ -3,6 +3,7 @@ import db from '../db_client';
 import { v4 as uuidv4 } from 'uuid';
 import LencoService from './lenco.service';
 import { getModules } from './catalog.service';
+import { getModuleDiscounts } from './upsell-campaign.service';
 import { addEnabledModules, getEnabledModules } from './entitlements.service';
 import { invalidateUserCache } from '../middleware/auth.middleware';
 
@@ -80,7 +81,14 @@ export const initiateModulePayment = async (
     }
 
     const currency = chosen[0].currency || 'ZMW';
-    const amount = chosen.reduce((sum, m) => sum + (m.price || 0), 0);
+    // Apply any live campaign offer as an intro discount on the first charge
+    // (server-validated; renewals stay at the catalogue price).
+    const discounts = await getModuleDiscounts();
+    const amount = chosen.reduce((sum, m) => {
+        const pct = discounts[m.id] || 0;
+        return sum + Math.round((m.price || 0) * (100 - pct)) / 100;
+    }, 0);
+    const discountApplied = chosen.some(m => (discounts[m.id] || 0) > 0);
     const paymentId = `pay_${uuidv4()}`;
     const reference = `SP_ADDON_${Date.now()}_${storeId.substring(0, 8).toUpperCase()}`;
     const names = chosen.map(m => m.name).join(', ');
@@ -89,7 +97,7 @@ export const initiateModulePayment = async (
         `INSERT INTO subscription_payments
             (id, store_id, amount, currency, plan_id, method, reference, notes, module_ids, created_at, status)
          VALUES ($1, $2, $3, $4, NULL, $5, $6, $7, $8, NOW(), 'pending')`,
-        [paymentId, storeId, amount, currency, method, reference, `Add-ons: ${names}`, chosen.map(m => m.id)]
+        [paymentId, storeId, amount, currency, method, reference, `Add-ons: ${names}${discountApplied ? ' (offer applied)' : ''}`, chosen.map(m => m.id)]
     );
 
     let lencoResult = null;

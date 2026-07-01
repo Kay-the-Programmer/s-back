@@ -6,6 +6,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import apiRoutes from './api';
 import { errorMiddleware } from './middleware/error.middleware';
+import { idempotency } from './middleware/idempotency.middleware';
 import './types/request';
 import initializeDatabase from './init_db';
 import seedDatabase from './seed';
@@ -73,6 +74,10 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// Dedupe retried writes (offline-queue replays) by X-Idempotency-Key before
+// they reach the route handlers. No-op for requests without the header.
+app.use('/api', idempotency);
+
 app.use('/api', apiRoutes);
 
 // --- Swagger Documentation ---
@@ -107,6 +112,8 @@ import { runSubscriptionLifecycle } from './services/subscription-lifecycle.serv
 import { runAddonRenewals } from './services/module-purchase.service';
 import { runPlanRenewals } from './services/subscription.service';
 import { ensureCatalogSeeded } from './services/catalog.service';
+import { ensureUpsellCampaignsTable } from './services/upsell-campaign.service';
+import { ensureUpsellEventsTable } from './services/upsell-analytics.service';
 
 const startServer = async () => {
   try {
@@ -115,6 +122,10 @@ const startServer = async () => {
 
     // Seed the configurable commerce catalog (add-on modules + plans) if empty.
     await ensureCatalogSeeded().catch(err => console.error('[catalog] seed failed:', err));
+
+    // Ensure the upsell-campaigns table exists (marketing console persistence).
+    await ensureUpsellCampaignsTable().catch(err => console.error('[upsell-campaigns] table init failed:', err));
+    await ensureUpsellEventsTable().catch(err => console.error('[upsell-events] table init failed:', err));
 
     // Process recurring expenses on startup
     runRecurringExpenses().then(count => {

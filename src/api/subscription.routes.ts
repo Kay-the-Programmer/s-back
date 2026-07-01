@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import * as subscriptionController from '../controllers/subscription.controller';
+import { getPublicCampaigns } from '../controllers/upsell-campaign.controller';
+import { recordUpsellEvent } from '../controllers/upsell-analytics.controller';
 import { protect, requirePermission } from '../middleware/auth.middleware';
 
 const router = Router();
@@ -26,6 +28,27 @@ router.get('/plans', subscriptionController.getPlans);
  *       200: { description: Map of page key to module id }
  */
 router.get('/page-modules', subscriptionController.getPageModules);
+
+/**
+ * @openapi
+ * /subscriptions/upsell-campaigns:
+ *   get:
+ *     tags: [Subscriptions]
+ *     summary: Published upsell campaigns for the client engine (public)
+ *     responses:
+ *       200: { description: List of published upsell campaign DTOs }
+ */
+router.get('/upsell-campaigns', getPublicCampaigns);
+
+/**
+ * @openapi
+ * /subscriptions/upsell-events:
+ *   post:
+ *     tags: [Subscriptions]
+ *     summary: Record an upsell funnel event (impression/click/convert/dismiss)
+ *     security: [{ bearerAuth: [] }]
+ */
+router.post('/upsell-events', protect, recordUpsellEvent);
 
 /**
  * @openapi
