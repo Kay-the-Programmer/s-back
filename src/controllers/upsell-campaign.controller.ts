@@ -33,7 +33,6 @@ function parseOffer(v: any): CampaignOffer | undefined {
     if (!v || typeof v !== 'object') return undefined;
     const offer: CampaignOffer = {};
     if (v.discountPct != null) offer.discountPct = Math.max(0, Math.min(100, num(v.discountPct)));
-    if (v.couponCode) offer.couponCode = str(v.couponCode).trim();
     if (v.endsAt != null) offer.endsAt = num(v.endsAt);
     if (Array.isArray(v.bundleModules)) offer.bundleModules = v.bundleModules.filter((x: any) => typeof x === 'string');
     return Object.keys(offer).length ? offer : undefined;
@@ -94,6 +93,7 @@ export const saveCampaign = async (req: express.Request, res: express.Response) 
             schedule: 'schedule' in b ? parseSchedule(b.schedule) : undefined,
             offer: 'offer' in b ? parseOffer(b.offer) : undefined,
             variants: 'variants' in b ? parseVariants(b.variants) : undefined,
+            placement: 'placement' in b ? (str(b.placement).trim() || undefined) : undefined,
             active: b.active != null ? !!b.active : undefined,
             sortOrder: b.sortOrder != null ? Math.trunc(num(b.sortOrder)) : undefined,
         };

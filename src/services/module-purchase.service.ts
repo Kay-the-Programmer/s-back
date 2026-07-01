@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import LencoService from './lenco.service';
 import { getModules } from './catalog.service';
 import { getModuleDiscounts } from './upsell-campaign.service';
+import { recordConversion } from './upsell-analytics.service';
 import { addEnabledModules, getEnabledModules } from './entitlements.service';
 import { invalidateUserCache } from '../middleware/auth.middleware';
 
@@ -161,6 +162,21 @@ export const processSuccessfulModulePayment = async (reference: string, lencoDet
     }
 
     await addEnabledModules(storeId, moduleIds);
+
+    // Attribute the conversion to the campaign that drove it (server-authored, so
+    // revenue is the real charged amount and can't be spoofed). The payment total
+    // is split across modules by catalogue price.
+    try {
+        const amount = Number(payment.amount) || 0;
+        const priced = moduleIds.map(id => ({ id, price: priceById.get(id)?.price || 0 }));
+        const totalCat = priced.reduce((s, m) => s + m.price, 0);
+        for (const m of priced) {
+            const revenue = totalCat > 0 ? Math.round((amount * m.price / totalCat) * 100) / 100 : amount / (priced.length || 1);
+            await recordConversion({ storeId, module: m.id, revenue });
+        }
+    } catch (e: any) {
+        console.warn('[upsell] conversion attribution failed:', e?.message);
+    }
 
     // Refresh auth cache + nudge the user.
     try {

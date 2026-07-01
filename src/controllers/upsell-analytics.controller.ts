@@ -20,6 +20,9 @@ export const recordUpsellEvent = async (req: express.Request, res: express.Respo
         if (!event || !b.momentId) {
             return res.status(400).json({ message: 'event name and momentId are required.' });
         }
+        // Conversions/revenue are derived server-side from real payments — never
+        // trust a client-submitted convert (spoofable + would double-count).
+        if (event === 'convert') return res.status(202).json({ ok: true });
         await recordEvent({
             event,
             momentId: String(b.momentId),

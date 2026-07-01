@@ -57,6 +57,40 @@ export const recordEvent = async (e: RecordEventInput): Promise<void> => {
     );
 };
 
+/**
+ * Attribute a REAL completed purchase to the campaign that drove it. Looks up the
+ * store's most recent tracked `click` for the module (within a window) and, if
+ * found, records a server-authored `convert` event carrying the ACTUAL revenue.
+ * This is the only source of conversions/revenue — clients can't spoof it, and
+ * the revenue reflects the discounted charge, not the catalogue price. Called
+ * from the (idempotent) payment-completion path, so it fires once per purchase.
+ */
+export const recordConversion = async (input: { storeId: string; module: string; revenue: number }): Promise<void> => {
+    try {
+        const res = await db.query(
+            `SELECT moment_id, variant_id, surface FROM upsell_events
+              WHERE store_id = $1 AND module = $2 AND event = 'click'
+                AND created_at >= NOW() - INTERVAL '30 days'
+              ORDER BY created_at DESC
+              LIMIT 1`,
+            [input.storeId, input.module],
+        );
+        const a = res.rows[0];
+        if (!a) return; // purchase wasn't driven by a tracked upsell click
+        await recordEvent({
+            event: 'convert',
+            momentId: a.moment_id,
+            module: input.module,
+            surface: a.surface ?? undefined,
+            variantId: a.variant_id ?? undefined,
+            storeId: input.storeId,
+            value: Number.isFinite(input.revenue) ? input.revenue : 0,
+        });
+    } catch (e: any) {
+        console.warn('[upsell-analytics] conversion attribution failed:', e.message);
+    }
+};
+
 // --- Funnel aggregation ------------------------------------------------------
 
 export interface FunnelRow {

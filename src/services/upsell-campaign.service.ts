@@ -28,7 +28,6 @@ export interface TriggerRule {
 
 export interface CampaignOffer {
     discountPct?: number;
-    couponCode?: string;
     endsAt?: number;
     bundleModules?: string[];
 }
@@ -62,6 +61,8 @@ export interface CampaignDTO {
     schedule?: CampaignSchedule;
     offer?: CampaignOffer;
     variants?: CampaignVariant[];
+    /** On-screen slot for inline/daily/discover campaigns (built-ins placed by id). */
+    placement?: string;
 }
 
 /** DB row including back-office fields the engine doesn't need. */
@@ -95,6 +96,7 @@ export const ensureUpsellCampaignsTable = async (): Promise<void> => {
             schedule JSONB,
             offer JSONB,
             variants JSONB,
+            placement TEXT,
             active BOOLEAN NOT NULL DEFAULT TRUE,
             sort_order INT NOT NULL DEFAULT 0,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -102,6 +104,8 @@ export const ensureUpsellCampaignsTable = async (): Promise<void> => {
         );
     `);
     await db.query(`CREATE INDEX IF NOT EXISTS idx_upsell_campaigns_active ON upsell_campaigns(active);`);
+    // Backfill for DBs created before the placement column existed.
+    await db.query(`ALTER TABLE upsell_campaigns ADD COLUMN IF NOT EXISTS placement TEXT;`);
     ready = true;
 };
 
@@ -124,6 +128,7 @@ const toStored = (r: any): StoredCampaign => ({
     schedule: r.schedule ?? undefined,
     offer: r.offer ?? undefined,
     variants: Array.isArray(r.variants) ? r.variants : undefined,
+    placement: r.placement ?? undefined,
     active: r.active !== false,
     sortOrder: r.sort_order ?? 0,
 });
@@ -204,19 +209,19 @@ const json = (v: any): string | null => (v == null ? null : JSON.stringify(v));
 const writeCampaign = async (c: StoredCampaign): Promise<void> => {
     await db.query(
         `INSERT INTO upsell_campaigns
-            (id, module, surface, stage, priority, cooldown_days, trigger_rule, headline, body, cta_label, status, schedule, offer, variants, active, sort_order, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14::jsonb,$15,$16, NOW())
+            (id, module, surface, stage, priority, cooldown_days, trigger_rule, headline, body, cta_label, status, schedule, offer, variants, placement, active, sort_order, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14::jsonb,$15,$16,$17, NOW())
          ON CONFLICT (id) DO UPDATE SET
             module = EXCLUDED.module, surface = EXCLUDED.surface, stage = EXCLUDED.stage,
             priority = EXCLUDED.priority, cooldown_days = EXCLUDED.cooldown_days,
             trigger_rule = EXCLUDED.trigger_rule, headline = EXCLUDED.headline, body = EXCLUDED.body,
             cta_label = EXCLUDED.cta_label, status = EXCLUDED.status, schedule = EXCLUDED.schedule,
-            offer = EXCLUDED.offer, variants = EXCLUDED.variants, active = EXCLUDED.active,
-            sort_order = EXCLUDED.sort_order, updated_at = NOW()`,
+            offer = EXCLUDED.offer, variants = EXCLUDED.variants, placement = EXCLUDED.placement,
+            active = EXCLUDED.active, sort_order = EXCLUDED.sort_order, updated_at = NOW()`,
         [
             c.id, c.module, c.surface, c.stage, c.priority, c.cooldownDays,
             json(c.triggerRule), c.headline, c.body, c.ctaLabel, c.status ?? 'active',
-            json(c.schedule), json(c.offer), json(c.variants), c.active, c.sortOrder,
+            json(c.schedule), json(c.offer), json(c.variants), c.placement ?? null, c.active, c.sortOrder,
         ],
     );
 };
@@ -244,6 +249,7 @@ export const upsertCampaign = async (input: Partial<StoredCampaign>): Promise<St
         schedule: input.schedule !== undefined ? input.schedule : existing?.schedule,
         offer: input.offer !== undefined ? input.offer : existing?.offer,
         variants: input.variants !== undefined ? input.variants : existing?.variants,
+        placement: input.placement !== undefined ? input.placement : existing?.placement,
         active: input.active ?? existing?.active ?? true,
         sortOrder: input.sortOrder ?? existing?.sortOrder ?? 0,
     };
