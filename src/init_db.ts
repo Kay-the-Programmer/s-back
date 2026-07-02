@@ -141,6 +141,18 @@ async function initializeDatabase() {
         // Multi-Store Manager to list a user's businesses). Added after the fact.
         await client.query(`ALTER TABLE stores ADD COLUMN IF NOT EXISTS owner_id TEXT;`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_stores_owner ON stores(owner_id);`);
+        // Enforce store-name uniqueness at the DB level (registration checks it,
+        // but only an index closes the SELECT→INSERT race). Guarded: if a legacy
+        // DB already contains duplicate names, skip with a warning instead of
+        // failing the whole init.
+        await client.query(`
+            DO $$
+            BEGIN
+                CREATE UNIQUE INDEX IF NOT EXISTS uidx_stores_name_lower ON stores (LOWER(trim(name)));
+            EXCEPTION WHEN unique_violation OR others THEN
+                RAISE WARNING 'Skipping unique store-name index (duplicate names exist?): %', SQLERRM;
+            END $$;
+        `);
         // The backfill below reads users.current_store_id, which on a FRESH
         // database is only added by a later migration block — ensure it exists
         // first (no-op on existing DBs) so first-boot init doesn't abort.

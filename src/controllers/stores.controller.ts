@@ -81,6 +81,11 @@ export const registerStore = async (req: express.Request, res: express.Response)
     if (!user || !user.id) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
+    // Store registration is for business accounts. Customers and suppliers have
+    // their own flows — without this guard they'd be silently promoted to admin.
+    if (user.role === 'customer' || user.role === 'supplier') {
+      return res.status(403).json({ message: 'This account type cannot register a store. Please sign up with a business account.' });
+    }
     if (!name || String(name).trim().length < 2) {
       return res.status(400).json({ message: 'Store name is required' });
     }
@@ -127,24 +132,30 @@ export const registerStore = async (req: express.Request, res: express.Response)
       const trialEndsAt = subscriptionStatus === 'trial'
         ? (() => { const e = new Date(); e.setDate(e.getDate() + TRIAL_DAYS); return e; })()
         : null;
-      const storeOtp = hasOtp ? null : crypto.randomInt(100000, 999999).toString();
-      const storeOtpExpires = hasOtp ? null : (() => { const e = new Date(); e.setHours(e.getHours() + 24); return e; })();
+      // Store verification is about proving the owner's email. If the account
+      // email is already verified (registration OTP or Google sign-in), the
+      // store inherits it — no second OTP ceremony.
+      const isVerifiedStore = hasOtp || !!user.isVerified;
+      const storeOtp = isVerifiedStore ? null : crypto.randomInt(100000, 999999).toString();
+      const storeOtpExpires = isVerifiedStore ? null : (() => { const e = new Date(); e.setHours(e.getHours() + 24); return e; })();
 
       await db.query(
         "INSERT INTO stores (id, name, status, subscription_status, subscription_plan, subscription_ends_at, is_verified, verification_token, verification_token_expires, owner_id) VALUES ($1, $2, 'active', $3, $4, $5, $6, $7, $8, $9)",
-        [storeId, String(name).trim(), subscriptionStatus, planId, trialEndsAt, hasOtp, storeOtp, storeOtpExpires, user.id]
+        [storeId, String(name).trim(), subscriptionStatus, planId, trialEndsAt, isVerifiedStore, storeOtp, storeOtpExpires, user.id]
       );
 
       // Fire and forget OTP email (legacy verify-after-create path only)
-      if (!hasOtp && user.email) {
+      if (!isVerifiedStore && user.email) {
         sendStoreOTPVerificationEmail(user.email, String(name).trim(), storeOtp!).catch(console.error);
       }
 
-      // 3. Make the registering user an admin for now (global role), set current store, and
-      //    clear any pending setup OTP now that it has been consumed.
+      // 3. Make the registering user an admin of the new store (superadmin keeps
+      //    the platform role — registering a store must never demote it), set
+      //    current store, and clear any pending setup OTP now that it's consumed.
+      const newRole = user.role === 'superadmin' ? 'superadmin' : 'admin';
       await db.query(
         'UPDATE users SET role = $1, current_store_id = $2, store_setup_otp = NULL, store_setup_otp_expires = NULL WHERE id = $3',
-        ['admin', storeId, user.id]
+        [newRole, storeId, user.id]
       );
 
       invalidateUserCache(user.id);
@@ -166,9 +177,12 @@ export const registerStore = async (req: express.Request, res: express.Response)
 
       await db.query('COMMIT');
 
-      // 5. If it's a paid plan, we initiate payment immediately or return a redirect
+      // 5. Paid plan + an actionable payment method → initiate payment now.
+      // Otherwise the store simply starts its trial and pays in-app later —
+      // initiating unconditionally used to create a dangling 'pending'
+      // subscription_payments row for every self-service registration.
       let paymentInfo = null;
-      if (plan.price > 0) {
+      if (plan.price > 0 && paymentMethod === 'mobile-money' && phone) {
         try {
           paymentInfo = await subscriptionService.initiatePayment(storeId, planId, paymentMethod, phone);
         } catch (payErr) {
@@ -188,7 +202,12 @@ export const registerStore = async (req: express.Request, res: express.Response)
       await db.query('ROLLBACK');
       throw err;
     }
-  } catch (error) {
+  } catch (error: any) {
+    // Unique-index race: two requests claimed the same name between the SELECT
+    // check and the INSERT — surface it as the same friendly validation error.
+    if (error?.code === '23505') {
+      return res.status(400).json({ message: 'A store with this name already exists. Please choose a different name.' });
+    }
     console.error('Error registering store:', error);
     return res.status(500).json({ message: 'Error registering store' });
   }
