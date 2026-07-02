@@ -18,15 +18,24 @@ domain `api.salepilot.space`.
    ```
 4. Docker via `curl -fsSL https://get.docker.com | sudo sh`, `usermod -aG docker ubuntu`.
 
-## Deploy / redeploy
-From the dev machine, package and upload (excludes node_modules/dist/.git/.env):
+## Deploy / redeploy (git-based — primary)
+The VM's `~/salepilot/s-back` is a git clone of `main`. Every deploy:
 ```powershell
-tar -czf s-back.tgz --exclude=node_modules --exclude=dist --exclude=.git --exclude=.env --exclude=uploads -C <repo-root> s-back
-scp -i ~\.ssh\oci_key.key s-back.tgz ubuntu@<VM_IP>:~
-ssh -i ~\.ssh\oci_key.key ubuntu@<VM_IP> "tar -xzf ~/s-back.tgz -C ~/salepilot && cd ~/salepilot/s-back && docker compose -f docker-compose.prod.yml up -d --build"
+# on the dev machine: commit + push
+git add -A ; git commit -m "..." ; git push
 ```
-The server's `.env` lives at `~/salepilot/s-back/.env` (chmod 600) and is NOT
-overwritten by redeploys (it's excluded from the tarball). Template:
+```bash
+# on the VM (or via ssh one-liner)
+~/salepilot/s-back/deploy/pull-and-rebuild.sh
+```
+Prints `DEPLOY_OK — running commit: <sha>` on success. Production always
+corresponds to a pushed commit on main.
+
+Alternative (deploys the working tree as-is, no commit needed):
+`.\deploy\deploy.ps1` from the dev machine (tar → scp → build).
+
+The server's `.env` lives at `~/salepilot/s-back/.env` (chmod 600, untracked)
+and is never touched by pulls or the tarball flow. Template:
 `.env.production.example`. Critical values: `POSTGRES_PASSWORD`, `JWT_SECRET`,
 `API_DOMAIN`, `FRONTEND_URL`, `NODE_ENV=production`.
 

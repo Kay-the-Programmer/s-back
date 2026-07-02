@@ -50,6 +50,11 @@ const initialCategories = categoryHierarchy;
 // --- Seeding Functions ---
 
 async function seedAdminUser(client: any) {
+    // Dev convenience account with a hardcoded password — never seed in production.
+    if (process.env.NODE_ENV === 'production') {
+        console.log('Skipping default admin seed (production).');
+        return;
+    }
     const adminEmail = 'admin@sale-pilot.com';
     const existing = await client.query('SELECT id FROM users WHERE email = $1', [adminEmail]);
     if (existing.rowCount > 0) {

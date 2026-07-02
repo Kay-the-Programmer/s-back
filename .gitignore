@@ -4,13 +4,12 @@ npm-debug.log
 yarn-debug.log
 yarn-error.log
 
-# Environment variables
+# Environment variables (any file that could hold real secrets)
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-.env.yaml
+.env.*
+!.env.production.example
+prod.env
+*.env.bak*
 
 # Build outputs
 dist/

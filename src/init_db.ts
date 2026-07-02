@@ -93,9 +93,10 @@ async function initializeDatabase() {
                 END IF;
             END $$;`
         );
-        // Seed a default admin user if none exists (safe, idempotent)
+        // Seed a default admin user if none exists — DEV CONVENIENCE ONLY.
+        // Never in production: it has a hardcoded well-known password.
         const existingUsers = await client.query('SELECT 1 FROM users LIMIT 1');
-        if (existingUsers.rowCount === 0) {
+        if (existingUsers.rowCount === 0 && process.env.NODE_ENV !== 'production') {
             const salt = await bcrypt.genSalt(10);
             const passwordHash = await bcrypt.hash('password', salt);
             await client.query(
