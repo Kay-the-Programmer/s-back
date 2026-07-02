@@ -1,11 +1,12 @@
 import express from 'express';
-import { registerStore, checkStoreName, verifyStoreRegistration, requestStoreSetupOtp, getMyStores, switchStore } from '../controllers/stores.controller';
+import { registerStore, checkStoreName, verifyStoreRegistration, requestStoreSetupOtp, getMyStores, getMyStoresSummary, switchStore } from '../controllers/stores.controller';
 import { protect } from '../middleware/auth.middleware';
 
 const router = express.Router();
 
-// Multi-Store Manager: list the user's businesses + switch the active one.
+// Business Manager: list the user's businesses, portfolio KPIs + switch the active one.
 router.get('/mine', protect, getMyStores);
+router.get('/mine/summary', protect, getMyStoresSummary);
 router.post('/switch', protect, switchStore);
 
 /**

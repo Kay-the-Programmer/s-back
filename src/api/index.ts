@@ -36,6 +36,7 @@ import logisticsRoutes from './logistics.routes';
 import whatsappRoutes from './whatsapp.routes';
 import facebookRoutes from './facebook.routes';
 import smsRoutes from './sms.routes';
+import feedbackRoutes from './feedback.routes';
 
 const router = express.Router();
 
@@ -74,6 +75,7 @@ router.use('/logistics', logisticsRoutes);
 router.use('/whatsapp', whatsappRoutes);
 router.use('/facebook', facebookRoutes);
 router.use('/sms', smsRoutes);
+router.use('/feedback', feedbackRoutes);
 
 
 // A simple health check endpoint

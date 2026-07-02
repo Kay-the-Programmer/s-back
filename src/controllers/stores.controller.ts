@@ -267,6 +267,137 @@ export const getMyStores = async (req: express.Request, res: express.Response) =
   }
 };
 
+/**
+ * Portfolio summary for the Business Manager hub: per-store KPIs and a daily
+ * revenue trend for every business the user owns, plus combined totals — in
+ * one round trip. Window semantics: `days=1` = today (from midnight),
+ * `days=7` = last 7 calendar days, etc.; the delta baseline (`prevRevenue`)
+ * is the equal-length window immediately before.
+ */
+export const getMyStoresSummary = async (req: express.Request, res: express.Response) => {
+  try {
+    const userId = req.user!.id;
+    const currentStoreId = req.user?.currentStoreId;
+    const days = Math.min(Math.max(parseInt(String(req.query.days ?? '7'), 10) || 7, 1), 90);
+
+    const storesRes = await db.query(
+      `SELECT id, name, status, subscription_status, subscription_plan, subscription_ends_at, is_verified, created_at
+       FROM stores WHERE owner_id = $1 ORDER BY created_at ASC`,
+      [userId],
+    );
+    if (storesRes.rows.length === 0) {
+      return res.json({ days, stores: [], totals: null });
+    }
+    const ids = storesRes.rows.map((r: any) => r.id);
+
+    // Day-boundary windows: current = [startOfToday - (days-1)d, now], previous = the equal period before.
+    const windowStart = new Date();
+    windowStart.setHours(0, 0, 0, 0);
+    windowStart.setDate(windowStart.getDate() - (days - 1));
+    const prevStart = new Date(windowStart);
+    prevStart.setDate(prevStart.getDate() - days);
+
+    const [curSales, prevSales, trendRes, productsRes, customersRes, usersRes] = await Promise.all([
+      db.query(
+        `SELECT store_id, COALESCE(SUM(total),0)::float AS revenue, COUNT(*)::int AS transactions
+         FROM sales WHERE store_id = ANY($1) AND "timestamp" >= $2 GROUP BY store_id`,
+        [ids, windowStart],
+      ),
+      db.query(
+        `SELECT store_id, COALESCE(SUM(total),0)::float AS revenue
+         FROM sales WHERE store_id = ANY($1) AND "timestamp" >= $2 AND "timestamp" < $3 GROUP BY store_id`,
+        [ids, prevStart, windowStart],
+      ),
+      db.query(
+        `SELECT store_id, to_char(date_trunc('day', "timestamp"), 'YYYY-MM-DD') AS day, COALESCE(SUM(total),0)::float AS revenue
+         FROM sales WHERE store_id = ANY($1) AND "timestamp" >= $2 GROUP BY 1, 2`,
+        [ids, windowStart],
+      ),
+      db.query(
+        `SELECT store_id,
+                COUNT(*) FILTER (WHERE status = 'active')::int AS products_count,
+                COUNT(*) FILTER (WHERE status = 'active' AND stock <= COALESCE(reorder_point, 5))::int AS low_stock_count,
+                COALESCE(SUM(stock * COALESCE(cost_price, 0)) FILTER (WHERE status = 'active'), 0)::float AS inventory_value
+         FROM products WHERE store_id = ANY($1) GROUP BY store_id`,
+        [ids],
+      ),
+      db.query(
+        `SELECT store_id, COUNT(*)::int AS customers_count FROM customers WHERE store_id = ANY($1) GROUP BY store_id`,
+        [ids],
+      ),
+      db.query(
+        `SELECT current_store_id AS store_id, COUNT(*)::int AS users_count FROM users WHERE current_store_id = ANY($1) GROUP BY 1`,
+        [ids],
+      ),
+    ]);
+
+    const byStore = <T extends { store_id: string }>(rows: T[]) => new Map(rows.map(r => [r.store_id, r]));
+    const cur = byStore(curSales.rows);
+    const prev = byStore(prevSales.rows);
+    const prod = byStore(productsRes.rows);
+    const cust = byStore(customersRes.rows);
+    const usrs = byStore(usersRes.rows);
+
+    // Revenue per store per day, with every day of the window present (0-filled).
+    const dayKeys: string[] = [];
+    for (let i = 0; i < days; i++) {
+      const d = new Date(windowStart);
+      d.setDate(d.getDate() + i);
+      dayKeys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+    }
+    const trendMap = new Map<string, Map<string, number>>();
+    for (const row of trendRes.rows as any[]) {
+      if (!trendMap.has(row.store_id)) trendMap.set(row.store_id, new Map());
+      trendMap.get(row.store_id)!.set(row.day, Number(row.revenue) || 0);
+    }
+
+    const stores = storesRes.rows.map((s: any) => {
+      const c: any = cur.get(s.id) || {};
+      const p: any = prev.get(s.id) || {};
+      const pr: any = prod.get(s.id) || {};
+      const cu: any = cust.get(s.id) || {};
+      const us: any = usrs.get(s.id) || {};
+      const tm = trendMap.get(s.id);
+      return {
+        id: s.id,
+        name: s.name,
+        status: s.status,
+        subscriptionStatus: s.subscription_status,
+        subscriptionPlan: s.subscription_plan,
+        subscriptionEndsAt: s.subscription_ends_at,
+        isVerified: s.is_verified,
+        createdAt: s.created_at,
+        isCurrent: s.id === currentStoreId,
+        revenue: Number(c.revenue) || 0,
+        prevRevenue: Number(p.revenue) || 0,
+        transactions: Number(c.transactions) || 0,
+        productsCount: Number(pr.products_count) || 0,
+        lowStockCount: Number(pr.low_stock_count) || 0,
+        inventoryValue: Number(pr.inventory_value) || 0,
+        customersCount: Number(cu.customers_count) || 0,
+        usersCount: Number(us.users_count) || 0,
+        trend: dayKeys.map(day => ({ date: day, revenue: tm?.get(day) || 0 })),
+      };
+    });
+
+    const totals = stores.reduce((t, s) => ({
+      revenue: t.revenue + s.revenue,
+      prevRevenue: t.prevRevenue + s.prevRevenue,
+      transactions: t.transactions + s.transactions,
+      productsCount: t.productsCount + s.productsCount,
+      lowStockCount: t.lowStockCount + s.lowStockCount,
+      inventoryValue: t.inventoryValue + s.inventoryValue,
+      customersCount: t.customersCount + s.customersCount,
+      usersCount: t.usersCount + s.usersCount,
+    }), { revenue: 0, prevRevenue: 0, transactions: 0, productsCount: 0, lowStockCount: 0, inventoryValue: 0, customersCount: 0, usersCount: 0 });
+
+    return res.json({ days, stores, totals });
+  } catch (error: any) {
+    console.error('[stores] my-stores summary failed:', error.message);
+    return res.status(500).json({ message: 'Failed to load businesses summary.' });
+  }
+};
+
 /** Switch the active business — only among stores the user owns. */
 export const switchStore = async (req: express.Request, res: express.Response) => {
   try {

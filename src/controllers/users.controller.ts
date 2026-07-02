@@ -224,9 +224,14 @@ export const setCurrentStore = async (req: express.Request, res: express.Respons
             return res.status(400).json({ message: 'storeId is required' });
         }
         // Ensure the store exists
-        const storeRes = await db.query('SELECT id FROM stores WHERE id = $1', [storeId]);
+        const storeRes = await db.query('SELECT id, owner_id FROM stores WHERE id = $1', [storeId]);
         if ((storeRes.rowCount ?? 0) === 0) {
             return res.status(404).json({ message: 'Store not found' });
+        }
+        // Only the store's owner may switch into it — except the platform
+        // superadmin (the Super Admin store picker uses this endpoint).
+        if (req.user!.role !== 'superadmin' && storeRes.rows[0].owner_id !== req.user!.id) {
+            return res.status(403).json({ message: 'You do not have access to that store.' });
         }
         // Update current user's store selection
         await db.query('UPDATE users SET current_store_id = $1 WHERE id = $2', [storeId, req.user!.id]);

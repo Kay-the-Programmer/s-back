@@ -141,6 +141,10 @@ async function initializeDatabase() {
         // Multi-Store Manager to list a user's businesses). Added after the fact.
         await client.query(`ALTER TABLE stores ADD COLUMN IF NOT EXISTS owner_id TEXT;`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_stores_owner ON stores(owner_id);`);
+        // The backfill below reads users.current_store_id, which on a FRESH
+        // database is only added by a later migration block — ensure it exists
+        // first (no-op on existing DBs) so first-boot init doesn't abort.
+        await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS current_store_id TEXT;`);
         // Best-effort backfill: the admin currently pointing at a store becomes its owner.
         await client.query(`
             UPDATE stores s SET owner_id = u.id
@@ -1635,6 +1639,59 @@ async function initializeDatabase() {
 
         console.log('✅ AI usage logs tables verified/created');
         console.log('✅ WhatsApp integration tables verified/created');
+
+        // Idempotency keys — lets offline-capable clients (web/desktop/mobile)
+        // safely retry queued writes via the X-Idempotency-Key header without
+        // creating duplicate sales/products. See middleware/idempotency.middleware.ts.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS idempotency_keys (
+                key TEXT PRIMARY KEY,
+                user_id TEXT,
+                method TEXT NOT NULL,
+                path TEXT,
+                status_code INT,
+                response_body JSONB,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_idempotency_created_at ON idempotency_keys(created_at);`);
+        console.log('✅ Idempotency keys table verified/created');
+
+        // User feedback — collected in-app from any authenticated user (store
+        // owners, staff, customers) and triaged from the Super Admin console.
+        // Intentionally NOT foreign-keyed to users/stores: feedback must always
+        // persist even if the author or their store is later deleted, and it is
+        // never tenant-scoped for reads (only the platform owner sees it).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS feedback (
+                id TEXT PRIMARY KEY,
+                store_id TEXT,
+                store_name TEXT,
+                user_id TEXT,
+                user_name TEXT,
+                user_email TEXT,
+                user_role TEXT,
+                type TEXT NOT NULL DEFAULT 'general' CHECK (type IN ('bug','feature','improvement','praise','general')),
+                rating INT CHECK (rating IS NULL OR (rating BETWEEN 1 AND 5)),
+                subject TEXT,
+                message TEXT NOT NULL,
+                page TEXT,
+                app_version TEXT,
+                platform TEXT,
+                status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new','reviewing','planned','resolved','dismissed')),
+                admin_notes TEXT,
+                resolved_by TEXT,
+                resolved_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at DESC);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback(status);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_feedback_type ON feedback(type);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_feedback_store_id ON feedback(store_id);`);
+        console.log('✅ Feedback table verified/created');
+
         console.log('✅ Database schema verified/updated successfully');
     } catch (error) {
         console.error('❌ Error initializing database:', error);

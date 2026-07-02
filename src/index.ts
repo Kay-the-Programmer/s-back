@@ -28,6 +28,8 @@ const allowedOrigins: (string | RegExp)[] = [
   /https?:\/\/.+\.onrender\.com$/,
   'https://www.salepilot.space',
   'https://salepilot.space',
+  // Any localhost port — local dev servers (vite picks 5173/5180/5191/…)
+  /^https?:\/\/localhost(:\d+)?$/,
   'http://localhost:5173',
   'http://localhost:3000',
   'http://localhost',

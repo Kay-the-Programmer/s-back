@@ -9,7 +9,8 @@
     "build": "tsc",
     "postinstall": "npm run build",
     "db:seed": "ts-node src/seed.ts",
-    "db:reset": "ts-node src/reset_db.ts"
+    "db:reset": "ts-node src/reset_db.ts",
+    "superadmin:reset": "ts-node src/scripts/reset_superadmin.ts"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.19.0",

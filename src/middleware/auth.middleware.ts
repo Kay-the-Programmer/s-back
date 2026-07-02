@@ -81,9 +81,15 @@ export const protect = async (req: express.Request, res: express.Response, next:
             };
             req.user = user;
 
-            // Enforce store activation unless superadmin
+            // Enforce store activation unless superadmin.
+            // Store-agnostic routes are exempt: /auth/* (session) and /stores/*
+            // (the Business Manager — check-name, register, mine, summary,
+            // switch, verify are all account-level). Without this, an owner
+            // whose ACTIVE store is suspended could never switch to one of
+            // their healthy businesses — the whole account would be bricked.
+            const storeAgnostic = /^\/api\/(auth|stores)(\/|$|\?)/.test((req.originalUrl || req.url || '').toLowerCase());
             try {
-                if (user.currentStoreId && user.role !== 'superadmin' && user.role !== 'customer') {
+                if (!storeAgnostic && user.currentStoreId && user.role !== 'superadmin' && user.role !== 'customer') {
                     const storeRes = await db.query('SELECT status, subscription_status FROM stores WHERE id = $1', [user.currentStoreId]);
                     const store = storeRes.rows[0];
                     if (!store) {

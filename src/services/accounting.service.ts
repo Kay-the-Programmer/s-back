@@ -13,6 +13,7 @@ const ensureCoreAccounts = async (storeId: string, client?: DBClient) => {
         { number: '1100', name: 'Accounts Receivable', type: 'asset', sub: 'accounts_receivable', debit: true, desc: 'Money owed to the business by customers.' },
         { number: '1200', name: 'Inventory', type: 'asset', sub: 'inventory', debit: true, desc: 'Value of all products available for sale.' },
         { number: '2010', name: 'Accounts Payable', type: 'liability', sub: 'accounts_payable', debit: false, desc: 'Money owed to suppliers for inventory.' },
+        { number: '2150', name: 'Goods Received Not Invoiced', type: 'liability', sub: 'gr_ir', debit: false, desc: 'GR/IR clearing: stock received but not yet invoiced (or invoiced but not yet received). Nets to zero once both occur.' },
         { number: '2200', name: 'Sales Tax Payable', type: 'liability', sub: 'sales_tax_payable', debit: false, desc: 'Sales tax collected, to be remitted to the government.' },
         { number: '2300', name: 'Store Credit Payable', type: 'liability', sub: 'store_credit_payable', debit: false, desc: 'Total outstanding store credit owed to customers.' },
         { number: '3010', name: "Owner's Equity", type: 'equity', sub: undefined as any, debit: false, desc: 'Initial investment and retained earnings.' },
@@ -44,6 +45,14 @@ const findAccount = async (subType: Account['subType'], storeId: string, client?
 const addJournalEntry = async (entry: Omit<JournalEntry, 'id'>, storeId: string, client?: DBClient) => {
     const dbClient = client || db;
     const entryId = generateId('je');
+
+    // Double-entry integrity: refuse to post an unbalanced entry. Throwing here
+    // aborts the surrounding DB transaction so the books never drift out of balance.
+    const totalDebits = entry.lines.filter(l => l.type === 'debit').reduce((sum, l) => sum + l.amount, 0);
+    const totalCredits = entry.lines.filter(l => l.type === 'credit').reduce((sum, l) => sum + l.amount, 0);
+    if (Math.abs(totalDebits - totalCredits) > 0.01) {
+        throw new Error(`Unbalanced journal entry ("${entry.description}"): debits ${totalDebits.toFixed(2)} ≠ credits ${totalCredits.toFixed(2)}.`);
+    }
 
     await dbClient.query('INSERT INTO journal_entries (id, date, description, source_type, source_id, store_id) VALUES ($1, $2, $3, $4, $5, $6)',
         [entryId, entry.date, entry.description, entry.source.type, entry.source.id, storeId]
@@ -105,7 +114,6 @@ const recordSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) 
         return;
     }
 
-    const primaryAssetAccount = sale.paymentStatus === 'paid' ? cashAccount : arAccount;
     const productMap = new Map(allProducts.map(p => [p.id, p]));
     const categoryMap = new Map(allCategories.map(c => [c.id, c]));
 
@@ -149,7 +157,9 @@ const recordSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) 
                 cogsAccount = accountsMap.get(category.cogsAccountId) || defaultCogsAccount;
             }
         }
-        const itemCogs = (product.costPrice || 0) * item.quantity;
+        // Use the cost captured on the line at sale time so a void/return reverses
+        // the exact COGS originally posted, and it matches sale_items.cost_at_sale.
+        const itemCogs = ((item as any).costPrice ?? product.costPrice ?? 0) * item.quantity;
         const currentCogs = cogsByAccount.get(cogsAccount.id) || { account: cogsAccount, amount: 0 };
         currentCogs.amount += itemCogs;
         cogsByAccount.set(cogsAccount.id, currentCogs);
@@ -278,7 +288,9 @@ const voidSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) =>
                 cogsAccount = accountsMap.get(category.cogsAccountId) || defaultCogsAccount;
             }
         }
-        const itemCogs = (product.costPrice || 0) * item.quantity;
+        // Use the cost captured on the line at sale time so a void/return reverses
+        // the exact COGS originally posted, and it matches sale_items.cost_at_sale.
+        const itemCogs = ((item as any).costPrice ?? product.costPrice ?? 0) * item.quantity;
         const currentCogs = cogsByAccount.get(cogsAccount.id) || { account: cogsAccount, amount: 0 };
         currentCogs.amount += itemCogs;
         cogsByAccount.set(cogsAccount.id, currentCogs);
@@ -433,7 +445,10 @@ const recordReturn = async (returnInfo: Return, originalSale: Sale, client?: DBC
     }, 0);
 
     const returnedTax = Number(returnInfo.taxAmount || 0);
-    const returnedRevenueTotal = Number(returnInfo.subtotalAmount || 0);
+    // Revenue reversed is the plug that keeps the entry balanced against the ACTUAL
+    // cash/credit refunded: refund = revenue reversed + tax reversed ⇒ revenue = refund − tax.
+    // This guarantees Σdebits == Σcredits even when a partial/custom refund is issued.
+    const targetRevenueReduction = Math.max(0, Number(returnInfo.refundAmount || 0) - returnedTax);
 
     for (const item of returnInfo.returnedItems) {
         const product = productMap.get(item.productId);
@@ -449,8 +464,8 @@ const recordReturn = async (returnInfo: Return, originalSale: Sale, client?: DBC
         const nominalItemValue = price * item.quantity;
         const weight = nominalReturnedItemsValue > 0 ? (nominalItemValue / nominalReturnedItemsValue) : (1 / returnInfo.returnedItems.length);
 
-        // Amount to debit from this item's revenue account
-        const itemRevenueReduction = returnedRevenueTotal * weight;
+        // Amount to debit from this item's revenue account (share of the balanced total)
+        const itemRevenueReduction = targetRevenueReduction * weight;
 
         let revenueAccount = defaultRevenueAccount;
         if (product.categoryId) {
@@ -557,8 +572,8 @@ const recordPurchaseOrderReception = async (poId: string, poNumber: string, rece
     await ensureCoreAccounts(storeId, dbClient);
 
     const inventoryAccount = await findAccount('inventory', storeId, dbClient);
-    const apAccount = await findAccount('accounts_payable', storeId, dbClient);
-    if (!inventoryAccount || !apAccount) {
+    const grirAccount = await findAccount('gr_ir', storeId, dbClient);
+    if (!inventoryAccount || !grirAccount) {
         console.error("Accounting Error: Core accounts for purchases are not configured.");
         return;
     }
@@ -571,8 +586,10 @@ const recordPurchaseOrderReception = async (poId: string, poNumber: string, rece
             description: `Received stock for PO ${poNumber}`,
             source: { type: 'purchase', id: poId },
             lines: [
+                // Goods received: recognize inventory now; park the payable in GR/IR until
+                // the supplier invoice moves it to Accounts Payable (prevents double-counting).
                 { accountId: inventoryAccount.id, accountName: inventoryAccount.name, type: 'debit', amount: totalCost },
-                { accountId: apAccount.id, accountName: apAccount.name, type: 'credit', amount: totalCost },
+                { accountId: grirAccount.id, accountName: grirAccount.name, type: 'credit', amount: totalCost },
             ],
         }, storeId, dbClient);
 
@@ -660,9 +677,9 @@ const recordSupplierInvoice = async (invoice: SupplierInvoice, client?: DBClient
     // Ensure system accounts exist for this store
     await ensureCoreAccounts(storeId, dbClient);
 
-    const inventoryAccount = await findAccount('inventory', storeId, dbClient);
+    const grirAccount = await findAccount('gr_ir', storeId, dbClient);
     const apAccount = await findAccount('accounts_payable', storeId, dbClient);
-    if (!inventoryAccount || !apAccount) {
+    if (!grirAccount || !apAccount) {
         console.error("Accounting Error: Core accounts for supplier invoices are not configured.");
         return;
     }
@@ -672,7 +689,9 @@ const recordSupplierInvoice = async (invoice: SupplierInvoice, client?: DBClient
         description: `Supplier Invoice ${invoice.invoiceNumber} from ${invoice.supplierName}`,
         source: { type: 'purchase', id: invoice.id },
         lines: [
-            { accountId: inventoryAccount.id, accountName: inventoryAccount.name, type: 'debit', amount: invoice.amount },
+            // Invoice received: clear the GR/IR liability into Accounts Payable. The goods
+            // themselves were already capitalised to Inventory at reception time.
+            { accountId: grirAccount.id, accountName: grirAccount.name, type: 'debit', amount: invoice.amount },
             { accountId: apAccount.id, accountName: apAccount.name, type: 'credit', amount: invoice.amount },
         ]
     }, storeId, dbClient);
@@ -689,9 +708,9 @@ const reverseSupplierInvoice = async (invoice: SupplierInvoice, client?: DBClien
     // Ensure system accounts exist for this store
     await ensureCoreAccounts(storeId, dbClient);
 
-    const inventoryAccount = await findAccount('inventory', storeId, dbClient);
+    const grirAccount = await findAccount('gr_ir', storeId, dbClient);
     const apAccount = await findAccount('accounts_payable', storeId, dbClient);
-    if (!inventoryAccount || !apAccount) {
+    if (!grirAccount || !apAccount) {
         console.error("Accounting Error: Core accounts for reversing supplier invoices are not configured.");
         return;
     }
@@ -701,7 +720,7 @@ const reverseSupplierInvoice = async (invoice: SupplierInvoice, client?: DBClien
         description: `REVERSAL: Supplier Invoice ${invoice.invoiceNumber} from ${invoice.supplierName}`,
         source: { type: 'purchase', id: invoice.id },
         lines: [
-            { accountId: inventoryAccount.id, accountName: inventoryAccount.name, type: 'credit', amount: invoice.amount },
+            { accountId: grirAccount.id, accountName: grirAccount.name, type: 'credit', amount: invoice.amount },
             { accountId: apAccount.id, accountName: apAccount.name, type: 'debit', amount: invoice.amount },
         ]
     }, storeId, dbClient);
@@ -924,6 +943,14 @@ export const accountingService = {
         await dbClient.query(
             'INSERT INTO supplier_invoices (id, invoice_number, supplier_id, supplier_name, purchase_order_id, po_number, invoice_date, due_date, amount, amount_paid, status, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, \'unpaid\', $10)',
             [id, invoiceNumber, po.supplierId, po.supplierName, po.id, po.poNumber, invoiceDate, dueDate, po.total, storeId]
+        );
+
+        // Post the invoice to the GL (Dr GR/IR, Cr A/P) so the auto-created payable is
+        // reflected in the ledger and reconciles with the A/P sub-ledger from day one.
+        await recordSupplierInvoice(
+            { id, invoiceNumber, supplierId: po.supplierId, supplierName: po.supplierName, purchaseOrderId: po.id, poNumber: po.poNumber, invoiceDate, dueDate, amount: po.total, amountPaid: 0, status: 'unpaid', payments: [] } as SupplierInvoice,
+            dbClient,
+            storeId,
         );
     }
 };

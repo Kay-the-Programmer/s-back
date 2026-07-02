@@ -1,0 +1,66 @@
+# Production stack for Oracle Cloud (single VM, Always Free A1).
+#   - Postgres is NOT published to the internet (internal Docker network only).
+#   - The backend is only reachable through Caddy (automatic HTTPS) or
+#     127.0.0.1:5000 on the VM itself for debugging.
+#   - Set POSTGRES_PASSWORD and API_DOMAIN in .env (see .env.production.example).
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+services:
+  s-back-db:
+    image: postgres:15-alpine
+    container_name: salepilot-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: salepilot
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d salepilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  s-back:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: salepilot-backend
+    # Loopback only — for debugging on the VM (curl 127.0.0.1:5000/api/health).
+    # Public traffic must come through Caddy.
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - ./uploads:/usr/src/app/uploads
+      - ./public/images:/usr/src/app/public/images
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@s-back-db:5432/salepilot
+    depends_on:
+      s-back-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: salepilot-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - API_DOMAIN=${API_DOMAIN:?set API_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - s-back
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

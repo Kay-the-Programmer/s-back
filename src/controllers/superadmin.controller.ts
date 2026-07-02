@@ -3,7 +3,7 @@ import db from '../db_client';
 import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { getEnabledModules, setEnabledModules } from '../services/entitlements.service';
-import { SUBSCRIPTION_PLANS } from '../services/subscription.service';
+import { SUBSCRIPTION_PLANS, getPlans } from '../services/subscription.service';
 
 // Monthly price per plan id (all current plans bill monthly), for MRR.
 const PLAN_MONTHLY_PRICE: Record<string, number> = Object.fromEntries(
@@ -46,12 +46,54 @@ export const getStoreModules = async (req: express.Request, res: express.Respons
     }
 };
 
+/** Resolve a plan id to its display name (catalog first, constants as fallback). */
+const resolvePlanName = (planId: string | null | undefined, plans: { id: string; name: string }[]): string | null => {
+  if (!planId) return null;
+  return plans.find(p => p.id === planId)?.name
+    ?? SUBSCRIPTION_PLANS.find(p => p.id === planId)?.name
+    ?? planId;
+};
+
 export const listStores = async (req: express.Request, res: express.Response) => {
   try {
-    const result = await db.query(
-      `SELECT id, name, status, subscription_status, subscription_ends_at, created_at, updated_at FROM stores ORDER BY created_at DESC`
-    );
-    return res.status(200).json(toCamelCase({ stores: result.rows }));
+    // One row per store, enriched with contact info, seat count and paid
+    // subscription revenue so the admin pages can show real details.
+    const [result, plans] = await Promise.all([
+      db.query(
+        `SELECT s.id, s.name, s.status, s.subscription_status, s.subscription_plan,
+                s.subscription_ends_at, s.created_at, s.updated_at,
+                COALESCE(ss.email, ou.email) AS email,
+                COALESCE(ss.phone, ou.phone) AS phone,
+                ou.name AS owner_name,
+                COALESCE(uc.users_count, 0)::int AS users_count,
+                COALESCE(rev.total_revenue, 0)::float AS total_revenue,
+                rev.first_paid_at AS subscription_started_at,
+                rev.last_paid_at AS last_payment_at
+         FROM stores s
+         LEFT JOIN store_settings ss ON ss.store_id = s.id
+         LEFT JOIN users ou ON ou.id = s.owner_id
+         LEFT JOIN (
+             SELECT current_store_id, COUNT(*) AS users_count
+             FROM users GROUP BY current_store_id
+         ) uc ON uc.current_store_id = s.id
+         LEFT JOIN (
+             SELECT store_id, SUM(amount) AS total_revenue,
+                    MIN(paid_at) AS first_paid_at, MAX(paid_at) AS last_paid_at
+             FROM subscription_payments
+             WHERE paid_at IS NOT NULL
+             GROUP BY store_id
+         ) rev ON rev.store_id = s.id
+         ORDER BY s.created_at DESC`
+      ),
+      getPlans().catch(() => [] as { id: string; name: string }[]),
+    ]);
+
+    const stores = result.rows.map((row: any) => ({
+      ...row,
+      plan_name: resolvePlanName(row.subscription_plan, plans),
+    }));
+
+    return res.status(200).json(toCamelCase({ stores }));
   } catch (e) {
     console.error('Error listing stores', e);
     return res.status(500).json({ message: 'Error listing stores' });
@@ -61,7 +103,7 @@ export const listStores = async (req: express.Request, res: express.Response) =>
 export const updateStore = async (req: express.Request, res: express.Response) => {
   try {
     const { id } = req.params;
-    const { status, subscriptionStatus, subscriptionEndsAt, reason } = req.body || {};
+    const { status, subscriptionStatus, subscriptionEndsAt, subscriptionPlan, reason } = req.body || {};
 
     if (!id) return res.status(400).json({ message: 'Store id required' });
 
@@ -88,8 +130,22 @@ export const updateStore = async (req: express.Request, res: express.Response) =
       fields.push(`subscription_status = $${params.length}`);
     }
     if (subscriptionEndsAt !== undefined) {
-      params.push(subscriptionEndsAt ? new Date(subscriptionEndsAt) : null);
+      const endsAt = subscriptionEndsAt ? new Date(subscriptionEndsAt) : null;
+      if (endsAt && isNaN(endsAt.getTime())) {
+        return res.status(400).json({ message: 'Invalid subscriptionEndsAt date' });
+      }
+      params.push(endsAt);
       fields.push(`subscription_ends_at = $${params.length}`);
+    }
+    if (subscriptionPlan !== undefined) {
+      // Assign or clear the store's plan; validate against the live catalog (with constants fallback).
+      if (subscriptionPlan !== null && subscriptionPlan !== '') {
+        const plans = await getPlans().catch(() => SUBSCRIPTION_PLANS);
+        const known = plans.some(p => p.id === subscriptionPlan) || SUBSCRIPTION_PLANS.some(p => p.id === subscriptionPlan);
+        if (!known) return res.status(400).json({ message: `Unknown plan: ${subscriptionPlan}` });
+      }
+      params.push(subscriptionPlan || null);
+      fields.push(`subscription_plan = $${params.length}`);
     }
 
     if (fields.length === 0) {
@@ -100,7 +156,7 @@ export const updateStore = async (req: express.Request, res: express.Response) =
     fields.push(`updated_at = $${params.length}`);
 
     params.push(id);
-    const q = `UPDATE stores SET ${fields.join(', ')} WHERE id = $${params.length} RETURNING id, name, status, subscription_status, subscription_ends_at, created_at, updated_at`;
+    const q = `UPDATE stores SET ${fields.join(', ')} WHERE id = $${params.length} RETURNING id, name, status, subscription_status, subscription_plan, subscription_ends_at, created_at, updated_at`;
 
     const result = await db.query(q, params);
     if (result.rowCount === 0) return res.status(404).json({ message: 'Store not found' });
@@ -297,13 +353,21 @@ export const listRevenueSummary = async (req: express.Request, res: express.Resp
 
 export const listSubscriptionPayments = async (req: express.Request, res: express.Response) => {
   try {
+    const { storeId } = req.query as { storeId?: string };
+    const params: any[] = [];
+    let where = '';
+    if (storeId) {
+      params.push(storeId);
+      where = `WHERE sp.store_id = $${params.length}`;
+    }
     const rows = await db.query(`
       SELECT sp.*, s.name as store_name
       FROM subscription_payments sp
       LEFT JOIN stores s ON s.id = sp.store_id
+      ${where}
       ORDER BY COALESCE(sp.paid_at, sp.created_at) DESC
       LIMIT 200
-    `);
+    `, params);
     return res.status(200).json(toCamelCase({ payments: rows.rows }));
   } catch (e) {
     console.error('Error listing subscription payments', e);
@@ -415,13 +479,40 @@ export const getStoreDetails = async (req: express.Request, res: express.Respons
     const { id } = req.params;
 
     // parallelize queries for efficiency
-    const [storeRes, settingsRes, ownerRes, statsRes] = await Promise.all([
+    const [storeRes, settingsRes, ownerRes, adminRes, statsRes, revenueRes, paymentsRes, plans] = await Promise.all([
       db.query(`SELECT * FROM stores WHERE id = $1`, [id]),
       db.query(`SELECT * FROM store_settings WHERE store_id = $1`, [id]),
-      // Find a user who is likely the owner (admin role + current_store_id matches)
+      // Registered owner (multi-store ownership model)
+      db.query(`SELECT u.name, u.email, u.phone FROM stores s JOIN users u ON u.id = s.owner_id WHERE s.id = $1`, [id]),
+      // Fallback: a user who is likely the owner (admin role + current_store_id matches)
       db.query(`SELECT name, email, phone FROM users WHERE current_store_id = $1 AND role = 'admin' LIMIT 1`, [id]),
-      // Quick usage stats
-      db.query(`SELECT COUNT(*) as users_count FROM users WHERE current_store_id = $1`, [id])
+      // Usage stats (users, products, sales) in one round trip
+      db.query(
+        `SELECT
+            (SELECT COUNT(*) FROM users WHERE current_store_id = $1)::int AS users_count,
+            (SELECT COUNT(*) FROM products WHERE store_id = $1)::int AS products_count,
+            (SELECT COUNT(*) FROM sales WHERE store_id = $1)::int AS sales_count,
+            (SELECT COALESCE(SUM(total), 0) FROM sales WHERE store_id = $1)::float AS sales_total`,
+        [id]
+      ),
+      // Paid subscription revenue for this store
+      db.query(
+        `SELECT COALESCE(SUM(amount), 0)::float AS total_revenue,
+                COUNT(*)::int AS payments_count,
+                MIN(paid_at) AS first_paid_at,
+                MAX(paid_at) AS last_paid_at
+         FROM subscription_payments WHERE store_id = $1 AND paid_at IS NOT NULL`,
+        [id]
+      ),
+      // Recent payment history (paid + pending) for the billing panel
+      db.query(
+        `SELECT id, amount, currency, plan_id, period_start, period_end, paid_at, method, reference, status, notes, created_at
+         FROM subscription_payments WHERE store_id = $1
+         ORDER BY COALESCE(paid_at, created_at) DESC
+         LIMIT 20`,
+        [id]
+      ),
+      getPlans().catch(() => [] as { id: string; name: string }[]),
     ]);
 
     if (storeRes.rowCount === 0) {
@@ -430,20 +521,31 @@ export const getStoreDetails = async (req: express.Request, res: express.Respons
 
     const store = storeRes.rows[0];
     const settings = settingsRes.rows[0] || {};
-    const owner = ownerRes.rows[0] || {};
+    const owner = ownerRes.rows[0] || adminRes.rows[0] || {};
     const stats = statsRes.rows[0] || {};
+    const revenue = revenueRes.rows[0] || {};
 
     // Merge info for the frontend
     const detailedStore = {
       ...store,
+      plan: store.subscription_plan,
+      planName: resolvePlanName(store.subscription_plan, plans),
       address: settings.address,
       phone: settings.phone || owner.phone, // fallback to owner phone
       email: settings.email || owner.email, // fallback to owner email
       ownerName: owner.name,
-      usersCount: parseInt(stats.users_count || '0')
+      ownerEmail: owner.email,
+      usersCount: Number(stats.users_count || 0),
+      productsCount: Number(stats.products_count || 0),
+      salesCount: Number(stats.sales_count || 0),
+      salesTotal: Number(stats.sales_total || 0),
+      totalRevenue: Number(revenue.total_revenue || 0),
+      paymentsCount: Number(revenue.payments_count || 0),
+      subscriptionStartedAt: revenue.first_paid_at || null,
+      lastPaymentAt: revenue.last_paid_at || null,
     };
 
-    return res.status(200).json(toCamelCase({ store: detailedStore }));
+    return res.status(200).json(toCamelCase({ store: detailedStore, payments: paymentsRes.rows }));
   } catch (e) {
     console.error('Error fetching store details', e);
     return res.status(500).json({ message: 'Error fetching store details' });

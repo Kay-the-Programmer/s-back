@@ -3,6 +3,7 @@ import db from '../db_client';
 import { auditService } from '../services/audit.service';
 import { StoreSettings } from '../types';
 import { toCamelCase } from '../utils/helpers';
+import { isModuleEnabled, MODULES } from '../services/entitlements.service';
 
 export const getSettings = async (req: express.Request, res: express.Response) => {
     try {
@@ -83,6 +84,30 @@ export const updateSettings = async (req: express.Request, res: express.Response
         const storeId = (req as any).tenant?.storeId;
         if (!storeId) {
             return res.status(400).json({ message: 'No store selected. Please select a store first.' });
+        }
+
+        // Monetization gate: connecting a Lenco account to accept mobile-money
+        // payments through SalePilot requires the paid "Accept Mobile Money" add-on.
+        // We block *newly setting or changing* a key when the store doesn't own the
+        // add-on (superadmin bypasses) — the authoritative server-side chokepoint so
+        // a store can't enable payment collection without unlocking it. Comparing
+        // against the stored keys means an un-entitled store that already had keys
+        // can still save unrelated settings (its POS mobile-money option stays
+        // locked separately until the add-on is purchased).
+        const newPub = String(newSettings.lencoPublicKey || '').trim();
+        const newSec = String(newSettings.lencoSecretKey || '').trim();
+        if ((newPub || newSec) && req.user?.role !== 'superadmin') {
+            const cur = await db.query('SELECT lenco_public_key, lenco_secret_key FROM store_settings WHERE store_id = $1', [storeId]);
+            const curPub = (cur.rows[0]?.lenco_public_key || '').trim();
+            const curSec = (cur.rows[0]?.lenco_secret_key || '').trim();
+            const connectingNewKeys = (newPub && newPub !== curPub) || (newSec && newSec !== curSec);
+            if (connectingNewKeys && !(await isModuleEnabled(storeId, MODULES.PAYMENT_GATEWAY))) {
+                return res.status(402).json({
+                    message: 'Connecting a mobile-money account requires the “Accept Mobile Money” add-on. Unlock it to process payments through SalePilot.',
+                    module: MODULES.PAYMENT_GATEWAY,
+                    action: 'upgrade',
+                });
+            }
         }
 
         // Ensure taxRate is never null - default to 0 if not provided

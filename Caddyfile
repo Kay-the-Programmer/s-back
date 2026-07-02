@@ -1,0 +1,8 @@
+# Automatic HTTPS reverse proxy for the SalePilot API.
+# API_DOMAIN comes from .env (e.g. api.salepilot.space). Caddy obtains and
+# renews the Let's Encrypt certificate automatically; websockets (socket.io)
+# are proxied transparently.
+{$API_DOMAIN} {
+	encode gzip
+	reverse_proxy s-back:5000
+}

@@ -195,17 +195,20 @@ export const getFinancialOverview = async (req: express.Request, res: express.Re
             GROUP BY type, sub_type
         `;
 
-        // 3. Profit & Loss (Period-bound)
+        // 3. Profit & Loss (Period-bound) — ACCRUAL basis, matching the general ledger.
+        // Revenue/COGS are recognised when the sale occurs (all non-cancelled sales),
+        // not only when cash is collected. This keeps the Overview, the Reports tab, and
+        // the GL in agreement. Cancelled sales are excluded (their GL postings are voided).
         const revenueQuery = `
-            SELECT COALESCE(SUM(subtotal), 0) as revenue 
-            FROM sales 
-            WHERE store_id = $1 AND payment_status = 'paid' AND timestamp BETWEEN $2 AND $3
+            SELECT COALESCE(SUM(subtotal), 0) as revenue
+            FROM sales
+            WHERE store_id = $1 AND fulfillment_status IS DISTINCT FROM 'cancelled' AND timestamp BETWEEN $2 AND $3
         `;
         const cogsQuery = `
             SELECT COALESCE(SUM(si.cost_at_sale * (si.quantity - si.returned_quantity)), 0) as cogs
             FROM sale_items si
             JOIN sales s ON si.sale_id = s.transaction_id
-            WHERE s.store_id = $1 AND s.payment_status = 'paid' AND s.timestamp BETWEEN $2 AND $3
+            WHERE s.store_id = $1 AND s.fulfillment_status IS DISTINCT FROM 'cancelled' AND s.timestamp BETWEEN $2 AND $3
         `;
         const expensesQuery = `
             SELECT COALESCE(SUM(amount), 0) as expenses 
@@ -247,9 +250,17 @@ export const getFinancialOverview = async (req: express.Request, res: express.Re
         const periodExpenses = parseFloat(expResult.rows[0].expenses);
         const periodNetIncome = (periodNetRevenue - periodCogs) - periodExpenses;
 
-        // Total Assets from GL (for comparison)
+        // Total Assets / Liabilities / Equity from GL.
         const totalAssetsGL = glBalances.filter(b => b.type === 'asset').reduce((sum, b) => sum + b.balance, 0);
         const totalLiabilitiesGL = glBalances.filter(b => b.type === 'liability').reduce((sum, b) => sum + b.balance, 0);
+        // Equity = contributed capital/equity accounts + retained earnings. The books are
+        // not periodically closed, so retained earnings = accumulated (revenue − expenses).
+        // With a balanced ledger this makes Assets = Liabilities + Equity hold exactly.
+        const equityAccountsGL = glBalances.filter(b => b.type === 'equity').reduce((sum, b) => sum + b.balance, 0);
+        const totalRevenueGL = glBalances.filter(b => b.type === 'revenue').reduce((sum, b) => sum + b.balance, 0);
+        const totalExpenseGL = glBalances.filter(b => b.type === 'expense').reduce((sum, b) => sum + b.balance, 0);
+        const retainedEarnings = totalRevenueGL - totalExpenseGL;
+        const totalEquityGL = equityAccountsGL + retainedEarnings;
 
         // 4. Diagnostic Data
         const missingCostQuery = `SELECT COUNT(*)::int as count FROM products WHERE store_id = $1 AND status = 'active' AND (cost_price IS NULL OR cost_price = 0)`;
@@ -265,7 +276,8 @@ export const getFinancialOverview = async (req: express.Request, res: express.Re
                 cashBalance,
                 totalAssets: totalAssetsGL,
                 totalLiabilities: totalLiabilitiesGL,
-                equity: totalAssetsGL - totalLiabilitiesGL
+                equity: totalEquityGL,
+                retainedEarnings
             },
             period: {
                 revenue: periodNetRevenue,
@@ -364,6 +376,17 @@ export const createSupplierInvoice = async (req: express.Request, res: express.R
         if (!storeId) return res.status(400).json({ message: 'No active store selected.' });
 
         await client.query('BEGIN');
+
+        // Prevent a duplicate invoice for the same PO — that would double-count A/P
+        // (an invoice is auto-created when a PO is placed). One invoice per PO.
+        if (purchaseOrderId) {
+            const dup = await client.query('SELECT id FROM supplier_invoices WHERE purchase_order_id = $1 AND store_id = $2', [purchaseOrderId, storeId]);
+            if (dup.rowCount && dup.rowCount > 0) {
+                await client.query('ROLLBACK');
+                return res.status(409).json({ message: 'An invoice already exists for this purchase order.' });
+            }
+        }
+
         const result = await client.query(
             'INSERT INTO supplier_invoices (id, invoice_number, supplier_id, supplier_name, purchase_order_id, po_number, invoice_date, due_date, amount, amount_paid, status, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, \'unpaid\', $10) RETURNING *',
             [id, invoiceNumber, supplierId, supplierName, purchaseOrderId, poNumber, invoiceDate, dueDate, amount, storeId]
