@@ -1,7 +1,14 @@
-import { Pool } from 'pg';
+import { Pool, types } from 'pg';
 import dotenv from 'dotenv';
 
 dotenv.config();
+
+// NUMERIC/DECIMAL (OID 1700) arrives as a string by default. Every money column
+// (sales.subtotal, accounts.balance, …) is NUMERIC, and consumers sum these values
+// with `+` — with strings that concatenates instead of adds, silently corrupting
+// report totals. Parse to number at the driver boundary so the whole API serves
+// real numbers.
+types.setTypeParser(1700, (v: string) => parseFloat(v));
 
 // SSL when explicitly requested (DB_SSL=true, e.g. managed Postgres), or in
 // production UNLESS explicitly disabled (DB_SSL=false — e.g. a containerized

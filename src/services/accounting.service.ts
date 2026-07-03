@@ -16,10 +16,11 @@ const ensureCoreAccounts = async (storeId: string, client?: DBClient) => {
         { number: '2150', name: 'Goods Received Not Invoiced', type: 'liability', sub: 'gr_ir', debit: false, desc: 'GR/IR clearing: stock received but not yet invoiced (or invoiced but not yet received). Nets to zero once both occur.' },
         { number: '2200', name: 'Sales Tax Payable', type: 'liability', sub: 'sales_tax_payable', debit: false, desc: 'Sales tax collected, to be remitted to the government.' },
         { number: '2300', name: 'Store Credit Payable', type: 'liability', sub: 'store_credit_payable', debit: false, desc: 'Total outstanding store credit owed to customers.' },
-        { number: '3010', name: "Owner's Equity", type: 'equity', sub: undefined as any, debit: false, desc: 'Initial investment and retained earnings.' },
+        { number: '3010', name: "Owner's Equity", type: 'equity', sub: 'owner_equity', debit: false, desc: 'Initial investment and retained earnings.' },
         { number: '3020', name: "Owner's Drawings", type: 'equity', sub: 'owner_drawings', debit: true, desc: 'Goods and cash withdrawn from the business for personal use.' },
         { number: '4010', name: 'Sales Revenue', type: 'revenue', sub: 'sales_revenue', debit: false, desc: 'Default account for revenue from sales.' },
         { number: '5010', name: 'Cost of Goods Sold', type: 'expense', sub: 'cogs', debit: true, desc: 'Default account for the cost of goods sold.' },
+        { number: '5020', name: 'Freight & Purchase Costs', type: 'expense', sub: 'freight_in', debit: true, desc: 'Shipping and tax on supplier purchases (not capitalised into inventory).' },
         { number: '6010', name: 'Rent Expense', type: 'expense', sub: undefined as any, debit: true, desc: 'Monthly rent for the store premises.' },
         { number: '6020', name: 'Inventory Adjustment Expense', type: 'expense', sub: 'inventory_adjustment', debit: true, desc: 'Expense from inventory shrinkage, damage, or adjustments.' }
     ];
@@ -31,6 +32,13 @@ const ensureCoreAccounts = async (storeId: string, client?: DBClient) => {
             [generateId('acc'), a.name, a.number, a.type, a.sub ?? null, a.debit, a.desc, storeId]
         );
     }
+
+    // Backfill: stores created before Owner's Equity carried a sub_type need it
+    // tagged so 'Initial Stock' capitalisation can find the account by sub_type.
+    await dbClient.query(
+        "UPDATE accounts SET sub_type = 'owner_equity' WHERE store_id = $1 AND number = '3010' AND sub_type IS NULL",
+        [storeId]
+    );
 };
 
 const findAccount = async (subType: Account['subType'], storeId: string, client?: DBClient) => {
@@ -77,6 +85,8 @@ const addJournalEntry = async (entry: Omit<JournalEntry, 'id'>, storeId: string,
             await dbClient.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND store_id = $3', [change, line.accountId, storeId]);
         }
     }
+
+    return entryId;
 };
 
 const recordSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) => {
@@ -120,8 +130,12 @@ const recordSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) 
 
     const accountsMap = new Map<string, Account>();
 
+    // Revenue is recognised NET of order-level discounts (sales.subtotal is the
+    // pre-discount cart value). Prorating (subtotal − discount) across the lines
+    // keeps the entry balanced: Dr cash/AR (= total) equals Cr net revenue + tax.
     const totalCartValue = sale.cart.reduce((acc, item) => acc + item.price * item.quantity, 0);
-    const discountRatio = totalCartValue > 0 ? (sale.subtotal) / totalCartValue : 1;
+    const netRevenueBase = Number(sale.subtotal) - Number(sale.discount || 0);
+    const discountRatio = totalCartValue > 0 ? netRevenueBase / totalCartValue : 1;
 
     for (const item of sale.cart) {
         const product = productMap.get(item.productId);
@@ -255,8 +269,10 @@ const voidSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) =>
     const categoryMap = new Map(allCategories.map(c => [c.id, c]));
 
     const accountsMap = new Map<string, Account>();
+    // Mirror recordSale: reverse revenue NET of discounts so the reversal balances.
     const totalCartValue = sale.cart.reduce((acc, item) => acc + item.price * item.quantity, 0);
-    const discountRatio = totalCartValue > 0 ? (sale.subtotal) / totalCartValue : 1;
+    const netRevenueBase = Number(sale.subtotal) - Number(sale.discount || 0);
+    const discountRatio = totalCartValue > 0 ? netRevenueBase / totalCartValue : 1;
 
     for (const item of sale.cart) {
         const product = productMap.get(item.productId);
@@ -343,6 +359,10 @@ const voidSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) =>
  *      crediting an expense account, which misstated the P&L.
  *  - "Personal Use": Dr Owner's Drawings (equity) / Cr Inventory — withdrawals
  *      by the owner are not a business expense.
+ *  - "Initial Stock" (opening inventory on product creation):
+ *      Dr Inventory / Cr Owner's Equity — a capital contribution, NOT an expense
+ *      recovery (crediting the adjustment expense overstated net income by the
+ *      full opening stock value).
  *  - Everything else (Stock Count, Damaged Goods, Theft, Return, Other):
  *      shrinkage/write-off — losses Dr Inventory Adjustment Expense / Cr Inventory;
  *      found stock reverses (Dr Inventory / Cr the expense as a recovery).
@@ -350,6 +370,7 @@ const voidSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) =>
 const offsetSubTypeForAdjustment = (reason: string): Account['subType'] => {
     if (reason === 'Receiving Stock') return 'gr_ir';
     if (reason === 'Personal Use') return 'owner_drawings';
+    if (reason === 'Initial Stock') return 'owner_equity';
     return 'inventory_adjustment';
 };
 
@@ -721,6 +742,26 @@ const recordCustomerPayment = async (sale: Sale, payment: Payment, client?: DBCl
     }, storeId, dbClient);
 };
 
+/**
+ * Splits a supplier invoice into the goods portion (clears GR/IR, which was
+ * credited at goods cost when stock was received) and the non-goods portion
+ * (shipping + purchase tax → Freight & Purchase Costs). Without the split,
+ * GR/IR was debited at the PO TOTAL and never netted to zero, and freight/tax
+ * never reached the P&L. Invoices not linked to a PO are all goods.
+ */
+const splitInvoiceForGl = async (invoice: SupplierInvoice, storeId: string, dbClient: DBClient): Promise<{ goods: number; other: number }> => {
+    const amount = Number(invoice.amount) || 0;
+    const poId = (invoice as any).purchaseOrderId || (invoice as any).purchase_order_id;
+    if (poId) {
+        const poRes = await dbClient.query('SELECT subtotal FROM purchase_orders WHERE id = $1 AND store_id = $2', [poId, storeId]);
+        if (poRes.rowCount > 0) {
+            const goods = Math.min(amount, Number(poRes.rows[0].subtotal) || 0);
+            return { goods, other: Math.round((amount - goods) * 100) / 100 };
+        }
+    }
+    return { goods: amount, other: 0 };
+};
+
 const recordSupplierInvoice = async (invoice: SupplierInvoice, client?: DBClient, storeIdParam?: string) => {
     const dbClient = client || db;
     const storeId = storeIdParam || (invoice as any).store_id;
@@ -734,21 +775,31 @@ const recordSupplierInvoice = async (invoice: SupplierInvoice, client?: DBClient
 
     const grirAccount = await findAccount('gr_ir', storeId, dbClient);
     const apAccount = await findAccount('accounts_payable', storeId, dbClient);
+    const freightAccount = await findAccount('freight_in', storeId, dbClient);
     if (!grirAccount || !apAccount) {
         console.error("Accounting Error: Core accounts for supplier invoices are not configured.");
         return;
+    }
+
+    const { goods, other } = freightAccount
+        ? await splitInvoiceForGl(invoice, storeId, dbClient)
+        : { goods: Number(invoice.amount) || 0, other: 0 };
+
+    const lines: JournalEntryLine[] = [
+        // Invoice received: clear the GR/IR liability into Accounts Payable. The goods
+        // themselves were already capitalised to Inventory at reception time.
+        { accountId: grirAccount.id, accountName: grirAccount.name, type: 'debit', amount: goods },
+        { accountId: apAccount.id, accountName: apAccount.name, type: 'credit', amount: invoice.amount },
+    ];
+    if (other > 0 && freightAccount) {
+        lines.push({ accountId: freightAccount.id, accountName: freightAccount.name, type: 'debit', amount: other });
     }
 
     await addJournalEntry({
         date: invoice.invoiceDate,
         description: `Supplier Invoice ${invoice.invoiceNumber} from ${invoice.supplierName}`,
         source: { type: 'purchase', id: invoice.id },
-        lines: [
-            // Invoice received: clear the GR/IR liability into Accounts Payable. The goods
-            // themselves were already capitalised to Inventory at reception time.
-            { accountId: grirAccount.id, accountName: grirAccount.name, type: 'debit', amount: invoice.amount },
-            { accountId: apAccount.id, accountName: apAccount.name, type: 'credit', amount: invoice.amount },
-        ]
+        lines,
     }, storeId, dbClient);
 };
 
@@ -765,19 +816,30 @@ const reverseSupplierInvoice = async (invoice: SupplierInvoice, client?: DBClien
 
     const grirAccount = await findAccount('gr_ir', storeId, dbClient);
     const apAccount = await findAccount('accounts_payable', storeId, dbClient);
+    const freightAccount = await findAccount('freight_in', storeId, dbClient);
     if (!grirAccount || !apAccount) {
         console.error("Accounting Error: Core accounts for reversing supplier invoices are not configured.");
         return;
+    }
+
+    // Mirror recordSupplierInvoice's split so the reversal cancels it exactly.
+    const { goods, other } = freightAccount
+        ? await splitInvoiceForGl(invoice, storeId, dbClient)
+        : { goods: Number(invoice.amount) || 0, other: 0 };
+
+    const lines: JournalEntryLine[] = [
+        { accountId: grirAccount.id, accountName: grirAccount.name, type: 'credit', amount: goods },
+        { accountId: apAccount.id, accountName: apAccount.name, type: 'debit', amount: invoice.amount },
+    ];
+    if (other > 0 && freightAccount) {
+        lines.push({ accountId: freightAccount.id, accountName: freightAccount.name, type: 'credit', amount: other });
     }
 
     await addJournalEntry({
         date: new Date().toISOString(),
         description: `REVERSAL: Supplier Invoice ${invoice.invoiceNumber} from ${invoice.supplierName}`,
         source: { type: 'purchase', id: invoice.id },
-        lines: [
-            { accountId: grirAccount.id, accountName: grirAccount.name, type: 'credit', amount: invoice.amount },
-            { accountId: apAccount.id, accountName: apAccount.name, type: 'debit', amount: invoice.amount },
-        ]
+        lines,
     }, storeId, dbClient);
 };
 

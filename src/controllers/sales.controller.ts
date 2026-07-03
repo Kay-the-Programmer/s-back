@@ -208,6 +208,8 @@ export const createQuickSale = async (req: express.Request, res: express.Respons
     }
 };
 
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
 export const createSale = async (req: express.Request, res: express.Response) => {
     const client = await db._pool.connect();
     const { payments, ...saleData } = req.body as Sale;
@@ -217,10 +219,70 @@ export const createSale = async (req: express.Request, res: express.Response) =>
     // Enforce tenant context
     const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
     if (!storeId) {
+        client.release();
         return res.status(400).json({ message: 'Store context required' });
     }
 
+    if (!Array.isArray(saleData.cart) || saleData.cart.length === 0) {
+        client.release();
+        return res.status(400).json({ message: 'Cart is empty.' });
+    }
+
+    // Note: duplicate-request protection (X-Idempotency-Key) is handled globally
+    // by the idempotency middleware, which replays the cached response for a
+    // retried mutation. Nothing sale-specific is needed here.
+
     try {
+        // --- Authoritative totals: recomputed server-side from the cart. ---
+        // The client's arithmetic is only trusted when it is internally consistent;
+        // otherwise the server's figures win. This is the single point where money
+        // enters the system, so nothing downstream has to re-derive or repair it.
+        const cartSubtotal = round2(saleData.cart.reduce((a, i) => a + (Number(i.price) || 0) * (Number(i.quantity) || 0), 0));
+        const discount = round2(Math.min(Math.max(Number(saleData.discount) || 0, 0), cartSubtotal));
+
+        let storeCreditUsed = round2(Math.max(Number(saleData.storeCreditUsed) || 0, 0));
+        if (storeCreditUsed > 0) {
+            if (!saleData.customerId) {
+                storeCreditUsed = 0;
+            } else {
+                const custRes = await db.query('SELECT store_credit FROM customers WHERE id = $1 AND store_id = $2', [saleData.customerId, storeId]);
+                const available = custRes.rowCount ? Math.max(0, Number(custRes.rows[0].store_credit) || 0) : 0;
+                storeCreditUsed = round2(Math.min(storeCreditUsed, available));
+            }
+        }
+
+        // Tax: accept the client's figure when the claimed total adds up exactly
+        // (allows tax-exempt sales and offline sales made under an older rate);
+        // otherwise recompute from the store's configured rate.
+        const clientTax = round2(Math.max(Number(saleData.tax) || 0, 0));
+        const claimedTotal = round2(Number(saleData.total) || 0);
+        let tax: number;
+        if (Math.abs(claimedTotal - round2(cartSubtotal - discount + clientTax - storeCreditUsed)) <= 0.02) {
+            tax = clientTax;
+        } else {
+            const settingsRes = await db.query('SELECT tax_rate FROM store_settings WHERE store_id = $1', [storeId]);
+            const taxRatePct = settingsRes.rowCount ? Number(settingsRes.rows[0].tax_rate) || 0 : 0;
+            tax = round2((cartSubtotal - discount) * (taxRatePct / 100));
+        }
+        const total = round2(cartSubtotal - discount + tax - storeCreditUsed);
+
+        const paymentStatus: Sale['paymentStatus'] = saleData.paymentStatus || 'paid';
+        const amountPaid = paymentStatus === 'paid'
+            ? total
+            : round2(Math.min(Math.max(Number(saleData.amountPaid) || 0, 0), total));
+
+        // Overwrite the client-sent figures with the authoritative ones so every
+        // downstream consumer (accounting, customer balance, response) agrees.
+        saleData.subtotal = cartSubtotal;
+        saleData.discount = discount;
+        saleData.tax = tax;
+        saleData.total = total;
+        saleData.storeCreditUsed = storeCreditUsed;
+        saleData.amountPaid = amountPaid;
+        if (saleData.cashReceived != null) {
+            saleData.changeDue = round2(Math.max(0, Number(saleData.cashReceived) - total));
+        }
+
         await client.query('BEGIN');
 
         const saleQuery = `
@@ -228,8 +290,8 @@ export const createSale = async (req: express.Request, res: express.Response) =>
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *;
         `;
         const saleResult = await client.query(saleQuery, [
-            transactionId, timestamp, saleData.customerId, saleData.total, saleData.subtotal, saleData.tax,
-            saleData.discount, saleData.storeCreditUsed, saleData.paymentStatus, saleData.amountPaid, saleData.dueDate, 'none', storeId
+            transactionId, timestamp, saleData.customerId, total, cartSubtotal, tax,
+            discount, storeCreditUsed, paymentStatus, amountPaid, saleData.dueDate, 'none', storeId
         ]);
         const newSale = saleResult.rows[0];
 

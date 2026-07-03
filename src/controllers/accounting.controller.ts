@@ -111,55 +111,22 @@ export const adjustAccountBalance = async (req: express.Request, res: express.Re
             offsetAccountType = account.isDebitNormal ? 'debit' : 'credit';
         }
 
-        // Create journal entry for adjustment
-        const entryId = generateId('je');
-        await client.query(
-            'INSERT INTO journal_entries (id, date, description, source_type, source_id, store_id) VALUES ($1, $2, $3, $4, $5, $6)',
-            [entryId, new Date().toISOString(), description, 'manual', null, storeId]
-        );
-
-        // Add journal entry lines
-        await client.query(
-            'INSERT INTO journal_entry_lines (journal_entry_id, account_id, type, amount, account_name, store_id) VALUES ($1, $2, $3, $4, $5, $6)',
-            [entryId, id, targetAccountType, absAmount, account.name, storeId]
-        );
-
-        await client.query(
-            'INSERT INTO journal_entry_lines (journal_entry_id, account_id, type, amount, account_name, store_id) VALUES ($1, $2, $3, $4, $5, $6)',
-            [entryId, offsetAccountId, offsetAccountType, absAmount, offsetAccountName, storeId]
-        );
-
-        // Update account balances
-        let targetChange = absAmount;
-        if ((account.isDebitNormal && targetAccountType === 'credit') || (!account.isDebitNormal && targetAccountType === 'debit')) {
-            targetChange = -targetChange;
-        }
-        await client.query(
-            'UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND store_id = $3',
-            [targetChange, id, storeId]
-        );
-
-        // Update offset account balance
-        const offsetAccountResult = await client.query(
-            'SELECT is_debit_normal FROM accounts WHERE id = $1 AND store_id = $2',
-            [offsetAccountId, storeId]
-        );
-        if (offsetAccountResult.rowCount > 0) {
-            const offsetAcc = offsetAccountResult.rows[0];
-            let offsetChange = absAmount;
-            if ((offsetAcc.is_debit_normal && offsetAccountType === 'credit') || (!offsetAcc.is_debit_normal && offsetAccountType === 'debit')) {
-                offsetChange = -offsetChange;
-            }
-            await client.query(
-                'UPDATE accounts SET balance = balance + $1 WHERE id = $2 AND store_id = $3',
-                [offsetChange, offsetAccountId, storeId]
-            );
-        }
+        // Post through the single journal engine (balance check + account balance
+        // updates live in one place instead of a second hand-rolled implementation).
+        await accountingService.addJournalEntry({
+            date: new Date().toISOString(),
+            description,
+            source: { type: 'manual' },
+            lines: [
+                { accountId: id, accountName: account.name, type: targetAccountType, amount: absAmount },
+                { accountId: offsetAccountId, accountName: offsetAccountName, type: offsetAccountType, amount: absAmount },
+            ],
+        }, storeId, client);
 
         await client.query('COMMIT');
 
         auditService.log(req.user!, 'Account Balance Adjusted', `Account: ${account.name}, Amount: ${adjustmentAmount}, Reason: ${description}`);
-        res.status(200).json({ message: 'Account balance adjusted successfully', entryId });
+        res.status(200).json({ message: 'Account balance adjusted successfully' });
     } catch (error) {
         await client.query('ROLLBACK');
         console.error('Error adjusting account balance:', error);
@@ -200,15 +167,25 @@ export const getFinancialOverview = async (req: express.Request, res: express.Re
         // not only when cash is collected. This keeps the Overview, the Reports tab, and
         // the GL in agreement. Cancelled sales are excluded (their GL postings are voided).
         const revenueQuery = `
-            SELECT COALESCE(SUM(subtotal), 0) as revenue
+            SELECT COALESCE(SUM(subtotal - COALESCE(discount, 0)), 0) as revenue
             FROM sales
             WHERE store_id = $1 AND fulfillment_status IS DISTINCT FROM 'cancelled' AND timestamp BETWEEN $2 AND $3
         `;
+        // Matching principle: sales carry full cost in their own period; returns
+        // to stock reverse cost in the period of the RETURN (same as the GL and
+        // /reports/dashboard). Write-offs (not restocked) stay in COGS.
         const cogsQuery = `
-            SELECT COALESCE(SUM(si.cost_at_sale * (si.quantity - si.returned_quantity)), 0) as cogs
+            SELECT COALESCE(SUM(si.cost_at_sale * si.quantity), 0) as cogs
             FROM sale_items si
             JOIN sales s ON si.sale_id = s.transaction_id
             WHERE s.store_id = $1 AND s.fulfillment_status IS DISTINCT FROM 'cancelled' AND s.timestamp BETWEEN $2 AND $3
+        `;
+        const cogsReversalQuery = `
+            SELECT COALESCE(SUM(si.cost_at_sale * ri.quantity), 0) as cogs_reversed
+            FROM return_items ri
+            JOIN returns r ON ri.return_id = r.id AND r.store_id = $1
+            JOIN sale_items si ON si.sale_id = r.original_sale_id AND si.product_id = ri.product_id AND si.store_id = $1
+            WHERE r.store_id = $1 AND ri.add_to_stock = true AND r.timestamp BETWEEN $2 AND $3
         `;
         const expensesQuery = `
             SELECT COALESCE(SUM(amount), 0) as expenses 
@@ -222,7 +199,7 @@ export const getFinancialOverview = async (req: express.Request, res: express.Re
         `;
 
         const [
-            invResult, arResult, apResult, scResult, glResult, revResult, cogsResult, expResult, refResult
+            invResult, arResult, apResult, scResult, glResult, revResult, cogsResult, cogsRevResult, expResult, refResult
         ] = await Promise.all([
             db.query(inventoryQuery, [storeId]),
             db.query(arQuery, [storeId]),
@@ -231,6 +208,7 @@ export const getFinancialOverview = async (req: express.Request, res: express.Re
             db.query(glBalancesQuery, [storeId]),
             db.query(revenueQuery, [storeId, start, adjustedEndDate]),
             db.query(cogsQuery, [storeId, start, adjustedEndDate]),
+            db.query(cogsReversalQuery, [storeId, start, adjustedEndDate]),
             db.query(expensesQuery, [storeId, start, adjustedEndDate]),
             db.query(refundsQuery, [storeId, start, adjustedEndDate])
         ]);
@@ -246,7 +224,7 @@ export const getFinancialOverview = async (req: express.Request, res: express.Re
         const periodGrossSales = parseFloat(revResult.rows[0].revenue);
         const periodRefunds = parseFloat(refResult.rows[0].refunds);
         const periodNetRevenue = periodGrossSales - periodRefunds;
-        const periodCogs = parseFloat(cogsResult.rows[0].cogs);
+        const periodCogs = parseFloat(cogsResult.rows[0].cogs) - parseFloat(cogsRevResult.rows[0].cogs_reversed);
         const periodExpenses = parseFloat(expResult.rows[0].expenses);
         const periodNetIncome = (periodNetRevenue - periodCogs) - periodExpenses;
 
@@ -328,24 +306,31 @@ export const createManualJournalEntry = async (req: express.Request, res: expres
         return res.status(400).json({ message: 'Debits do not equal credits.' });
     }
 
+    const client = await (db as any)._pool.connect();
     try {
-        // This should be a transaction
         const storeId = (req as any).tenant?.storeId;
         if (!storeId) return res.status(400).json({ message: 'No active store selected.' });
-        const entryId = generateId('je');
-        await db.query('INSERT INTO journal_entries (id, date, description, source_type, source_id, store_id) VALUES ($1, $2, $3, $4, $5, $6)',
-            [entryId, entryData.date, entryData.description, 'manual', null, storeId]
-        );
-        for (const line of entryData.lines) {
-            await db.query('INSERT INTO journal_entry_lines (journal_entry_id, account_id, type, amount, account_name, store_id) VALUES ($1, $2, $3, $4, $5, $6)',
-                [entryId, line.accountId, line.type, line.amount, line.accountName, storeId]
-            );
-        }
+
+        // Route through the single journal engine so the entry is balance-checked
+        // AND account balances are updated — inserting lines directly left the
+        // ledger and the account balances permanently out of sync.
+        await client.query('BEGIN');
+        const entryId = await accountingService.addJournalEntry({
+            date: entryData.date,
+            description: entryData.description,
+            source: { type: 'manual' },
+            lines: entryData.lines,
+        }, storeId, client);
+        await client.query('COMMIT');
 
         auditService.log(req.user!, 'Manual Journal Entry Created', `Description: ${entryData.description}`);
         res.status(201).json(toCamelCase({ id: entryId, ...entryData }));
     } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Error creating manual entry:', error);
         res.status(500).json({ message: 'Error creating manual entry' });
+    } finally {
+        client.release();
     }
 };
 

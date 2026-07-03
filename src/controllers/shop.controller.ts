@@ -266,9 +266,13 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
             return res.status(400).json({ message: 'No valid items in cart to checkout.' });
         }
 
-        const taxRate = 0.10; // Placeholder, should fetch from store_settings
-        const tax = subtotal * taxRate;
-        const total = subtotal + tax;
+        // Tax at the store's configured rate (was a hardcoded 10% placeholder).
+        const settingsRes = await client.query('SELECT tax_rate FROM store_settings WHERE store_id = $1', [storeId]);
+        const taxRatePct = settingsRes.rowCount ? Number(settingsRes.rows[0].tax_rate) || 0 : 0;
+        const round2 = (n: number) => Math.round(n * 100) / 100;
+        subtotal = round2(subtotal);
+        const tax = round2(subtotal * (taxRatePct / 100));
+        const total = round2(subtotal + tax);
         const transactionId = `ord_${Math.random().toString(36).substr(2, 9)}`;
         const timestamp = new Date().toISOString();
 

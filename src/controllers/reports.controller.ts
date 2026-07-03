@@ -17,41 +17,72 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             return res.status(400).json({ message: 'Store context required' });
         }
         // --- Sales Calculations ---
-        // --- Sales Calculations ---
+        // Basis: ACCRUAL, matching the general ledger and /accounting/summary —
+        // revenue is recognised when the sale occurs (all non-cancelled sales),
+        // NET of order-level discounts and excluding sales tax. Cancelled sales
+        // are excluded because their GL postings are voided and stock restored.
+        const saleFilter = `s.fulfillment_status IS DISTINCT FROM 'cancelled'`;
+        // Base params for period queries; the optional channel filter is appended
+        // as a bound parameter ($4) — never interpolated (SQL injection).
+        const periodParams: any[] = [startDate, adjustedEndDate, storeId];
+        const channelParams = channel ? [...periodParams, channel] : periodParams;
+        const channelClause = (alias: string) => channel ? `AND ${alias}.channel = $4 ` : '';
+
         // 1. Gross Sales & Transactions (Directly from sales table to avoid join duplication)
         const grossSalesQuery = `
             SELECT
-                COALESCE(SUM(subtotal), 0) AS "grossRevenue",
-                COUNT(transaction_id) AS "totalTransactions"
-            FROM sales
-            WHERE timestamp BETWEEN $1 AND $2 AND payment_status = 'paid' AND store_id = $3
-            ${channel ? `AND channel = '${channel}' ` : ''};
+                COALESCE(SUM(s.subtotal - COALESCE(s.discount, 0)), 0) AS "grossRevenue",
+                COUNT(s.transaction_id) AS "totalTransactions"
+            FROM sales s
+            WHERE s.timestamp BETWEEN $1 AND $2 AND ${saleFilter} AND s.store_id = $3
+            ${channelClause('s')};
         `;
-        const grossSalesResult = await db.query(grossSalesQuery, [startDate, adjustedEndDate, storeId]);
+        const grossSalesResult = await db.query(grossSalesQuery, channelParams);
 
-        // 2. COGS (From items)
+        // 2. COGS — matching principle: sales in the period carry their FULL cost
+        // (dated by sale), and returns-to-stock reverse cost in the period the
+        // RETURN happened (dated by return). Netting returned_quantity against the
+        // sale period rewrote history: a March report changed when an April return
+        // arrived, and no cost relief ever showed in April. Mirrors the GL, which
+        // reverses COGS only for items restocked (write-offs stay in COGS).
         const cogsQuery = `
             SELECT
-                COALESCE(SUM(si.cost_at_sale * (si.quantity - si.returned_quantity)), 0) AS "totalCogs"
+                COALESCE(SUM(si.cost_at_sale * si.quantity), 0) AS "totalCogs"
             FROM sale_items si
             JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
-            WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND si.store_id = $3
-                ${channel ? `AND s.channel = '${channel}' ` : ''};
+            WHERE s.timestamp BETWEEN $1 AND $2 AND ${saleFilter} AND si.store_id = $3
+                ${channelClause('s')};
         `;
-        const cogsResult = await db.query(cogsQuery, [startDate, adjustedEndDate, storeId]);
+        const cogsResult = await db.query(cogsQuery, channelParams);
 
-        // 3. Refunds (From returns table)
+        const cogsReversalQuery = `
+            SELECT
+                COALESCE(SUM(si.cost_at_sale * ri.quantity), 0) AS "cogsReversed"
+            FROM return_items ri
+            JOIN returns r ON ri.return_id = r.id AND r.store_id = $3
+            JOIN sales s ON r.original_sale_id = s.transaction_id AND s.store_id = $3
+            JOIN sale_items si ON si.sale_id = r.original_sale_id AND si.product_id = ri.product_id AND si.store_id = $3
+            WHERE r.timestamp BETWEEN $1 AND $2 AND ri.add_to_stock = true AND ri.store_id = $3
+                ${channelClause('s')};
+        `;
+        const cogsReversalResult = await db.query(cogsReversalQuery, channelParams);
+
+        // 3. Refunds (From returns table; joined to the original sale so a channel
+        // filter applies consistently to refunds too)
         const refundsQuery = `
             SELECT
-                COALESCE(SUM(subtotal_amount), 0) AS "totalRefunds"
-            FROM returns
-            WHERE timestamp BETWEEN $1 AND $2 AND store_id = $3;
+                COALESCE(SUM(r.subtotal_amount), 0) AS "totalRefunds"
+            FROM returns r
+            JOIN sales s ON r.original_sale_id = s.transaction_id AND s.store_id = r.store_id
+            WHERE r.timestamp BETWEEN $1 AND $2 AND r.store_id = $3
+            ${channelClause('s')};
         `;
-        const refundsResult = await db.query(refundsQuery, [startDate, adjustedEndDate, storeId]);
+        const refundsResult = await db.query(refundsQuery, channelParams);
 
         const grossRevenue = parseFloat(grossSalesResult.rows[0]?.grossRevenue || 0);
         const totalTransactions = parseInt(grossSalesResult.rows[0]?.totalTransactions || 0, 10);
-        const totalCogs = parseFloat(cogsResult.rows[0]?.totalCogs || 0);
+        const cogsReversed = parseFloat(cogsReversalResult.rows[0]?.cogsReversed || 0);
+        const totalCogs = parseFloat(cogsResult.rows[0]?.totalCogs || 0) - cogsReversed;
         const totalRefunds = parseFloat(refundsResult.rows[0]?.totalRefunds || 0);
 
         const netRevenue = grossRevenue - totalRefunds;
@@ -93,45 +124,61 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         };
 
         // --- Sales Trend ---
-        // --- Sales Trend ---
         // 1. Daily Gross Sales
         const trendGrossQuery = `
             SELECT
-                DATE(timestamp)::text as date,
-                COALESCE(SUM(subtotal), 0) as gross_revenue
-            FROM sales
-            WHERE timestamp BETWEEN $1 AND $2 AND payment_status = 'paid' AND store_id = $3
-            ${channel ? `AND channel = '${channel}' ` : ''}
-            GROUP BY DATE(timestamp)
-            ORDER BY date ASC;
-        `;
-        const trendGrossResult = await db.query(trendGrossQuery, [startDate, adjustedEndDate, storeId]);
-
-        // 2. Daily COGS
-        const trendCogsQuery = `
-            SELECT
                 DATE(s.timestamp)::text as date,
-                COALESCE(SUM(si.cost_at_sale * (si.quantity - si.returned_quantity)), 0) as cogs
-            FROM sale_items si
-            JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
-            WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND si.store_id = $3
-                ${channel ? `AND s.channel = '${channel}' ` : ''}
+                COALESCE(SUM(s.subtotal - COALESCE(s.discount, 0)), 0) as gross_revenue
+            FROM sales s
+            WHERE s.timestamp BETWEEN $1 AND $2 AND ${saleFilter} AND s.store_id = $3
+            ${channelClause('s')}
             GROUP BY DATE(s.timestamp)
             ORDER BY date ASC;
         `;
-        const trendCogsResult = await db.query(trendCogsQuery, [startDate, adjustedEndDate, storeId]);
+        const trendGrossResult = await db.query(trendGrossQuery, channelParams);
+
+        // 2. Daily COGS (full cost by sale date; restock reversals by return date)
+        const trendCogsQuery = `
+            SELECT
+                DATE(s.timestamp)::text as date,
+                COALESCE(SUM(si.cost_at_sale * si.quantity), 0) as cogs
+            FROM sale_items si
+            JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
+            WHERE s.timestamp BETWEEN $1 AND $2 AND ${saleFilter} AND si.store_id = $3
+                ${channelClause('s')}
+            GROUP BY DATE(s.timestamp)
+            ORDER BY date ASC;
+        `;
+        const trendCogsResult = await db.query(trendCogsQuery, channelParams);
+
+        const trendCogsReversalQuery = `
+            SELECT
+                DATE(r.timestamp)::text as date,
+                COALESCE(SUM(si.cost_at_sale * ri.quantity), 0) as cogs_reversed
+            FROM return_items ri
+            JOIN returns r ON ri.return_id = r.id AND r.store_id = $3
+            JOIN sales s ON r.original_sale_id = s.transaction_id AND s.store_id = $3
+            JOIN sale_items si ON si.sale_id = r.original_sale_id AND si.product_id = ri.product_id AND si.store_id = $3
+            WHERE r.timestamp BETWEEN $1 AND $2 AND ri.add_to_stock = true AND ri.store_id = $3
+                ${channelClause('s')}
+            GROUP BY DATE(r.timestamp)
+            ORDER BY date ASC;
+        `;
+        const trendCogsReversalResult = await db.query(trendCogsReversalQuery, channelParams);
 
         // 3. Daily Refunds
         const trendRefundsQuery = `
             SELECT
-                DATE(timestamp)::text as date,
-                COALESCE(SUM(subtotal_amount), 0) as refunds
-            FROM returns
-            WHERE timestamp BETWEEN $1 AND $2 AND store_id = $3
-            GROUP BY DATE(timestamp)
+                DATE(r.timestamp)::text as date,
+                COALESCE(SUM(r.subtotal_amount), 0) as refunds
+            FROM returns r
+            JOIN sales s ON r.original_sale_id = s.transaction_id AND s.store_id = r.store_id
+            WHERE r.timestamp BETWEEN $1 AND $2 AND r.store_id = $3
+            ${channelClause('s')}
+            GROUP BY DATE(r.timestamp)
             ORDER BY date ASC;
         `;
-        const trendRefundsResult = await db.query(trendRefundsQuery, [startDate, adjustedEndDate, storeId]);
+        const trendRefundsResult = await db.query(trendRefundsQuery, channelParams);
 
         // 4. Daily Expenses
         const trendExpensesQuery = `
@@ -179,6 +226,14 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             entry.netIncome -= cogs;
         });
 
+        // Add back COGS reversed by returns-to-stock on the day of the return
+        trendCogsReversalResult.rows.forEach(row => {
+            const entry = getOrInit(row.date);
+            const reversed = parseFloat(row.cogs_reversed);
+            entry.grossProfit += reversed;
+            entry.netIncome += reversed;
+        });
+
         // Subtract Expenses from Net Income only
         trendExpensesResult.rows.forEach(row => {
             const entry = getOrInit(row.date);
@@ -200,14 +255,14 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             FROM sale_items si
                      JOIN products p ON si.product_id = p.id AND p.store_id = $3
                      JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
-            WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3 AND si.store_id = $3
-                ${channel ? `AND s.channel = '${channel}' ` : ''}
+            WHERE s.timestamp BETWEEN $1 AND $2 AND ${saleFilter} AND s.store_id = $3 AND si.store_id = $3
+                ${channelClause('s')}
             GROUP BY p.name
             HAVING SUM(si.quantity - si.returned_quantity) > 0
             ORDER BY revenue DESC
             LIMIT 10;
         `;
-        const topProductsRevenueResult = await db.query(topProductsRevenueQuery, [startDate, adjustedEndDate, storeId]);
+        const topProductsRevenueResult = await db.query(topProductsRevenueQuery, channelParams);
 
         // --- Top Products by Quantity ---
         const topProductsQuantityQuery = `
@@ -215,14 +270,14 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             FROM sale_items si
                      JOIN products p ON si.product_id = p.id AND p.store_id = $3
                      JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
-            WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3 AND si.store_id = $3
-                ${channel ? `AND s.channel = '${channel}' ` : ''}
+            WHERE s.timestamp BETWEEN $1 AND $2 AND ${saleFilter} AND s.store_id = $3 AND si.store_id = $3
+                ${channelClause('s')}
             GROUP BY p.name
             HAVING SUM(si.quantity - si.returned_quantity) > 0
             ORDER BY quantity DESC
             LIMIT 10;
         `;
-        const topProductsQuantityResult = await db.query(topProductsQuantityQuery, [startDate, adjustedEndDate, storeId]);
+        const topProductsQuantityResult = await db.query(topProductsQuantityQuery, channelParams);
 
         // --- Sales by Category ---
         const salesByCategoryQuery = `
@@ -231,25 +286,27 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
                      JOIN products p ON si.product_id = p.id AND p.store_id = $3
                      JOIN categories c ON p.category_id = c.id AND c.store_id = $3
                      JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
-            WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3 AND si.store_id = $3
-                ${channel ? `AND s.channel = '${channel}' ` : ''}
+            WHERE s.timestamp BETWEEN $1 AND $2 AND ${saleFilter} AND s.store_id = $3 AND si.store_id = $3
+                ${channelClause('s')}
             GROUP BY c.name
             HAVING SUM(si.quantity - si.returned_quantity) > 0
             ORDER BY revenue DESC;
         `;
-        const salesByCategoryResult = await db.query(salesByCategoryQuery, [startDate, adjustedEndDate, storeId]);
+        const salesByCategoryResult = await db.query(salesByCategoryQuery, channelParams);
 
         // --- Cashflow from Journal Entries ---
+        // Cash means CASH only. Accounts receivable is not cash — counting AR debits
+        // as "inflow" booked credit sales as cash received before any money moved.
         const cashflowQuery = `
         SELECT
         DATE(je.date):: text as date,
-            SUM(CASE WHEN jel.type = 'debit' AND a.type = 'asset' THEN jel.amount ELSE 0 END) as inflow,
-            SUM(CASE WHEN jel.type = 'credit' AND a.type = 'asset' THEN jel.amount ELSE 0 END) as outflow
+            SUM(CASE WHEN jel.type = 'debit' THEN jel.amount ELSE 0 END) as inflow,
+            SUM(CASE WHEN jel.type = 'credit' THEN jel.amount ELSE 0 END) as outflow
             FROM journal_entries je
                      JOIN journal_entry_lines jel ON je.id = jel.journal_entry_id
                      JOIN accounts a ON jel.account_id = a.id
-            WHERE je.date BETWEEN $1 AND $2 
-              AND a.sub_type IN('cash', 'accounts_receivable')
+            WHERE je.date BETWEEN $1 AND $2
+              AND a.sub_type = 'cash'
               AND je.store_id = $3
             GROUP BY DATE(je.date)
             ORDER BY date ASC;
@@ -269,9 +326,9 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             WHERE je.store_id = $3
               AND je.date BETWEEN $1 AND $2
               AND jel_source.type = 'credit'
-              AND a_source.sub_type IN('cash', 'accounts_receivable')
+              AND a_source.sub_type = 'cash'
               AND jel_dest.type = 'debit'
-              AND a_dest.sub_type NOT IN('cash', 'accounts_receivable')
+              AND a_dest.sub_type IS DISTINCT FROM 'cash'
             GROUP BY a_dest.name
             ORDER BY amount DESC;
         `;
@@ -349,11 +406,13 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         const newCustomers = newCustomersResult.rows[0] ? parseInt(newCustomersResult.rows[0].newCustomers, 10) : 0;
 
         // --- Sales by Channel ---
+        // Same basis as totalRevenue (net-of-discount, ex-tax subtotal) so channel
+        // shares sum to the headline figure instead of a tax-inclusive total.
         const salesByChannelQuery = `
-            SELECT channel, SUM(total) as revenue, COUNT(*) as count
-            FROM sales
-            WHERE timestamp BETWEEN $1 AND $2 AND payment_status = 'paid' AND store_id = $3
-            GROUP BY channel;
+            SELECT s.channel, SUM(s.subtotal - COALESCE(s.discount, 0)) as revenue, COUNT(*) as count
+            FROM sales s
+            WHERE s.timestamp BETWEEN $1 AND $2 AND ${saleFilter} AND s.store_id = $3
+            GROUP BY s.channel;
         `;
         const salesByChannelResult = await db.query(salesByChannelQuery, [startDate, adjustedEndDate, storeId]);
 
@@ -462,7 +521,7 @@ export const getDailySalesWithProducts = async (req: express.Request, res: expre
             FROM sale_items si
             JOIN products p ON si.product_id = p.id AND p.store_id = $3
             JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
-            WHERE s.timestamp BETWEEN $1 AND $2 AND s.payment_status = 'paid' AND s.store_id = $3 AND si.store_id = $3
+            WHERE s.timestamp BETWEEN $1 AND $2 AND s.fulfillment_status IS DISTINCT FROM 'cancelled' AND s.store_id = $3 AND si.store_id = $3
             GROUP BY DATE(s.timestamp), p.name
             HAVING SUM(si.quantity - si.returned_quantity) > 0
             ORDER BY DATE(s.timestamp) ASC, revenue DESC;

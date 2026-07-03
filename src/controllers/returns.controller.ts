@@ -48,6 +48,36 @@ export const createReturn = async (req: express.Request, res: express.Response) 
         }
         const originalSale = toCamelCase(saleResult.rows[0]);
 
+        // 0. Validate against the original sale — a return can never exceed what
+        // was sold (per line) or refund more than has been charged (cumulatively).
+        const saleItemsResult = await client.query(
+            'SELECT product_id, quantity, returned_quantity FROM sale_items WHERE sale_id = $1 AND store_id = $2',
+            [originalSaleId, storeId]
+        );
+        const saleItemMap = new Map<string, any>(saleItemsResult.rows.map((r: any) => [r.product_id, r]));
+        for (const item of returnedItems) {
+            const si = saleItemMap.get(item.productId);
+            const remainingQty = si ? Number(si.quantity) - Number(si.returned_quantity) : 0;
+            if (!si || !(Number(item.quantity) > 0) || Number(item.quantity) > remainingQty + 0.0001) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({
+                    message: `Cannot return ${item.quantity} × ${item.productName || item.productId}: only ${Math.max(0, remainingQty)} eligible for return on this sale.`
+                });
+            }
+        }
+        const priorRefundsResult = await client.query(
+            'SELECT COALESCE(SUM(refund_amount), 0) as refunded FROM returns WHERE original_sale_id = $1 AND store_id = $2',
+            [originalSaleId, storeId]
+        );
+        const alreadyRefunded = Number(priorRefundsResult.rows[0]?.refunded || 0);
+        const refundable = Number(originalSale.total) - alreadyRefunded;
+        if (!(Number(refundAmount) >= 0) || Number(refundAmount) > refundable + 0.01) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+                message: `Refund of ${Number(refundAmount).toFixed(2)} exceeds the refundable balance of ${Math.max(0, refundable).toFixed(2)} for this sale.`
+            });
+        }
+
         // 1. Create the return record
         const taxRatio = originalSale.total > 0 ? (Number(originalSale.tax) / Number(originalSale.total)) : 0;
         const refundTax = refundAmount * taxRatio;
