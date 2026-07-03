@@ -41,6 +41,18 @@ export const createPurchaseOrder = async (req: express.Request, res: express.Res
         if (!storeId) {
             return res.status(400).json({ message: 'Store context required' });
         }
+
+        // A purchase order requires a valid supplier (supplier_id is NOT NULL with a
+        // foreign key). Validate up-front so a missing/unknown supplier returns a
+        // clear 400 instead of surfacing as an opaque database error.
+        if (!poData.supplierId) {
+            return res.status(400).json({ message: 'A supplier is required to create a purchase order.' });
+        }
+        const supplierCheck = await db.query('SELECT id FROM suppliers WHERE id = $1 AND store_id = $2', [poData.supplierId, storeId]);
+        if (supplierCheck.rowCount === 0) {
+            return res.status(400).json({ message: 'Selected supplier was not found for this store.' });
+        }
+
         await client.query('BEGIN');
 
         const poResult = await client.query(
