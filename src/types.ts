@@ -270,7 +270,7 @@ export interface Account {
   number: string; // e.g., '1010'
   type: AccountType;
   // Special sub-type for automatic transaction mapping
-  subType?: 'cash' | 'accounts_receivable' | 'inventory' | 'accounts_payable' | 'gr_ir' | 'sales_tax_payable' | 'sales_revenue' | 'cogs' | 'store_credit_payable' | 'inventory_adjustment';
+  subType?: 'cash' | 'accounts_receivable' | 'inventory' | 'accounts_payable' | 'gr_ir' | 'sales_tax_payable' | 'sales_revenue' | 'cogs' | 'store_credit_payable' | 'inventory_adjustment' | 'owner_drawings';
   balance: number;
   isDebitNormal: boolean; // true for assets, expenses. false for liability, equity, revenue
   description: string;

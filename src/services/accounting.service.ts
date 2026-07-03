@@ -17,6 +17,7 @@ const ensureCoreAccounts = async (storeId: string, client?: DBClient) => {
         { number: '2200', name: 'Sales Tax Payable', type: 'liability', sub: 'sales_tax_payable', debit: false, desc: 'Sales tax collected, to be remitted to the government.' },
         { number: '2300', name: 'Store Credit Payable', type: 'liability', sub: 'store_credit_payable', debit: false, desc: 'Total outstanding store credit owed to customers.' },
         { number: '3010', name: "Owner's Equity", type: 'equity', sub: undefined as any, debit: false, desc: 'Initial investment and retained earnings.' },
+        { number: '3020', name: "Owner's Drawings", type: 'equity', sub: 'owner_drawings', debit: true, desc: 'Goods and cash withdrawn from the business for personal use.' },
         { number: '4010', name: 'Sales Revenue', type: 'revenue', sub: 'sales_revenue', debit: false, desc: 'Default account for revenue from sales.' },
         { number: '5010', name: 'Cost of Goods Sold', type: 'expense', sub: 'cogs', debit: true, desc: 'Default account for the cost of goods sold.' },
         { number: '6010', name: 'Rent Expense', type: 'expense', sub: undefined as any, debit: true, desc: 'Monthly rent for the store premises.' },
@@ -334,11 +335,33 @@ const voidSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) =>
     }, storeId, dbClient);
 };
 
+/**
+ * Standard double-entry treatment per adjustment reason:
+ *  - "Receiving Stock" (purchase outside the PO receive flow):
+ *      Dr Inventory / Cr Goods Received Not Invoiced — capitalises the goods and
+ *      parks the payable in GR/IR (same treatment as PO reception), instead of
+ *      crediting an expense account, which misstated the P&L.
+ *  - "Personal Use": Dr Owner's Drawings (equity) / Cr Inventory — withdrawals
+ *      by the owner are not a business expense.
+ *  - Everything else (Stock Count, Damaged Goods, Theft, Return, Other):
+ *      shrinkage/write-off — losses Dr Inventory Adjustment Expense / Cr Inventory;
+ *      found stock reverses (Dr Inventory / Cr the expense as a recovery).
+ */
+const offsetSubTypeForAdjustment = (reason: string): Account['subType'] => {
+    if (reason === 'Receiving Stock') return 'gr_ir';
+    if (reason === 'Personal Use') return 'owner_drawings';
+    return 'inventory_adjustment';
+};
+
 const recordStockAdjustment = async (product: Product, oldQuantity: number, reason: string, client?: DBClient, storeIdParam?: string) => {
-    const quantityChange = product.stock - oldQuantity;
+    const quantityChange = Number(product.stock) - Number(oldQuantity);
     if (quantityChange === 0) return;
 
-    const costOfChange = quantityChange * (product.costPrice || 0);
+    // Callers pass either a normalized Product (costPrice) or a raw DB row
+    // (cost_price) — read both, otherwise the cost silently resolves to 0 and
+    // the adjustment never reaches the books.
+    const unitCost = Number((product as any).costPrice ?? (product as any).cost_price) || 0;
+    const costOfChange = quantityChange * unitCost;
     if (Math.abs(costOfChange) < 0.01) return;
 
     const storeId = storeIdParam || (product as any).store_id;
@@ -347,7 +370,39 @@ const recordStockAdjustment = async (product: Product, oldQuantity: number, reas
         return;
     }
 
-    await recordConsolidatedStockAdjustment(costOfChange, `Inventory adjustment for ${product.name}. Reason: ${reason}.`, client, storeId);
+    const dbClient = client || db;
+    await ensureCoreAccounts(storeId, dbClient);
+
+    const inventoryAccount = await findAccount('inventory', storeId, dbClient);
+    const offsetAccount = await findAccount(offsetSubTypeForAdjustment(reason), storeId, dbClient)
+        // Fall back to the generic adjustment account so the entry always posts balanced.
+        || await findAccount('inventory_adjustment', storeId, dbClient);
+
+    if (!inventoryAccount || !offsetAccount) {
+        console.error('Accounting Error: Core accounts for stock adjustments are not configured for store', storeId);
+        return;
+    }
+
+    const increase = costOfChange > 0;
+    await addJournalEntry({
+        date: new Date().toISOString(),
+        description: `Inventory adjustment for ${product.name}. Reason: ${reason}.`,
+        source: { type: 'manual' },
+        lines: [
+            {
+                accountId: inventoryAccount.id,
+                accountName: inventoryAccount.name,
+                type: increase ? 'debit' : 'credit',
+                amount: Math.abs(costOfChange)
+            },
+            {
+                accountId: offsetAccount.id,
+                accountName: offsetAccount.name,
+                type: increase ? 'credit' : 'debit',
+                amount: Math.abs(costOfChange)
+            }
+        ]
+    }, storeId, dbClient);
 };
 
 const recordConsolidatedStockAdjustment = async (totalAdjustmentCost: number, description: string, client?: DBClient, storeId?: string) => {

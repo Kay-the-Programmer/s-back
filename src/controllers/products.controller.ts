@@ -449,7 +449,11 @@ export const updateProduct = async (req: express.Request, res: express.Response)
             pick(supplier_id, currentRow.supplier_id),
             pick(price, currentRow.price, (v) => parseFloat(v.toString())),
             pick(cost_price, currentRow.cost_price, (v) => parseFloat(v.toString())),
-            pick(stock, currentRow.stock, (v) => parseFloat(v.toString())),
+            // Stock is deliberately NOT editable here. Once a product exists, its
+            // stock only moves through the audited flows: the Adjust Stock modal
+            // (PATCH /:id/stock), PO receiving, sales, returns and stock takes —
+            // each of which posts the matching journal entry.
+            currentRow.stock,
             pick(
                 unit_of_measure,
                 currentRow.unit_of_measure || 'unit',

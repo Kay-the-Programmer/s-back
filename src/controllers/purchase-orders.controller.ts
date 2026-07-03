@@ -52,7 +52,9 @@ export const createPurchaseOrder = async (req: express.Request, res: express.Res
         for (const item of items) {
             await client.query(
                 'INSERT INTO purchase_order_items (po_id, product_id, product_name, sku, quantity, cost_price, received_quantity, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-                [id, item.productId, item.productName, item.sku, item.quantity, item.costPrice, 0, storeId]
+                // Honor pre-received quantities (e.g. a PO recorded after the goods
+                // already arrived via the "Receiving Stock" quick flow).
+                [id, item.productId, item.productName, item.sku, item.quantity, item.costPrice, item.receivedQuantity || 0, storeId]
             );
         }
 
