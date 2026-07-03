@@ -9,7 +9,16 @@ import { authorize, requirePermission, roleHasPermission, Role } from '../auth/r
 export { authorize, requirePermission, requireAnyPermission, roleHasPermission, ROLE_PERMISSIONS, permissionsForRole } from '../auth/rbac';
 export type { Role, Permission } from '../auth/rbac';
 
+// In production a missing JWT_SECRET must be a hard failure: falling back to a
+// publicly-known string would make every auth token forgeable.
+if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
+    throw new Error('FATAL: JWT_SECRET must be set in production.');
+}
 const JWT_SECRET = process.env.JWT_SECRET || 'CHANGE_ME_DEV_ONLY';
+
+// Per-request auth logging is opt-in (AUTH_DEBUG=true): it floods production
+// logs (2 lines × every request × every polling client) and leaks token prefixes.
+const AUTH_DEBUG = process.env.AUTH_DEBUG === 'true';
 
 // Simple in-memory cache for user records to reduce per-request DB lookups
 // Keyed by user id, with a short TTL to balance freshness and performance
@@ -25,12 +34,12 @@ export const protect = async (req: express.Request, res: express.Response, next:
     const authHeader = req.headers.authorization;
     const url = req.originalUrl || req.url;
     
-    console.log(`[auth] Request to ${url} | Auth header: ${authHeader ? 'present' : 'missing'}`);
+    if (AUTH_DEBUG) console.log(`[auth] Request to ${url} | Auth header: ${authHeader ? 'present' : 'missing'}`);
 
     if (authHeader && authHeader.startsWith('Bearer')) {
         try {
             token = authHeader.split(' ')[1];
-            console.log(`[auth] Token found: ${token.substring(0, 10)}...`);
+            if (AUTH_DEBUG) console.log(`[auth] Token found: ${token.substring(0, 10)}...`);
             const decoded = jwt.verify(token, JWT_SECRET) as { id: string };
 
             // Try cache first unless this is an explicit freshness-critical endpoint (e.g., /api/auth/me)

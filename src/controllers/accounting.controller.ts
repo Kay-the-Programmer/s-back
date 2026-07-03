@@ -292,6 +292,7 @@ export const getJournalEntries = async (req: express.Request, res: express.Respo
             WHERE je.store_id = $1
             GROUP BY je.id, je.date
             ORDER BY je.date DESC
+            LIMIT 1000
         `, [storeId]);
         res.status(200).json(toCamelCase(result.rows));
     } catch (error) {

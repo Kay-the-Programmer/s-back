@@ -95,6 +95,12 @@ export const getSales = async (req: express.Request, res: express.Response) => {
             const limit = limitNum!;
             const offset = (page - 1) * limit;
             selectQuery += ` LIMIT ${limit} OFFSET ${offset}`;
+        } else {
+            // Safety ceiling: without it this endpoint returned EVERY sale (with
+            // carts and payments) — an unbounded payload that grows forever. The
+            // newest 1000 sales cover all UI needs; period totals come from the
+            // aggregate endpoints (/reports/dashboard, /accounting/summary).
+            selectQuery += ' LIMIT 1000';
         }
 
         const result = await db.query(selectQuery, params);

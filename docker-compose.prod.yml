@@ -5,6 +5,15 @@
 #   - Set POSTGRES_PASSWORD and API_DOMAIN in .env (see .env.production.example).
 #
 #   docker compose -f docker-compose.prod.yml up -d --build
+
+# Bounded container logs — without this the json-file driver grows without
+# limit and eventually fills the VM disk.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   s-back-db:
     image: postgres:15-alpine
@@ -21,6 +30,7 @@ services:
       timeout: 5s
       retries: 10
     restart: unless-stopped
+    logging: *default-logging
 
   s-back:
     build:
@@ -43,6 +53,7 @@ services:
       s-back-db:
         condition: service_healthy
     restart: unless-stopped
+    logging: *default-logging
 
   caddy:
     image: caddy:2-alpine
@@ -59,6 +70,7 @@ services:
     depends_on:
       - s-back
     restart: unless-stopped
+    logging: *default-logging
 
 volumes:
   postgres_data:

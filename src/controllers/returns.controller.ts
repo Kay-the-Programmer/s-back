@@ -18,6 +18,7 @@ export const getReturns = async (req: express.Request, res: express.Response) =>
             WHERE r.store_id = $1
             GROUP BY r.id, r.timestamp
             ORDER BY r.timestamp DESC
+            LIMIT 500
         `, [storeId]);
         res.status(200).json(toCamelCase(result.rows));
     } catch (error) {

@@ -109,13 +109,21 @@ async function initializeDatabase() {
         const superAdminEmail = process.env.SUPERADMIN_EMAIL || 'superadmin@sale-pilot.com';
         const superAdminCheck = await client.query('SELECT 1 FROM users WHERE email = $1', [superAdminEmail]);
         if (superAdminCheck.rowCount === 0) {
+            // In production the password MUST come from the environment — seeding a
+            // well-known default would hand over the platform control plane.
+            const superAdminPassword = process.env.SUPERADMIN_PASSWORD
+                || (process.env.NODE_ENV !== 'production' ? 'password' : null);
+            if (!superAdminPassword) {
+                throw new Error('FATAL: SUPERADMIN_PASSWORD must be set in production to seed the superadmin user.');
+            }
             const salt2 = await bcrypt.genSalt(10);
-            const passwordHash2 = await bcrypt.hash(process.env.SUPERADMIN_PASSWORD || 'password', salt2);
+            const passwordHash2 = await bcrypt.hash(superAdminPassword, salt2);
             await client.query(
                 'INSERT INTO users (id, name, email, password_hash, role) VALUES ($1, $2, $3, $4, $5)',
                 ['user_superadmin_default', 'Super Admin', superAdminEmail, passwordHash2, 'superadmin']
             );
-            console.log(`✅ Superadmin user created (${superAdminEmail} / ${process.env.SUPERADMIN_PASSWORD || 'password'})`);
+            // Never log the password — container logs persist and are readable.
+            console.log(`✅ Superadmin user created (${superAdminEmail})`);
         }
         await client.query('COMMIT');
 

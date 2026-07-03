@@ -2,6 +2,9 @@ import dotenv from 'dotenv';
 dotenv.config();
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import compression from 'compression';
+import rateLimit from 'express-rate-limit';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import apiRoutes from './api';
@@ -15,25 +18,46 @@ import SocketService from './services/socket.service';
 import './firebase';
 import swaggerUi from 'swagger-ui-express';
 import swaggerSpec from './swagger';
+import db from './db_client';
 
 const app = express();
 const port = process.env.PORT || 5000;
+const isProduction = process.env.NODE_ENV === 'production';
+
+// Behind Caddy (prod) / any reverse proxy: trust the first X-Forwarded-For hop
+// so req.ip is the real client — required for per-IP rate limiting to work
+// (otherwise every request appears to come from the proxy container).
+app.set('trust proxy', 1);
+
+// --- Security headers & response compression ---
+app.use(helmet({
+  // This server is a JSON API; CSP is for HTML documents and would only
+  // interfere with the (non-production) Swagger UI.
+  contentSecurityPolicy: false,
+  // /uploads images are embedded by the frontend on a DIFFERENT origin
+  // (Vercel/salepilot.space) — the default same-origin policy would block them.
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
+app.use(compression());
 
 // --- Middleware ---
-// Configure CORS with specific options suitable for Vercel/Render
+// Configure CORS. In production only the real app origins are allowed; the
+// broad dev conveniences (any localhost port, any *.vercel.app preview) are
+// enabled outside production or explicitly via CORS_ALLOW_DEV_ORIGINS=true.
+const devOrigins: (string | RegExp)[] = [
+  /https?:\/\/.+\.vercel\.app$/,
+  /https?:\/\/.+\.onrender\.com$/,
+  // Any localhost port — local dev servers (vite picks 5173/5180/5191/…)
+  /^https?:\/\/localhost(:\d+)?$/,
+  'http://localhost',
+  'https://localhost',
+];
 const allowedOrigins: (string | RegExp)[] = [
   process.env.FRONTEND_URL || '',
   'https://salepilot-scope.vercel.app',
-  /https?:\/\/.+\.vercel\.app$/,
-  /https?:\/\/.+\.onrender\.com$/,
   'https://www.salepilot.space',
   'https://salepilot.space',
-  // Any localhost port — local dev servers (vite picks 5173/5180/5191/…)
-  /^https?:\/\/localhost(:\d+)?$/,
-  'http://localhost:5173',
-  'http://localhost:3000',
-  'http://localhost',
-  'https://localhost',
+  ...((!isProduction || process.env.CORS_ALLOW_DEV_ORIGINS === 'true') ? devOrigins : []),
 ].filter(Boolean) as (string | RegExp)[];
 
 
@@ -70,11 +94,38 @@ app.use(cors(corsOptions));
 app.options('*', cors(corsOptions)); // Handle preflight
 // Capture the raw request body so webhook handlers can verify signatures
 // (e.g. WhatsApp's X-Hub-Signature-256 must be computed over the exact bytes).
+// 5mb is ample for JSON payloads — image uploads go through multer (multipart),
+// not this parser, and an oversized limit is a memory-DoS lever.
 app.use(express.json({
-    limit: '50mb',
+    limit: '5mb',
     verify: (req, _res, buf) => { (req as any).rawBody = buf; },
 }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '5mb' }));
+
+// --- Rate limiting ---
+// Strict limiter on credential endpoints (login brute-force protection).
+// Successful logins don't count toward the limit, so a shared shop IP where
+// several staff sign in each morning isn't throttled.
+const authLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 30,
+  skipSuccessfulRequests: true,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { message: 'Too many attempts. Please try again in a few minutes.' },
+});
+for (const p of ['/api/auth/login', '/api/auth/register', '/api/auth/google', '/api/auth/forgot-password', '/api/auth/reset-password']) {
+  app.use(p, authLimiter);
+}
+// Generous global limiter — a ceiling against runaway clients/scrapers, far
+// above what the app generates (30s notification polling ≈ 10 req/5min/tab).
+app.use('/api', rateLimit({
+  windowMs: 5 * 60 * 1000,
+  limit: 1500,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { message: 'Too many requests. Please slow down.' },
+}));
 
 // Dedupe retried writes (offline-queue replays) by X-Idempotency-Key before
 // they reach the route handlers. No-op for requests without the header.
@@ -83,7 +134,11 @@ app.use('/api', idempotency);
 app.use('/api', apiRoutes);
 
 // --- Swagger Documentation ---
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+// Never expose the full API map on the public internet: available in
+// non-production, or in production only when ENABLE_API_DOCS=true is set.
+if (!isProduction || process.env.ENABLE_API_DOCS === 'true') {
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+}
 
 // --- Basic Route ---
 app.get('/', (req: express.Request, res: express.Response) => {
@@ -181,5 +236,27 @@ const startServer = async () => {
     process.exit(1);
   }
 };
+
+// Graceful shutdown: stop accepting connections, let in-flight requests finish,
+// then close DB connections — so `docker stop` / deploys don't sever requests
+// mid-flight (Docker sends SIGTERM, then SIGKILL after the grace period).
+let shuttingDown = false;
+const shutdown = (signal: string) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[server] ${signal} received — draining connections…`);
+  httpServer.close(() => {
+    db._pool.end()
+      .catch((err: unknown) => console.error('[server] pool close error:', err))
+      .finally(() => {
+        console.log('[server] shutdown complete');
+        process.exit(0);
+      });
+  });
+  // Hard exit if draining takes longer than Docker's default 10s grace period.
+  setTimeout(() => { console.error('[server] drain timeout — forcing exit'); process.exit(1); }, 9000).unref();
+};
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 startServer();

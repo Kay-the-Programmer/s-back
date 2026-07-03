@@ -7,10 +7,10 @@ export const getStoreNotifications = async (req: express.Request, res: express.R
     const userId = req.user?.id;
     const currentStoreId = req.user?.currentStoreId;
 
-    console.log(`[notifications] Fetching for storeId: ${storeId} | userId: ${userId} | currentStoreId: ${currentStoreId}`);
+    // No per-fetch logging here: this endpoint is polled every 30s by every
+    // client and was the single largest source of production log noise.
 
     if (!userId) {
-        console.log('[notifications] 401: No userId');
         return res.status(401).json({ 
             message: 'User not authenticated',
             code: 'USER_NOT_FOUND_IN_REQUEST'

@@ -21,6 +21,12 @@ const pool = new Pool({
     ssl: useSsl ? { rejectUnauthorized: false } : undefined,
 });
 
+// A dropped/errored idle client emits 'error' on the pool; without a handler
+// Node treats it as an uncaught exception and crashes the whole process.
+pool.on('error', (err) => {
+    console.error('[db] Unexpected error on idle client:', err.message);
+});
+
 export default {
     query: (text: string, params?: any[]) => pool.query(text, params),
     // Expose the pool for scripts like seeding to manage connection lifecycle
