@@ -1,5 +1,6 @@
 import db from '../db_client';
 import { sendEmail } from './email.service';
+import { generateId } from '../utils/helpers';
 
 /**
  * Automated email engine.
@@ -542,38 +543,79 @@ const defaultConfig = (t: EmailTemplateDef): Record<string, any> => {
 export const ensureEmailTemplatesSeeded = async (dbClient: { query: (t: string, p?: any[]) => Promise<any> } = db) => {
     for (const t of EMAIL_TEMPLATES) {
         await dbClient.query(
-            `INSERT INTO email_templates (key, name, subject, html, enabled, config)
-             VALUES ($1, $2, $3, $4, $5, $6)
+            `INSERT INTO email_templates (key, name, subject, html, enabled, config, category)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              ON CONFLICT (key) DO NOTHING`,
-            [t.key, t.name, t.subject, t.html, t.defaultEnabled, JSON.stringify(defaultConfig(t))],
+            [t.key, t.name, t.subject, t.html, t.defaultEnabled, JSON.stringify(defaultConfig(t)), t.category ?? 'event'],
         );
     }
 };
 
+// ── Custom tips (superadmin-built, DB-only) ─────────────────────────────────
+// They have no code definition, so they share one variable set + sample, and
+// the standard "N days after signup" schedule. The scheduler passes userName +
+// referralCode; the engine injects every link below automatically.
+export const TIP_VARIABLES: EmailTemplateVar[] = [
+    { name: 'userName', description: 'The user’s name' },
+    { name: 'referralCode', description: 'The user’s referral code' },
+    { name: 'appUrl', description: 'App home' },
+    { name: 'dashboardUrl', description: 'Dashboard' },
+    { name: 'posUrl', description: 'POS register' },
+    { name: 'inventoryUrl', description: 'Inventory' },
+    { name: 'stockTakesUrl', description: 'Stock takes' },
+    { name: 'ordersUrl', description: 'Sales history' },
+    { name: 'customersUrl', description: 'Customers (CRM)' },
+    { name: 'suppliersUrl', description: 'Suppliers' },
+    { name: 'purchaseOrdersUrl', description: 'Purchase orders' },
+    { name: 'teamUrl', description: 'Team management' },
+    { name: 'booksUrl', description: 'Accounting' },
+    { name: 'reportsUrl', description: 'Reports' },
+    { name: 'settingsUrl', description: 'Settings' },
+    { name: 'subscriptionUrl', description: 'Subscription' },
+];
+const TIP_SAMPLE = { userName: 'Jane Banda', referralCode: 'JANE-4X2K' };
+const TIP_SCHEDULE: EmailTemplateCondition = { field: 'sendDay', label: 'Send this many days after signup', default: 3 };
+
+/** On-brand starter HTML for a brand-new custom tip. */
+const blankTipHtml = () => wrap({
+    heading: 'Hi {{userName}},',
+    intro: 'Write your tip here. Use the variable chips to insert things like the user’s name or a link into your app.',
+    ctaLabel: 'Open SalePilot',
+    ctaVar: 'dashboardUrl',
+});
+
 interface EmailTemplateRow {
     key: string; name: string; subject: string; html: string;
-    enabled: boolean; config: Record<string, any>; updated_at: string; updated_by: string | null;
+    enabled: boolean; config: Record<string, any>; category: string;
+    updated_at: string; updated_by: string | null;
 }
+
+export const isBuiltIn = (key: string) => DEF_BY_KEY.has(key);
 
 const getRow = async (key: string): Promise<EmailTemplateRow | null> => {
     const r = await db.query('SELECT * FROM email_templates WHERE key = $1', [key]);
     return r.rowCount ? r.rows[0] : null;
 };
 
-/** Merge the stored rows with their static definitions for the admin UI. */
+/**
+ * Templates for the admin UI: the built-in definitions (merged with their stored
+ * edits) followed by any superadmin-built custom tips (DB-only rows). `builtIn`
+ * tells the UI which can be renamed / deleted (custom only) and reset (built-in).
+ */
 export const listEmailTemplates = async () => {
     await ensureEmailTemplatesSeeded();
     const r = await db.query('SELECT * FROM email_templates ORDER BY key');
     const rows: EmailTemplateRow[] = r.rows;
-    // Preserve the definition order; only surface keys we still define.
-    return EMAIL_TEMPLATES.map(def => {
+
+    const builtIns = EMAIL_TEMPLATES.map(def => {
         const row = rows.find(x => x.key === def.key);
         return {
             key: def.key,
-            name: def.name,
+            name: row?.name ?? def.name,
             description: def.description,
             recipient: def.recipient,
             category: def.category ?? 'event',
+            builtIn: true,
             variables: def.variables,
             sample: def.sample,
             condition: def.condition || null,
@@ -586,6 +628,65 @@ export const listEmailTemplates = async () => {
             updatedBy: row?.updated_by ?? null,
         };
     });
+
+    // Rows with no code definition are custom (superadmin-built) tips.
+    const custom = rows
+        .filter(row => !DEF_BY_KEY.has(row.key))
+        .sort((a, b) => Number(a.config?.sendDay ?? 0) - Number(b.config?.sendDay ?? 0))
+        .map(row => ({
+            key: row.key,
+            name: row.name,
+            description: 'Custom tip created by you.',
+            recipient: 'New user',
+            category: row.category || 'tip',
+            builtIn: false,
+            variables: TIP_VARIABLES,
+            sample: TIP_SAMPLE,
+            condition: null,
+            schedule: TIP_SCHEDULE,
+            subject: row.subject,
+            html: row.html,
+            enabled: row.enabled,
+            config: row.config ?? { sendDay: TIP_SCHEDULE.default },
+            updatedAt: row.updated_at,
+            updatedBy: row.updated_by,
+        }));
+
+    return [...builtIns, ...custom];
+};
+
+/** Create a new custom onboarding tip (DB-only, superadmin-built). */
+export const createCustomTip = async (
+    input: { name?: string; subject?: string; html?: string; sendDay?: number; enabled?: boolean },
+    updatedBy?: string,
+) => {
+    const key = generateId('tip');
+    const name = (input.name && input.name.trim()) || 'New tip';
+    const subject = (input.subject && input.subject.trim()) || 'Tip: ...';
+    const html = (input.html && input.html.trim()) || blankTipHtml();
+    const sendDay = Number.isFinite(Number(input.sendDay)) && Number(input.sendDay) > 0 ? Math.floor(Number(input.sendDay)) : TIP_SCHEDULE.default;
+    const enabled = input.enabled ?? false; // start disabled so drafts don't send
+    await db.query(
+        `INSERT INTO email_templates (key, name, subject, html, enabled, config, category, updated_by)
+         VALUES ($1, $2, $3, $4, $5, $6, 'tip', $7)`,
+        [key, name, subject, html, enabled, JSON.stringify({ sendDay }), updatedBy ?? null],
+    );
+    return getRow(key);
+};
+
+/** Delete a custom tip. Built-in templates cannot be deleted. */
+export const deleteEmailTemplate = async (key: string) => {
+    if (DEF_BY_KEY.has(key)) throw new Error('Built-in templates cannot be deleted.');
+    const res = await db.query('DELETE FROM email_templates WHERE key = $1 RETURNING key', [key]);
+    if (res.rowCount === 0) throw new Error(`Unknown email template: ${key}`);
+    return true;
+};
+
+/** Sample data for previewing/testing a template (built-in def sample or the tip sample). */
+export const getTemplateSample = (key: string): Record<string, any> | null => {
+    const def = DEF_BY_KEY.get(key);
+    if (def) return def.sample;
+    return TIP_SAMPLE; // custom tip
 };
 
 /** Restore a template's subject + HTML to the on-brand default (keeps enabled/config). */
@@ -614,19 +715,22 @@ export const getScheduledTipTemplates = async () => {
 
 export const updateEmailTemplate = async (
     key: string,
-    patch: { subject?: string; html?: string; enabled?: boolean; config?: Record<string, any> },
+    patch: { name?: string; subject?: string; html?: string; enabled?: boolean; config?: Record<string, any> },
     updatedBy?: string,
 ) => {
-    if (!DEF_BY_KEY.has(key)) throw new Error(`Unknown email template: ${key}`);
     await ensureEmailTemplatesSeeded();
     const current = await getRow(key);
+    // Must exist as a built-in def or a custom row.
+    if (!current && !DEF_BY_KEY.has(key)) throw new Error(`Unknown email template: ${key}`);
+    // Only custom tips can be renamed (built-in names come from code).
+    const name = (!DEF_BY_KEY.has(key) && patch.name?.trim()) ? patch.name.trim() : (current?.name ?? DEF_BY_KEY.get(key)?.name ?? key);
     const subject = patch.subject ?? current?.subject ?? '';
     const html = patch.html ?? current?.html ?? '';
     const enabled = patch.enabled ?? current?.enabled ?? true;
     const config = patch.config ?? current?.config ?? {};
     await db.query(
-        `UPDATE email_templates SET subject=$1, html=$2, enabled=$3, config=$4, updated_at=NOW(), updated_by=$5 WHERE key=$6`,
-        [subject, html, enabled, JSON.stringify(config), updatedBy ?? null, key],
+        `UPDATE email_templates SET name=$1, subject=$2, html=$3, enabled=$4, config=$5, updated_at=NOW(), updated_by=$6 WHERE key=$7`,
+        [name, subject, html, enabled, JSON.stringify(config), updatedBy ?? null, key],
     );
     return getRow(key);
 };
@@ -640,7 +744,26 @@ const buildContext = (data: Record<string, any>): Record<string, any> => {
     return ctx;
 };
 
-/** Render a template's subject + HTML for arbitrary data (used by preview/test). */
+/**
+ * Row-aware preview/test render. Resolves the effective subject/HTML from
+ * (client override → stored row → built-in default) so it works for custom tips
+ * that have no code definition. Returns null if the key is unknown.
+ */
+export const previewTemplate = async (
+    key: string,
+    override?: { subject?: string; html?: string },
+): Promise<{ subject: string; html: string } | null> => {
+    const def = DEF_BY_KEY.get(key);
+    const row = await getRow(key);
+    if (!def && !row) return null;
+    const sample = def ? def.sample : TIP_SAMPLE;
+    const ctx = buildContext(sample);
+    const subject = renderString(override?.subject ?? row?.subject ?? def?.subject ?? '', ctx);
+    const html = renderString(override?.html ?? row?.html ?? def?.html ?? '', ctx);
+    return { subject, html };
+};
+
+/** Render a template's subject + HTML for arbitrary data (used by the send path). */
 export const renderEmailTemplate = (
     key: string,
     data: Record<string, any>,
@@ -662,14 +785,15 @@ export const sendTemplatedEmail = async (key: string, to: string, data: Record<s
     try {
         if (!to) return false;
         const def = DEF_BY_KEY.get(key);
-        if (!def) { console.warn(`[email-engine] Unknown template key: ${key}`); return false; }
-
         const row = await getRow(key);
-        const enabled = row?.enabled ?? def.defaultEnabled;
+        // Must be a known built-in or an existing custom row.
+        if (!def && !row) { console.warn(`[email-engine] Unknown template key: ${key}`); return false; }
+
+        const enabled = row?.enabled ?? def?.defaultEnabled ?? false;
         if (!enabled) return false;
 
-        // Numeric condition gate (e.g. LARGE_EXPENSE_RECORDED minAmount).
-        if (def.condition) {
+        // Numeric condition gate (e.g. LARGE_EXPENSE_RECORDED minAmount). Tips have none.
+        if (def?.condition) {
             const threshold = Number(row?.config?.[def.condition.field] ?? def.condition.default);
             const value = Number(data[def.condition.field] ?? data.amount ?? 0);
             if (Number.isFinite(threshold) && value < threshold) return false;
@@ -719,11 +843,16 @@ export const notifyStoreOwner = async (key: string, storeId: string, data: Recor
 export const emailTemplateService = {
     ensureEmailTemplatesSeeded,
     listEmailTemplates,
+    createCustomTip,
     updateEmailTemplate,
+    deleteEmailTemplate,
     resetEmailTemplate,
     renderEmailTemplate,
+    previewTemplate,
     sendTemplatedEmail,
     notifyStoreOwner,
     getScheduledTipTemplates,
+    getTemplateSample,
+    isBuiltIn,
     EMAIL_TEMPLATES,
 };

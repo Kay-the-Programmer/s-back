@@ -3,19 +3,19 @@ import { auditService } from '../services/audit.service';
 import { sendEmail } from '../services/email.service';
 import {
     listEmailTemplates,
+    createCustomTip,
     updateEmailTemplate,
+    deleteEmailTemplate,
     resetEmailTemplate,
-    renderEmailTemplate,
-    EMAIL_TEMPLATES,
+    previewTemplate,
+    isBuiltIn,
 } from '../services/email-template.service';
 
 /**
- * Super Admin management of the automated email engine: list templates, edit
- * subject/HTML/enabled/conditions, live-preview with sample data, and send a
- * test to the signed-in superadmin.
+ * Super Admin management of the automated email engine: list templates, build
+ * custom tips from scratch, edit subject/HTML/name/enabled/conditions/schedule,
+ * live-preview with sample data, send a test, reset built-ins, delete custom tips.
  */
-
-const DEF_BY_KEY = new Map(EMAIL_TEMPLATES.map(t => [t.key, t]));
 
 export const listEmailTemplatesHandler = async (_req: express.Request, res: express.Response) => {
     try {
@@ -26,13 +26,31 @@ export const listEmailTemplatesHandler = async (_req: express.Request, res: expr
     }
 };
 
+/** Create a new custom onboarding tip (starts disabled so drafts don't send). */
+export const createEmailTemplateHandler = async (req: express.Request, res: express.Response) => {
+    try {
+        const b = req.body || {};
+        const row = await createCustomTip({
+            name: typeof b.name === 'string' ? b.name : undefined,
+            subject: typeof b.subject === 'string' ? b.subject : undefined,
+            html: typeof b.html === 'string' ? b.html : undefined,
+            sendDay: b.sendDay,
+            enabled: typeof b.enabled === 'boolean' ? b.enabled : undefined,
+        }, req.user?.id);
+        await auditService.log(req.user!, 'Email Template Created', `Custom tip: ${row?.key}`);
+        return res.status(201).json({ template: row });
+    } catch (e: any) {
+        console.error('Error creating email template', e);
+        return res.status(500).json({ message: e?.message || 'Failed to create tip.' });
+    }
+};
+
 export const updateEmailTemplateHandler = async (req: express.Request, res: express.Response) => {
     try {
         const { key } = req.params;
-        if (!DEF_BY_KEY.has(key)) return res.status(404).json({ message: 'Unknown email template.' });
-
         const b = req.body || {};
-        const patch: { subject?: string; html?: string; enabled?: boolean; config?: Record<string, any> } = {};
+        const patch: { name?: string; subject?: string; html?: string; enabled?: boolean; config?: Record<string, any> } = {};
+        if (typeof b.name === 'string') patch.name = b.name;
         if (typeof b.subject === 'string') patch.subject = b.subject;
         if (typeof b.html === 'string') patch.html = b.html;
         if (typeof b.enabled === 'boolean') patch.enabled = b.enabled;
@@ -50,15 +68,30 @@ export const updateEmailTemplateHandler = async (req: express.Request, res: expr
         return res.status(200).json({ template: row });
     } catch (e: any) {
         console.error('Error updating email template', e);
-        return res.status(500).json({ message: e?.message || 'Failed to update email template.' });
+        const notFound = /Unknown email template/.test(e?.message || '');
+        return res.status(notFound ? 404 : 500).json({ message: e?.message || 'Failed to update email template.' });
     }
 };
 
-/** Restore a template's subject + HTML to the on-brand default. */
+/** Delete a custom tip (built-ins are protected). */
+export const deleteEmailTemplateHandler = async (req: express.Request, res: express.Response) => {
+    try {
+        const { key } = req.params;
+        await deleteEmailTemplate(key);
+        await auditService.log(req.user!, 'Email Template Deleted', `Template: ${key}`);
+        return res.status(200).json({ message: 'Tip deleted.' });
+    } catch (e: any) {
+        console.error('Error deleting email template', e);
+        const code = /cannot be deleted/.test(e?.message || '') ? 400 : /Unknown/.test(e?.message || '') ? 404 : 500;
+        return res.status(code).json({ message: e?.message || 'Failed to delete tip.' });
+    }
+};
+
+/** Restore a built-in template's subject + HTML to the on-brand default. */
 export const resetEmailTemplateHandler = async (req: express.Request, res: express.Response) => {
     try {
         const { key } = req.params;
-        if (!DEF_BY_KEY.has(key)) return res.status(404).json({ message: 'Unknown email template.' });
+        if (!isBuiltIn(key)) return res.status(400).json({ message: 'Custom tips have no default to reset to.' });
         const row = await resetEmailTemplate(key, req.user?.id);
         await auditService.log(req.user!, 'Email Template Reset', `Template: ${key}`);
         return res.status(200).json({ template: row });
@@ -72,15 +105,13 @@ export const resetEmailTemplateHandler = async (req: express.Request, res: expre
 export const previewEmailTemplateHandler = async (req: express.Request, res: express.Response) => {
     try {
         const { key } = req.params;
-        const def = DEF_BY_KEY.get(key);
-        if (!def) return res.status(404).json({ message: 'Unknown email template.' });
-
         const b = req.body || {};
-        // Preview honours unsaved edits sent from the editor.
-        const rendered = renderEmailTemplate(key, def.sample, {
+        // Preview honours unsaved edits sent from the editor; falls back to the stored template.
+        const rendered = await previewTemplate(key, {
             subject: typeof b.subject === 'string' ? b.subject : undefined,
             html: typeof b.html === 'string' ? b.html : undefined,
         });
+        if (!rendered) return res.status(404).json({ message: 'Unknown email template.' });
         return res.status(200).json(rendered);
     } catch (e: any) {
         console.error('Error previewing email template', e);
@@ -92,17 +123,15 @@ export const previewEmailTemplateHandler = async (req: express.Request, res: exp
 export const testEmailTemplateHandler = async (req: express.Request, res: express.Response) => {
     try {
         const { key } = req.params;
-        const def = DEF_BY_KEY.get(key);
-        if (!def) return res.status(404).json({ message: 'Unknown email template.' });
-
         const to = (req.body?.to && String(req.body.to).trim()) || req.user?.email;
         if (!to) return res.status(400).json({ message: 'No recipient email available for the test.' });
 
         // A test always sends, regardless of the template's enabled flag / conditions.
-        const rendered = renderEmailTemplate(key, def.sample, {
+        const rendered = await previewTemplate(key, {
             subject: typeof req.body?.subject === 'string' ? req.body.subject : undefined,
             html: typeof req.body?.html === 'string' ? req.body.html : undefined,
         });
+        if (!rendered) return res.status(404).json({ message: 'Unknown email template.' });
         await sendEmail(to, `[TEST] ${rendered.subject}`, rendered.html);
         await auditService.log(req.user!, 'Email Template Test Sent', `Template: ${key} → ${to}`);
         return res.status(200).json({ message: `Test email sent to ${to}.` });

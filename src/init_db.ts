@@ -559,10 +559,14 @@ async function initializeDatabase() {
                 html TEXT NOT NULL,
                 enabled BOOLEAN NOT NULL DEFAULT true,
                 config JSONB NOT NULL DEFAULT '{}'::jsonb,
+                category TEXT NOT NULL DEFAULT 'event',
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_by TEXT
             );
         `);
+        // Custom (superadmin-built) tips live only in this table, so the row —
+        // not a code definition — carries its category. Backfill for older DBs.
+        await client.query(`ALTER TABLE email_templates ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'event';`);
         // Returns
         await client.query(`
             CREATE TABLE IF NOT EXISTS returns (
