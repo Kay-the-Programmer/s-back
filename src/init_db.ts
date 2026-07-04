@@ -549,6 +549,20 @@ async function initializeDatabase() {
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_payments_store_id ON payments(store_id);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_payments_store_id_date ON payments(store_id, date);`);
+        // Configurable transactional email templates (platform-wide, superadmin-owned).
+        // Drives the automated email engine — see services/email-template.service.ts.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS email_templates (
+                key TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                html TEXT NOT NULL,
+                enabled BOOLEAN NOT NULL DEFAULT true,
+                config JSONB NOT NULL DEFAULT '{}'::jsonb,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_by TEXT
+            );
+        `);
         // Returns
         await client.query(`
             CREATE TABLE IF NOT EXISTS returns (

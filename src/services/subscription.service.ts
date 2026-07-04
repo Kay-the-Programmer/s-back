@@ -5,7 +5,7 @@ import axios from 'axios';
 import dotenv from 'dotenv';
 import { invalidateUserCache } from '../middleware/auth.middleware';
 import LencoService from './lenco.service';
-import { adminDb } from '../firebase';
+import { notifyStoreOwner } from './email-template.service';
 import { setEnabledModules } from './entitlements.service';
 import {
     getPlans as getCatalogPlans,
@@ -295,29 +295,14 @@ const processSuccessfulPayment = async (reference: string, lencoDetails: any) =>
     // We'll skip explicit invalidation for now as the 60s TTL is short enough, 
     // or we can just hope the frontend refetches user info.
 
-    // --- Trigger Cloud Function for Subscription Extension ---
-    if (adminDb) {
-        try {
-            const storeResult = await db.query('SELECT owner_id FROM stores WHERE id = $1', [storeId]);
-            if (storeResult.rowCount && storeResult.rowCount > 0) {
-                const ownerId = storeResult.rows[0].owner_id;
-                const userResult = await db.query('SELECT email, name FROM users WHERE id = $1', [ownerId]);
-                if (userResult.rowCount && userResult.rowCount > 0 && userResult.rows[0].email) {
-                    await adminDb.collection('mail_events').add({
-                        type: 'SUBSCRIPTION_ACTIVE',
-                        storeId,
-                        planId: payment.plan_id || 'plan_pro',
-                        userEmail: userResult.rows[0].email,
-                        userName: userResult.rows[0].name,
-                        paymentId: payment.id,
-                        timestamp: new Date().toISOString()
-                    });
-                    console.log(`Added SUBSCRIPTION_ACTIVE event for store ${storeId} to Firestore mail_events.`);
-                }
-            }
-        } catch (eventError) {
-            console.error('Failed to trigger subscription event:', eventError);
-        }
+    // --- Subscription Activated email (configurable engine) ---
+    try {
+        await notifyStoreOwner('SUBSCRIPTION_ACTIVE', storeId, {
+            planId: payment.plan_id || 'plan_pro',
+            paymentId: payment.id,
+        });
+    } catch (eventError) {
+        console.error('Failed to trigger subscription event:', eventError);
     }
     // ----------------------------------------------------
 
@@ -353,27 +338,14 @@ export const cancelPayment = async (reference: string) => {
     // Best effort to notify Lenco
     await LencoService.cancelTransaction(reference);
 
-    // --- Trigger Cloud Function for Subscription Extension ---
-    if (adminDb && result.rowCount && result.rowCount > 0) {
+    // --- Subscription Cancelled email (configurable engine) ---
+    if (result.rowCount && result.rowCount > 0) {
         try {
             const payment = result.rows[0];
-            const storeResult = await db.query('SELECT owner_id FROM stores WHERE id = $1', [payment.store_id]);
-            if (storeResult.rowCount && storeResult.rowCount > 0) {
-                const ownerId = storeResult.rows[0].owner_id;
-                const userResult = await db.query('SELECT email, name FROM users WHERE id = $1', [ownerId]);
-                if (userResult.rowCount && userResult.rowCount > 0 && userResult.rows[0].email) {
-                    await adminDb.collection('mail_events').add({
-                        type: 'SUBSCRIPTION_CANCELLED',
-                        storeId: payment.store_id,
-                        planId: payment.plan_id || 'unknown',
-                        userEmail: userResult.rows[0].email,
-                        userName: userResult.rows[0].name,
-                        paymentId: payment.id,
-                        timestamp: new Date().toISOString()
-                    });
-                    console.log(`Added SUBSCRIPTION_CANCELLED event for store ${payment.store_id} to Firestore mail_events.`);
-                }
-            }
+            await notifyStoreOwner('SUBSCRIPTION_CANCELLED', payment.store_id, {
+                planId: payment.plan_id || 'unknown',
+                paymentId: payment.id,
+            });
         } catch (eventError) {
             console.error('Failed to trigger subscription cancel event:', eventError);
         }

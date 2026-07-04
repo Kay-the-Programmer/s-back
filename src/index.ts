@@ -169,6 +169,7 @@ import { runSubscriptionLifecycle } from './services/subscription-lifecycle.serv
 import { runAddonRenewals } from './services/module-purchase.service';
 import { runPlanRenewals } from './services/subscription.service';
 import { ensureCatalogSeeded } from './services/catalog.service';
+import { ensureEmailTemplatesSeeded } from './services/email-template.service';
 import { ensureUpsellCampaignsTable } from './services/upsell-campaign.service';
 import { ensureUpsellEventsTable } from './services/upsell-analytics.service';
 
@@ -179,6 +180,9 @@ const startServer = async () => {
 
     // Seed the configurable commerce catalog (add-on modules + plans) if empty.
     await ensureCatalogSeeded().catch(err => console.error('[catalog] seed failed:', err));
+
+    // Seed the configurable email templates (superadmin-editable) if missing.
+    await ensureEmailTemplatesSeeded().catch(err => console.error('[email-templates] seed failed:', err));
 
     // Ensure the upsell-campaigns table exists (marketing console persistence).
     await ensureUpsellCampaignsTable().catch(err => console.error('[upsell-campaigns] table init failed:', err));

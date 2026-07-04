@@ -1,6 +1,7 @@
 import { Account, Sale, Product, Category, JournalEntry, JournalEntryLine, Return, Payment, SupplierPayment, SupplierInvoice, StoreSettings, PurchaseOrder } from '../types';
 import db from '../db_client';
 import { generateId } from '../utils/helpers';
+import { notifyStoreOwner } from './email-template.service';
 
 type DBClient = { query: (text: string, params?: any[]) => Promise<any> };
 
@@ -609,30 +610,12 @@ const recordReturn = async (returnInfo: Return, originalSale: Sale, client?: DBC
         lines: journalLines.filter(line => line.amount > 0.001)
     }, storeId, dbClient);
 
-    // --- Trigger Email for Sales Return ---
+    // --- Trigger Email for Sales Return (configurable engine) ---
     if (parseFloat(returnInfo.refundAmount.toString()) >= 100) {
-        try {
-            const { adminDb } = await import('../firebase');
-            if (adminDb) {
-                const storeRes = await db.query('SELECT owner_id FROM stores WHERE id = $1', [storeId]);
-                if (storeRes.rowCount && storeRes.rows[0].owner_id) {
-                    const ownerRes = await db.query('SELECT email, name FROM users WHERE id = $1', [storeRes.rows[0].owner_id]);
-                    if (ownerRes.rowCount && ownerRes.rows[0].email) {
-                        await adminDb.collection('mail_events').add({
-                            type: 'SALES_RETURN_PROCESSED',
-                            storeId,
-                            userEmail: ownerRes.rows[0].email,
-                            userName: ownerRes.rows[0].name,
-                            refundAmount: returnInfo.refundAmount,
-                            transactionId: originalSale.transactionId,
-                            timestamp: new Date().toISOString()
-                        });
-                    }
-                }
-            }
-        } catch (emailErr) {
-            console.error('Email trigger failed for sales return:', emailErr);
-        }
+        await notifyStoreOwner('SALES_RETURN_PROCESSED', storeId, {
+            refundAmount: returnInfo.refundAmount,
+            transactionId: originalSale.transactionId,
+        });
     }
     // --------------------------------------
 };
@@ -669,30 +652,12 @@ const recordPurchaseOrderReception = async (poId: string, poNumber: string, rece
             ],
         }, storeId, dbClient);
 
-        // --- Trigger Email for PO Reception ---
-        try {
-            const { adminDb } = await import('../firebase');
-            if (adminDb) {
-                const storeRes = await db.query('SELECT owner_id FROM stores WHERE id = $1', [storeId]);
-                if (storeRes.rowCount && storeRes.rows[0].owner_id) {
-                    const ownerRes = await db.query('SELECT email, name FROM users WHERE id = $1', [storeRes.rows[0].owner_id]);
-                    if (ownerRes.rowCount && ownerRes.rows[0].email) {
-                        await adminDb.collection('mail_events').add({
-                            type: 'PO_RECEPTION_RECEIVED',
-                            storeId,
-                            userEmail: ownerRes.rows[0].email,
-                            userName: ownerRes.rows[0].name,
-                            poNumber: poNumber,
-                            totalCost: totalCost,
-                            itemCount: receivedItems.length,
-                            timestamp: new Date().toISOString()
-                        });
-                    }
-                }
-            }
-        } catch (emailErr) {
-            console.error('Email trigger failed for PO reception:', emailErr);
-        }
+        // --- Trigger Email for PO Reception (configurable engine) ---
+        await notifyStoreOwner('PO_RECEPTION_RECEIVED', storeId, {
+            poNumber,
+            totalCost,
+            itemCount: receivedItems.length,
+        });
         // --------------------------------------
     }
 };
@@ -883,30 +848,12 @@ const recordSupplierPayment = async (invoice: SupplierInvoice, payment: Supplier
         console.error('Push failed for supplier payment:', pushErr);
     }
 
-    // --- Trigger Email for Supplier Payment ---
-    try {
-        const { adminDb } = await import('../firebase');
-        if (adminDb) {
-            const storeRes = await db.query('SELECT owner_id FROM stores WHERE id = $1', [storeId]);
-            if (storeRes.rowCount && storeRes.rows[0].owner_id) {
-                const ownerRes = await db.query('SELECT email, name FROM users WHERE id = $1', [storeRes.rows[0].owner_id]);
-                if (ownerRes.rowCount && ownerRes.rows[0].email) {
-                    await adminDb.collection('mail_events').add({
-                        type: 'SUPPLIER_PAYMENT_MADE',
-                        storeId,
-                        userEmail: ownerRes.rows[0].email,
-                        userName: ownerRes.rows[0].name,
-                        supplierName: invoice.supplierName,
-                        amount: payment.amount,
-                        invoiceNumber: invoice.invoiceNumber,
-                        timestamp: new Date().toISOString()
-                    });
-                }
-            }
-        }
-    } catch (emailErr) {
-        console.error('Email trigger failed for supplier payment:', emailErr);
-    }
+    // --- Trigger Email for Supplier Payment (configurable engine) ---
+    await notifyStoreOwner('SUPPLIER_PAYMENT_MADE', storeId, {
+        supplierName: invoice.supplierName,
+        amount: payment.amount,
+        invoiceNumber: invoice.invoiceNumber,
+    });
     // ------------------------------------------
 };
 
@@ -954,31 +901,13 @@ const recordExpense = async (expense: any, client?: DBClient, storeIdParam?: str
         console.error('Push failed for expense record:', pushErr);
     }
 
-    // --- Trigger Email for Large Expense ---
-    if (parseFloat(expense.amount) >= 500) { // Threshold for "Important" notification
-        try {
-            const { adminDb } = await import('../firebase');
-            if (adminDb) {
-                const storeRes = await db.query('SELECT owner_id FROM stores WHERE id = $1', [storeId]);
-                if (storeRes.rowCount && storeRes.rows[0].owner_id) {
-                    const ownerRes = await db.query('SELECT email, name FROM users WHERE id = $1', [storeRes.rows[0].owner_id]);
-                    if (ownerRes.rowCount && ownerRes.rows[0].email) {
-                        await adminDb.collection('mail_events').add({
-                            type: 'LARGE_EXPENSE_RECORDED',
-                            storeId,
-                            userEmail: ownerRes.rows[0].email,
-                            userName: ownerRes.rows[0].name,
-                            amount: expense.amount,
-                            description: expense.description,
-                            timestamp: new Date().toISOString()
-                        });
-                    }
-                }
-            }
-        } catch (emailErr) {
-            console.error('Email trigger failed for large expense:', emailErr);
-        }
-    }
+    // --- Trigger Email for Large Expense (configurable engine) ---
+    // The "large" threshold is now the template's editable `minAmount` condition,
+    // so the engine decides whether to send — no hardcoded 500 here.
+    await notifyStoreOwner('LARGE_EXPENSE_RECORDED', storeId, {
+        amount: expense.amount,
+        description: expense.description,
+    });
     // ---------------------------------------
 };
 

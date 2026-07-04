@@ -4,10 +4,10 @@ import { Sale, Payment } from '../types';
 import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { accountingService } from '../services/accounting.service';
+import { notifyStoreOwner, sendTemplatedEmail } from '../services/email-template.service';
 import LencoService from '../services/lenco.service';
 
 import SocketService from '../services/socket.service';
-import { adminDb } from '../firebase';
 
 export const getSales = async (req: express.Request, res: express.Response) => {
     const { startDate, endDate, customerId, paymentStatus } = req.query as { [key: string]: string };
@@ -332,29 +332,12 @@ export const createSale = async (req: express.Request, res: express.Response) =>
                         url: `/inventory`
                     }, ['admin', 'inventory_manager', 'staff']);
 
-                    // --- Trigger Low Stock Email ---
-                    if (adminDb) {
-                        try {
-                            const storeResult = await db.query('SELECT owner_id FROM stores WHERE id = $1', [storeId]);
-                            if (storeResult.rowCount && storeResult.rows[0].owner_id) {
-                                const ownerRes = await db.query('SELECT email, name FROM users WHERE id = $1', [storeResult.rows[0].owner_id]);
-                                if (ownerRes.rowCount && ownerRes.rows[0].email) {
-                                    await adminDb.collection('mail_events').add({
-                                        type: 'LOW_STOCK_ALERT',
-                                        storeId,
-                                        userEmail: ownerRes.rows[0].email,
-                                        userName: ownerRes.rows[0].name,
-                                        productName: product.name,
-                                        currentStock: newStock,
-                                        reorderPoint: parseFloat(product.reorder_point),
-                                        timestamp: new Date().toISOString()
-                                    });
-                                }
-                            }
-                        } catch (emailErr) {
-                            console.error('Failed to trigger low stock email:', emailErr);
-                        }
-                    }
+                    // --- Trigger Low Stock Email (configurable engine) ---
+                    await notifyStoreOwner('LOW_STOCK_ALERT', storeId, {
+                        productName: product.name,
+                        currentStock: newStock,
+                        reorderPoint: parseFloat(product.reorder_point),
+                    });
                     // --------------------------------
                 } catch (e) { console.error('Low stock notification failed', e); }
             }
@@ -430,25 +413,22 @@ export const createSale = async (req: express.Request, res: express.Response) =>
         }
         // --------------------------------------
 
-        // --- Trigger Email Extension for Order Confirmation ---
-        if (saleData.customerId && adminDb) {
+        // --- Order Confirmation email to the customer (configurable engine) ---
+        if (saleData.customerId) {
             try {
                 const customerResult = await db.query('SELECT email, name FROM customers WHERE id = $1 AND store_id = $2', [saleData.customerId, storeId]);
-                if (customerResult.rowCount && customerResult.rowCount > 0 && customerResult.rows[0].email) {
+                if (customerResult.rowCount && customerResult.rows[0].email) {
                     const customer = customerResult.rows[0];
-
-                    // Add to mail_events for structured template processing
-                    await adminDb.collection('mail_events').add({
-                        type: 'ORDER_CONFIRMATION',
-                        storeId,
-                        transactionId,
-                        userEmail: customer.email,
+                    // The store name + currency are resolved by the engine's owner
+                    // helper; here the recipient is the customer, so pass them.
+                    const settingsRes = await db.query('SELECT name, currency FROM store_settings WHERE store_id = $1', [storeId]);
+                    await sendTemplatedEmail('ORDER_CONFIRMATION', customer.email, {
+                        storeName: settingsRes.rows[0]?.name || 'your store',
+                        currency: settingsRes.rows[0]?.currency?.symbol || 'K',
                         userName: customer.name || 'Customer',
+                        transactionId,
                         total: saleData.total,
-                        cart: saleData.cart,
-                        timestamp: new Date().toISOString()
                     });
-                    console.log(`Added order confirmation event for ${transactionId} to Firestore.`);
                 }
             } catch (emailError) {
                 console.error('Failed to trigger order confirmation email:', emailError);

@@ -9,6 +9,10 @@ import {
     listCampaigns, saveCampaign, removeCampaign,
 } from '../controllers/upsell-campaign.controller';
 import { getUpsellAnalytics } from '../controllers/upsell-analytics.controller';
+import {
+    listEmailTemplatesHandler, updateEmailTemplateHandler,
+    previewEmailTemplateHandler, testEmailTemplateHandler,
+} from '../controllers/email-templates.controller';
 import { protect, superAdminOnly } from '../middleware/auth.middleware';
 
 const router = express.Router();
@@ -194,5 +198,15 @@ router.delete('/upsell-campaigns/:id', protect, superAdminOnly, removeCampaign);
  *   get: { tags: [Super Admin], summary: Upsell campaign funnel (per campaign + variant), security: [{ bearerAuth: [] }] }
  */
 router.get('/upsell-analytics', protect, superAdminOnly, getUpsellAnalytics);
+
+/**
+ * @openapi
+ * /superadmin/email-templates:
+ *   get: { tags: [Super Admin], summary: List configurable email templates, security: [{ bearerAuth: [] }] }
+ */
+router.get('/email-templates', protect, superAdminOnly, listEmailTemplatesHandler);
+router.put('/email-templates/:key', protect, superAdminOnly, updateEmailTemplateHandler);
+router.post('/email-templates/:key/preview', protect, superAdminOnly, previewEmailTemplateHandler);
+router.post('/email-templates/:key/test', protect, superAdminOnly, testEmailTemplateHandler);
 
 export default router;
