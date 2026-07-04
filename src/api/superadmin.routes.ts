@@ -10,7 +10,7 @@ import {
 } from '../controllers/upsell-campaign.controller';
 import { getUpsellAnalytics } from '../controllers/upsell-analytics.controller';
 import {
-    listEmailTemplatesHandler, updateEmailTemplateHandler,
+    listEmailTemplatesHandler, updateEmailTemplateHandler, resetEmailTemplateHandler,
     previewEmailTemplateHandler, testEmailTemplateHandler,
 } from '../controllers/email-templates.controller';
 import { protect, superAdminOnly } from '../middleware/auth.middleware';
@@ -206,6 +206,7 @@ router.get('/upsell-analytics', protect, superAdminOnly, getUpsellAnalytics);
  */
 router.get('/email-templates', protect, superAdminOnly, listEmailTemplatesHandler);
 router.put('/email-templates/:key', protect, superAdminOnly, updateEmailTemplateHandler);
+router.post('/email-templates/:key/reset', protect, superAdminOnly, resetEmailTemplateHandler);
 router.post('/email-templates/:key/preview', protect, superAdminOnly, previewEmailTemplateHandler);
 router.post('/email-templates/:key/test', protect, superAdminOnly, testEmailTemplateHandler);
 

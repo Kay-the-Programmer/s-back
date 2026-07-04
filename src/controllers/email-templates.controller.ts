@@ -4,6 +4,7 @@ import { sendEmail } from '../services/email.service';
 import {
     listEmailTemplates,
     updateEmailTemplate,
+    resetEmailTemplate,
     renderEmailTemplate,
     EMAIL_TEMPLATES,
 } from '../services/email-template.service';
@@ -50,6 +51,20 @@ export const updateEmailTemplateHandler = async (req: express.Request, res: expr
     } catch (e: any) {
         console.error('Error updating email template', e);
         return res.status(500).json({ message: e?.message || 'Failed to update email template.' });
+    }
+};
+
+/** Restore a template's subject + HTML to the on-brand default. */
+export const resetEmailTemplateHandler = async (req: express.Request, res: express.Response) => {
+    try {
+        const { key } = req.params;
+        if (!DEF_BY_KEY.has(key)) return res.status(404).json({ message: 'Unknown email template.' });
+        const row = await resetEmailTemplate(key, req.user?.id);
+        await auditService.log(req.user!, 'Email Template Reset', `Template: ${key}`);
+        return res.status(200).json({ template: row });
+    } catch (e: any) {
+        console.error('Error resetting email template', e);
+        return res.status(500).json({ message: e?.message || 'Failed to reset email template.' });
     }
 };
 

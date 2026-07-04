@@ -41,6 +41,10 @@ export interface EmailTemplateDef {
     sample: Record<string, string | number>;
     /** Optional numeric gate (only LARGE_EXPENSE_RECORDED today). */
     condition?: EmailTemplateCondition;
+    /** 'event' = fired by a trigger; 'tip' = sent by the periodic scheduler. */
+    category?: 'event' | 'tip';
+    /** For tips: an editable "days after signup" timing knob (stored in config). */
+    schedule?: EmailTemplateCondition;
 }
 
 /** The canonical app URL for links — never the localhost dev fallback. */
@@ -66,6 +70,8 @@ const globalContext = (): Record<string, string | number> => {
         inventoryUrl: `${base}/inv/items`,
         ordersUrl: `${base}/pos/history`,
         booksUrl: `${base}/books`,
+        reportsUrl: `${base}/reports`,
+        settingsUrl: `${base}/config`,
         subscriptionUrl: `${base}/subscription`,
         year: new Date().getFullYear(),
     };
@@ -76,29 +82,38 @@ export const renderString = (template: string, ctx: Record<string, any>): string
     template.replace(/\{\{\s*(\w+)\s*\}\}/g, (_m, key) => (ctx[key] != null ? String(ctx[key]) : ''));
 
 // ── Shared on-brand wrapper used to GENERATE the default HTML. The stored value
-// is the full document, so a superadmin can edit any part of it. ──────────────
-const NAVY = '#002B6B';
-const ORANGE = '#FF7F27';
+// is the full document, so a superadmin can edit any part of it. Colours, font
+// and radii mirror salepilot/DESIGN.md (Velocity POS): deep navy primary,
+// vibrant orange for conversion CTAs, Hanken Grotesk, soft corners. ────────────
+const NAVY = '#002b6b';          // DESIGN.md primary
+const ORANGE = '#ff7f27';        // DESIGN.md secondary-container (conversion CTA)
+const INK = '#181c1e';           // DESIGN.md on-surface
+const INK_MUTED = '#434651';     // DESIGN.md on-surface-variant
+const CANVAS = '#f7fafc';        // DESIGN.md surface / background
+const HAIRLINE = '#c4c6d2';      // DESIGN.md outline-variant
+const SUBTLE = '#ebeef0';        // DESIGN.md surface-container
+// Hanken Grotesk where the client supports web fonts; clean system fallback otherwise.
+const FONT = "'Hanken Grotesk','Helvetica Neue',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif";
 
 const wrap = (opts: { heading: string; intro: string; detailRows?: string; ctaLabel?: string; ctaVar?: string; footnote?: string }) => `
-<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:600px;margin:0 auto;background:#f4f6fb;padding:24px;">
-  <div style="background:${NAVY};border-radius:16px 16px 0 0;padding:24px 28px;text-align:center;">
-    <span style="color:#fff;font-size:20px;font-weight:800;letter-spacing:-0.02em;">Sale<span style="color:${ORANGE};">Pilot</span></span>
+<div style="font-family:${FONT};max-width:600px;margin:0 auto;background:${CANVAS};padding:24px;">
+  <div style="background:${NAVY};border-radius:8px 8px 0 0;padding:22px 28px;text-align:center;">
+    <span style="color:#ffffff;font-size:22px;font-weight:700;letter-spacing:-0.02em;">Sale<span style="color:${ORANGE};">Pilot</span></span>
   </div>
-  <div style="background:#fff;padding:32px 28px;border:1px solid #e6eaf2;border-top:0;">
-    <h1 style="margin:0 0 12px;color:#0f172a;font-size:21px;font-weight:800;">${opts.heading}</h1>
-    <p style="margin:0 0 20px;color:#475569;font-size:15px;line-height:1.6;">${opts.intro}</p>
-    ${opts.detailRows ? `<table style="width:100%;border-collapse:collapse;margin:0 0 24px;background:#f8fafc;border:1px solid #e6eaf2;border-radius:12px;overflow:hidden;">${opts.detailRows}</table>` : ''}
-    ${opts.ctaLabel && opts.ctaVar ? `<div style="text-align:center;margin:8px 0 4px;"><a href="{{${opts.ctaVar}}}" style="display:inline-block;background:${ORANGE};color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 30px;border-radius:10px;">${opts.ctaLabel}</a></div>` : ''}
-    ${opts.footnote ? `<p style="margin:20px 0 0;color:#94a3b8;font-size:13px;line-height:1.5;">${opts.footnote}</p>` : ''}
+  <div style="background:#ffffff;padding:32px 28px;border:1px solid ${HAIRLINE};border-top:0;">
+    <h1 style="margin:0 0 12px;color:${INK};font-size:24px;font-weight:600;line-height:32px;letter-spacing:-0.01em;">${opts.heading}</h1>
+    <p style="margin:0 0 20px;color:${INK_MUTED};font-size:16px;line-height:24px;">${opts.intro}</p>
+    ${opts.detailRows ? `<table role="presentation" style="width:100%;border-collapse:separate;border-spacing:0;margin:0 0 24px;background:${CANVAS};border:1px solid ${HAIRLINE};border-radius:8px;overflow:hidden;">${opts.detailRows}</table>` : ''}
+    ${opts.ctaLabel && opts.ctaVar ? `<div style="text-align:center;margin:8px 0 4px;"><a href="{{${opts.ctaVar}}}" style="display:inline-block;background:${ORANGE};color:#ffffff;text-decoration:none;font-weight:600;font-size:14px;line-height:20px;padding:14px 32px;border-radius:8px;">${opts.ctaLabel}</a></div>` : ''}
+    ${opts.footnote ? `<p style="margin:20px 0 0;color:${INK_MUTED};font-size:14px;line-height:20px;">${opts.footnote}</p>` : ''}
   </div>
-  <div style="text-align:center;padding:18px;color:#94a3b8;font-size:12px;">
-    © {{year}} SalePilot · <a href="{{appUrl}}" style="color:${NAVY};text-decoration:none;">salepilot.space</a>
+  <div style="text-align:center;padding:18px;color:${INK_MUTED};font-size:12px;">
+    © {{year}} SalePilot · <a href="{{appUrl}}" style="color:${NAVY};text-decoration:none;font-weight:600;">salepilot.space</a>
   </div>
 </div>`.trim();
 
 const row = (label: string, valueVar: string, prefix = '') =>
-    `<tr><td style="padding:12px 16px;color:#64748b;font-size:13px;font-weight:600;border-bottom:1px solid #eef1f6;">${label}</td><td style="padding:12px 16px;color:#0f172a;font-size:14px;font-weight:700;text-align:right;border-bottom:1px solid #eef1f6;">${prefix}{{${valueVar}}}</td></tr>`;
+    `<tr><td style="padding:12px 16px;color:${INK_MUTED};font-size:13px;font-weight:500;border-bottom:1px solid ${SUBTLE};">${label}</td><td style="padding:12px 16px;color:${INK};font-size:14px;font-weight:600;text-align:right;border-bottom:1px solid ${SUBTLE};">${prefix}{{${valueVar}}}</td></tr>`;
 
 // ── The 8 default templates ────────────────────────────────────────────────
 export const EMAIL_TEMPLATES: EmailTemplateDef[] = [
@@ -289,19 +304,93 @@ export const EMAIL_TEMPLATES: EmailTemplateDef[] = [
         ],
         sample: { userName: 'Jane Banda', planId: 'Pro', storeName: 'Downtown Minimart' },
     },
+
+    // ── Onboarding tips — sent by the periodic scheduler N days after signup ──
+    {
+        key: 'TIP_LOGO',
+        name: 'Tip: Add your logo',
+        description: 'Onboarding tip nudging new users to upload their logo. Sent by the scheduler a set number of days after signup.',
+        recipient: 'New user',
+        category: 'tip',
+        defaultEnabled: true,
+        schedule: { field: 'sendDay', label: 'Send this many days after signup', default: 1 },
+        subject: 'Tip: Make your receipts look professional 🖼️',
+        html: wrap({
+            heading: 'Add your logo, {{userName}}',
+            intro: 'You can upload your business logo in Settings — it appears on every digital and printed receipt, giving your store a polished, professional look.',
+            ctaLabel: 'Upload your logo',
+            ctaVar: 'settingsUrl',
+            footnote: 'A small touch that makes a big impression on your customers.',
+        }),
+        variables: [
+            { name: 'userName', description: 'User name' },
+            { name: 'settingsUrl', description: 'Link to settings' },
+        ],
+        sample: { userName: 'Jane Banda' },
+    },
+    {
+        key: 'TIP_REPORTS',
+        name: 'Tip: Track your numbers',
+        description: 'Onboarding tip pointing new users to Reports. Sent by the scheduler a set number of days after signup.',
+        recipient: 'New user',
+        category: 'tip',
+        defaultEnabled: true,
+        schedule: { field: 'sendDay', label: 'Send this many days after signup', default: 3 },
+        subject: 'Tip: See your profit at a glance 📊',
+        html: wrap({
+            heading: 'Know your business health',
+            intro: 'Hi {{userName}}, the Reports section shows your daily profit &amp; loss, sales trends and inventory value in real time. Staying on top of your numbers is the key to growth.',
+            ctaLabel: 'Open Reports',
+            ctaVar: 'reportsUrl',
+        }),
+        variables: [
+            { name: 'userName', description: 'User name' },
+            { name: 'reportsUrl', description: 'Link to Reports' },
+        ],
+        sample: { userName: 'Jane Banda' },
+    },
+    {
+        key: 'TIP_REFERRAL',
+        name: 'Tip: Refer & earn',
+        description: 'Onboarding tip promoting the referral program. Sent by the scheduler a set number of days after signup.',
+        recipient: 'New user',
+        category: 'tip',
+        defaultEnabled: true,
+        schedule: { field: 'sendDay', label: 'Send this many days after signup', default: 7 },
+        subject: 'Tip: Earn discounts by referring friends 💸',
+        html: wrap({
+            heading: 'Share SalePilot, get rewarded',
+            intro: 'Enjoying SalePilot, {{userName}}? Share your referral code and earn a discount on your next subscription for every business that signs up.',
+            detailRows: row('Your referral code', 'referralCode'),
+            ctaLabel: 'View your rewards',
+            ctaVar: 'subscriptionUrl',
+        }),
+        variables: [
+            { name: 'userName', description: 'User name' },
+            { name: 'referralCode', description: 'The user’s referral code' },
+            { name: 'subscriptionUrl', description: 'Link to subscription / rewards' },
+        ],
+        sample: { userName: 'Jane Banda', referralCode: 'JANE-4X2K' },
+    },
 ];
 
 const DEF_BY_KEY = new Map(EMAIL_TEMPLATES.map(t => [t.key, t]));
 
 /** Insert any missing default templates. Idempotent; never overwrites edits. */
+const defaultConfig = (t: EmailTemplateDef): Record<string, any> => {
+    const config: Record<string, any> = {};
+    if (t.condition) config[t.condition.field] = t.condition.default;
+    if (t.schedule) config[t.schedule.field] = t.schedule.default;
+    return config;
+};
+
 export const ensureEmailTemplatesSeeded = async (dbClient: { query: (t: string, p?: any[]) => Promise<any> } = db) => {
     for (const t of EMAIL_TEMPLATES) {
-        const config = t.condition ? { [t.condition.field]: t.condition.default } : {};
         await dbClient.query(
             `INSERT INTO email_templates (key, name, subject, html, enabled, config)
              VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (key) DO NOTHING`,
-            [t.key, t.name, t.subject, t.html, t.defaultEnabled, JSON.stringify(config)],
+            [t.key, t.name, t.subject, t.html, t.defaultEnabled, JSON.stringify(defaultConfig(t))],
         );
     }
 };
@@ -329,17 +418,43 @@ export const listEmailTemplates = async () => {
             name: def.name,
             description: def.description,
             recipient: def.recipient,
+            category: def.category ?? 'event',
             variables: def.variables,
             sample: def.sample,
             condition: def.condition || null,
+            schedule: def.schedule || null,
             subject: row?.subject ?? def.subject,
             html: row?.html ?? def.html,
             enabled: row?.enabled ?? def.defaultEnabled,
-            config: row?.config ?? (def.condition ? { [def.condition.field]: def.condition.default } : {}),
+            config: row?.config ?? defaultConfig(def),
             updatedAt: row?.updated_at ?? null,
             updatedBy: row?.updated_by ?? null,
         };
     });
+};
+
+/** Restore a template's subject + HTML to the on-brand default (keeps enabled/config). */
+export const resetEmailTemplate = async (key: string, updatedBy?: string) => {
+    const def = DEF_BY_KEY.get(key);
+    if (!def) throw new Error(`Unknown email template: ${key}`);
+    await ensureEmailTemplatesSeeded();
+    await db.query(
+        `UPDATE email_templates SET subject=$1, html=$2, updated_at=NOW(), updated_by=$3 WHERE key=$4`,
+        [def.subject, def.html, updatedBy ?? null, key],
+    );
+    return getRow(key);
+};
+
+/** Enabled onboarding-tip templates merged with their stored config (for the scheduler). */
+export const getScheduledTipTemplates = async () => {
+    const all = await listEmailTemplates();
+    return all
+        .filter(t => t.category === 'tip' && t.enabled)
+        .map(t => ({
+            key: t.key,
+            sendDay: Number(t.config?.sendDay ?? t.schedule?.default ?? 0),
+        }))
+        .filter(t => Number.isFinite(t.sendDay) && t.sendDay > 0);
 };
 
 export const updateEmailTemplate = async (
@@ -450,8 +565,10 @@ export const emailTemplateService = {
     ensureEmailTemplatesSeeded,
     listEmailTemplates,
     updateEmailTemplate,
+    resetEmailTemplate,
     renderEmailTemplate,
     sendTemplatedEmail,
     notifyStoreOwner,
+    getScheduledTipTemplates,
     EMAIL_TEMPLATES,
 };
