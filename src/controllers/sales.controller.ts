@@ -160,9 +160,9 @@ export const createQuickSale = async (req: express.Request, res: express.Respons
         const timestamp = new Date().toISOString();
 
         await client.query(
-            `INSERT INTO sales(transaction_id, "timestamp", customer_id, total, subtotal, tax, discount, store_credit_used, payment_status, amount_paid, due_date, refund_status, store_id)
-             VALUES ($1, $2, NULL, $3, $3, 0, 0, 0, 'paid', $3, NULL, 'none', $4)`,
-            [transactionId, timestamp, total, storeId]
+            `INSERT INTO sales(transaction_id, "timestamp", customer_id, total, subtotal, tax, discount, store_credit_used, payment_status, amount_paid, due_date, refund_status, store_id, attended_by, attended_by_id)
+             VALUES ($1, $2, NULL, $3, $3, 0, 0, 0, 'paid', $3, NULL, 'none', $4, $5, $6)`,
+            [transactionId, timestamp, total, storeId, req.user?.name || null, req.user?.id || null]
         );
 
         const cart: any[] = [];
@@ -291,13 +291,54 @@ export const createSale = async (req: express.Request, res: express.Response) =>
 
         await client.query('BEGIN');
 
+        // --- Customer phone capture: automatically save numbers collected at
+        // the POS (explicit entry or the mobile-money number). If no customer
+        // is attached, find-or-create one by phone so repeat buyers accumulate
+        // history under a single record.
+        const phoneDigits = String(saleData.customerPhone || '').replace(/\D/g, '');
+        let resolvedCustomerName: string | undefined = saleData.customerName;
+        if (phoneDigits.length >= 7) {
+            if (saleData.customerId) {
+                // Attach the number to the selected customer if they don't have one yet.
+                await client.query(
+                    `UPDATE customers SET phone = $1 WHERE id = $2 AND store_id = $3 AND (phone IS NULL OR phone = '')`,
+                    [saleData.customerPhone, saleData.customerId, storeId]
+                );
+            } else {
+                const existing = await client.query(
+                    `SELECT id, name FROM customers WHERE store_id = $2 AND regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') = $1 LIMIT 1`,
+                    [phoneDigits, storeId]
+                );
+                if (existing.rowCount) {
+                    saleData.customerId = existing.rows[0].id;
+                    resolvedCustomerName = existing.rows[0].name;
+                } else {
+                    const newCustomerId = generateId('cus');
+                    const newCustomerName = saleData.customerName?.trim() || `Customer ${saleData.customerPhone}`;
+                    await client.query(
+                        `INSERT INTO customers (id, name, phone, created_at, store_credit, account_balance, store_id)
+                         VALUES ($1, $2, $3, $4, 0, 0, $5)`,
+                        [newCustomerId, newCustomerName, saleData.customerPhone, timestamp, storeId]
+                    );
+                    saleData.customerId = newCustomerId;
+                    resolvedCustomerName = newCustomerName;
+                }
+            }
+        }
+
+        // Cashier attribution ("Attended by" on receipts) — stamped from the
+        // authenticated user, never trusted from the client payload.
+        const attendedBy = req.user?.name || null;
+        const attendedById = req.user?.id || null;
+
         const saleQuery = `
-            INSERT INTO sales(transaction_id, "timestamp", customer_id, total, subtotal, tax, discount, store_credit_used, payment_status, amount_paid, due_date, refund_status, store_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *;
+            INSERT INTO sales(transaction_id, "timestamp", customer_id, total, subtotal, tax, discount, store_credit_used, payment_status, amount_paid, due_date, refund_status, store_id, attended_by, attended_by_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *;
         `;
         const saleResult = await client.query(saleQuery, [
             transactionId, timestamp, saleData.customerId, total, cartSubtotal, tax,
-            discount, storeCreditUsed, paymentStatus, amountPaid, saleData.dueDate, 'none', storeId
+            discount, storeCreditUsed, paymentStatus, amountPaid, saleData.dueDate, 'none', storeId,
+            attendedBy, attendedById
         ]);
         const newSale = saleResult.rows[0];
 
@@ -398,7 +439,13 @@ export const createSale = async (req: express.Request, res: express.Response) =>
 
         await client.query('COMMIT');
 
-        const saleResponse = toCamelCase({ ...newSale, cart: saleData.cart, payments: finalPayments });
+        const saleResponse = toCamelCase({
+            ...newSale,
+            customer_name: resolvedCustomerName || null,
+            customer_phone: saleData.customerPhone || null,
+            cart: saleData.cart,
+            payments: finalPayments
+        });
 
         // --- Push Notification for New Sale ---
         try {

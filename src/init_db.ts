@@ -474,7 +474,9 @@ async function initializeDatabase() {
                 amount_paid DECIMAL(10,2) NOT NULL,
                 due_date DATE,
                 refund_status TEXT NOT NULL DEFAULT 'none',
-                store_id TEXT
+                store_id TEXT,
+                attended_by TEXT,
+                attended_by_id TEXT
             );
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_sales_store_id ON sales(store_id);`);
@@ -509,6 +511,9 @@ async function initializeDatabase() {
                     ALTER TABLE sales ADD COLUMN IF NOT EXISTS fulfillment_status TEXT CHECK (fulfillment_status IN ('pending','fulfilled','shipped','cancelled'));
                     ALTER TABLE sales ADD COLUMN IF NOT EXISTS channel TEXT CHECK (channel IN ('pos','online'));
                     ALTER TABLE sales ADD COLUMN IF NOT EXISTS customer_details JSONB;
+                    -- Cashier attribution shown on receipts ("Attended by")
+                    ALTER TABLE sales ADD COLUMN IF NOT EXISTS attended_by TEXT;
+                    ALTER TABLE sales ADD COLUMN IF NOT EXISTS attended_by_id TEXT;
                     
                     ALTER TABLE sales ALTER COLUMN fulfillment_status SET DEFAULT 'fulfilled';
                     ALTER TABLE sales ALTER COLUMN channel SET DEFAULT 'pos';
