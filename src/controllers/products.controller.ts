@@ -100,12 +100,18 @@ export const createProduct = async (req: express.Request, res: express.Response)
         console.log('Files received:', req.files);
 
         const {
-            name, description, sku, barcode, category_id, price, cost_price, stock,
-            supplier_id, brand, reorder_point, status, custom_attributes,
+            name, description, sku, barcode, price, stock,
+            brand, reorder_point, status, custom_attributes,
             unit_of_measure, unitOfMeasure,
             weight, dimensions, safety_stock, safetyStock, variants,
             carton_price, units_per_carton, cartons_received
         } = req.body;
+        // Multipart form submissions send snake_case; JSON clients (quick import
+        // from order lists, offline queue replay) send camelCase — accept both,
+        // exactly like updateProduct below.
+        const category_id = req.body.category_id ?? req.body.categoryId;
+        const cost_price = req.body.cost_price ?? req.body.costPrice;
+        const supplier_id = req.body.supplier_id ?? req.body.supplierId;
 
         const files = req.files as Express.Multer.File[];
         const id = generateId('prod');
