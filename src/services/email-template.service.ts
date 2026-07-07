@@ -1,6 +1,9 @@
 import db from '../db_client';
 import { sendEmail } from './email.service';
-import { generateId } from '../utils/helpers';
+import { generateId, appUrl } from '../utils/helpers';
+
+// Re-exported for backwards compatibility with existing importers of this module.
+export { appUrl };
 
 /**
  * Automated email engine.
@@ -47,10 +50,6 @@ export interface EmailTemplateDef {
     /** For tips: an editable "days after signup" timing knob (stored in config). */
     schedule?: EmailTemplateCondition;
 }
-
-/** The canonical app URL for links — never the localhost dev fallback. */
-export const appUrl = (): string =>
-    (process.env.FRONTEND_URL || 'https://www.salepilot.space').replace(/\/+$/, '');
 
 // Money-valued fields are formatted to a grouped 2-decimal string before
 // substitution so templates render "1,250.00" rather than "1250".

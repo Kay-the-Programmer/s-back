@@ -1,6 +1,7 @@
 import nodemailer from 'nodemailer';
 import { adminDb } from '../firebase';
 import dns from 'node:dns';
+import { appUrl } from '../utils/helpers';
 
 // Force node to resolve IPv4 addresses first to avoid ENETUNREACH when attempting to connect to IPv6 servers like smtp.gmail.com
 dns.setDefaultResultOrder('ipv4first');
@@ -77,7 +78,7 @@ function buildOtpHtml(otp: string): string {
 
 // ─── Verification link email ───────────────────────────────────────────────────
 export const sendVerificationEmail = async (email: string, token: string) => {
-    const verificationUrl = `${process.env.FRONTEND_URL}/auth/verify-email?token=${token}`;
+    const verificationUrl = `${appUrl()}/auth/verify-email?token=${token}`;
     const subject = 'Verify your email address';
     const html = `
         <h1>Welcome to SalePilot!</h1>
@@ -109,7 +110,7 @@ export const sendStoreOTPVerificationEmail = async (email: string, storeName: st
 
 // ─── Password reset email ──────────────────────────────────────────────────────
 export const sendPasswordResetEmail = async (email: string, token: string) => {
-    const resetUrl = `${process.env.FRONTEND_URL}/auth/reset-password?token=${token}`;
+    const resetUrl = `${appUrl()}/auth/reset-password?token=${token}`;
     const subject = 'Reset your SalePilot password';
     const html = `
         <h1>Password Reset Request</h1>
@@ -144,7 +145,7 @@ export const sendWelcomeEmail = async (email: string, name: string) => {
                 </ul>
             </div>
             <div style="text-align:center;">
-                <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}" style="display:inline-block;background:#0284c7;color:white;padding:12px 28px;text-decoration:none;border-radius:10px;font-weight:700;font-size:14px;">
+                <a href="${appUrl()}" style="display:inline-block;background:#0284c7;color:white;padding:12px 28px;text-decoration:none;border-radius:10px;font-weight:700;font-size:14px;">
                     Go to Dashboard →
                 </a>
             </div>

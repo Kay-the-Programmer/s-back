@@ -1,4 +1,13 @@
 /**
+ * The canonical public app URL used to build links in emails and notifications.
+ * Reads FRONTEND_URL and falls back to the production site — never a localhost
+ * dev URL — so CTA links are always valid even if the env var is unset.
+ * Any trailing slashes are trimmed so callers can safely append paths.
+ */
+export const appUrl = (): string =>
+    (process.env.FRONTEND_URL || 'https://www.salepilot.space').replace(/\/+$/, '');
+
+/**
  * Generates a unique ID with a given prefix.
  * e.g., generateId('prod') => 'prod_1678886400000_a1b2c3d4'
  * @param prefix - The prefix for the ID (e.g., 'prod', 'user').
