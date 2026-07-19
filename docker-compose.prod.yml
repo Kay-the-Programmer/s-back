@@ -1,4 +1,4 @@
-# Production stack for Oracle Cloud (single VM, Always Free A1).
+# Production stack for a single cloud VM (Google Cloud Always Free e2-micro).
 #   - Postgres is NOT published to the internet (internal Docker network only).
 #   - The backend is only reachable through Caddy (automatic HTTPS) or
 #     127.0.0.1:5000 on the VM itself for debugging.

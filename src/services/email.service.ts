@@ -21,8 +21,11 @@ const getTransporter = () => {
             user: process.env.SMTP_USER,
             pass: process.env.SMTP_PASS,
         },
-        // Force IPv4 if IPv6 is unreachable (fixes ENETUNREACH / ETIMEDOUT for Gmail)
-        family: 4,
+        // Fail fast instead of nodemailer's 2-minute default — a blocked SMTP port
+        // otherwise stalls the scheduler for minutes per email.
+        connectionTimeout: 15_000,
+        greetingTimeout: 10_000,
+        socketTimeout: 30_000,
     } as any);
 };
 

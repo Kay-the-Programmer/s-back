@@ -101,17 +101,20 @@ export const createProduct = async (req: express.Request, res: express.Response)
 
         const {
             name, description, sku, barcode, price, stock,
-            brand, reorder_point, status, custom_attributes,
+            brand, status, custom_attributes,
             unit_of_measure, unitOfMeasure,
             weight, dimensions, safety_stock, safetyStock, variants,
-            carton_price, units_per_carton, cartons_received
         } = req.body;
         // Multipart form submissions send snake_case; JSON clients (quick import
-        // from order lists, offline queue replay) send camelCase — accept both,
-        // exactly like updateProduct below.
+        // from order lists, offline queue replay, desktop app) send camelCase —
+        // accept both, exactly like updateProduct below.
         const category_id = req.body.category_id ?? req.body.categoryId;
         const cost_price = req.body.cost_price ?? req.body.costPrice;
         const supplier_id = req.body.supplier_id ?? req.body.supplierId;
+        const reorder_point = req.body.reorder_point ?? req.body.reorderPoint;
+        const carton_price = req.body.carton_price ?? req.body.cartonPrice;
+        const units_per_carton = req.body.units_per_carton ?? req.body.unitsPerCarton;
+        const cartons_received = req.body.cartons_received ?? req.body.cartonsReceived;
 
         const files = req.files as Express.Multer.File[];
         const id = generateId('prod');
@@ -661,7 +664,7 @@ export const archiveProduct = async (req: express.Request, res: express.Response
 };
 
 export const adjustStock = async (req: express.Request, res: express.Response) => {
-    const { newQuantity, reason } = req.body as { newQuantity: number; reason: string };
+    const { newQuantity, reason, mode } = req.body as { newQuantity: number; reason: string; mode?: 'absolute' | 'delta' };
     const { id } = req.params;
 
     if (typeof newQuantity !== 'number' || isNaN(newQuantity) || !reason) {
@@ -683,7 +686,18 @@ export const adjustStock = async (req: express.Request, res: express.Response) =
         let finalStock: number;
         let delta: number | null = null;
 
-        if (reason === 'Stock Count') {
+        // An explicit mode wins over the legacy reason-string convention below
+        // (the desktop app always sends the absolute new stock, whatever the reason).
+        if (mode === 'absolute') {
+            if (newQuantity < 0) {
+                return res.status(400).json({ message: 'Absolute stock cannot be negative.' });
+            }
+            finalStock = newQuantity;
+            delta = finalStock - oldQuantity;
+        } else if (mode === 'delta') {
+            delta = newQuantity;
+            finalStock = Math.max(0, oldQuantity + newQuantity);
+        } else if (reason === 'Stock Count') {
             // Absolute set; must be non-negative
             if (newQuantity < 0) {
                 return res.status(400).json({ message: 'Stock Count cannot be negative.' });

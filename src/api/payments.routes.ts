@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { verifyPayment, getBanks, handleLencoWebhook, initiatePayment, chargeMobileMoney, cancelPayment } from '../controllers/payment.controller';
+import { protect } from '../middleware/auth.middleware';
 
 const router = Router();
 
@@ -18,7 +19,7 @@ const router = Router();
  *             properties:
  *               reference: { type: string }
  */
-router.post('/lenco/verify', verifyPayment);
+router.post('/lenco/verify', protect, verifyPayment);
 
 /**
  * @openapi
@@ -30,7 +31,7 @@ router.post('/lenco/verify', verifyPayment);
  *       200:
  *         description: List of banks
  */
-router.get('/lenco/banks', getBanks);
+router.get('/lenco/banks', protect, getBanks);
 
 /**
  * @openapi
@@ -59,7 +60,7 @@ router.post('/lenco/webhook', handleLencoWebhook);
  *               email: { type: string }
  *               reference: { type: string }
  */
-router.post('/lenco/initiate', initiatePayment);
+router.post('/lenco/initiate', protect, initiatePayment);
 
 /**
  * @openapi
@@ -77,7 +78,7 @@ router.post('/lenco/initiate', initiatePayment);
  *               phone: { type: string }
  *               amount: { type: number }
  */
-router.post('/lenco/charge-mobile-money', chargeMobileMoney);
+router.post('/lenco/charge-mobile-money', protect, chargeMobileMoney);
 
 /**
  * @openapi
@@ -94,6 +95,6 @@ router.post('/lenco/charge-mobile-money', chargeMobileMoney);
  *             properties:
  *               reference: { type: string }
  */
-router.post('/lenco/cancel', cancelPayment);
+router.post('/lenco/cancel', protect, cancelPayment);
 
 export default router;

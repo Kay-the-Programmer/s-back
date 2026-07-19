@@ -134,8 +134,17 @@ export const getRequestDetails = async (req: express.Request, res: express.Respo
             WHERE o.request_id = $1
         `, [id]);
 
+        // Customer contact details are only for the request's owner (sellers get
+        // them via the deal-confirmed notification after an offer is accepted).
+        const row = { ...result.rows[0] };
+        const isOwner = row.customer_id && req.user?.id === row.customer_id;
+        if (!isOwner && req.user?.role !== 'superadmin') {
+            row.customer_email = null;
+            row.customer_phone = null;
+        }
+
         res.status(200).json(toCamelCase({
-            ...result.rows[0],
+            ...row,
             offers: offers.rows
         }));
     } catch (error) {
@@ -145,8 +154,14 @@ export const getRequestDetails = async (req: express.Request, res: express.Respo
 };
 
 export const submitOffer = async (req: express.Request, res: express.Response) => {
-    const { requestId, storeId, sellerPrice, productId } = req.body;
+    const { requestId, sellerPrice, productId } = req.body;
     const offerId = genId('moff');
+    // The offering store is the authenticated user's store — never trusted
+    // from the body, so one store cannot submit offers in another's name.
+    const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
+    if (!storeId) {
+        return res.status(400).json({ message: 'Store context required' });
+    }
 
     try {
         // Update the match status
@@ -196,6 +211,14 @@ export const respondToOffer = async (req: express.Request, res: express.Response
         if (offerRes.rowCount === 0) return res.status(404).json({ message: 'Offer not found' });
         const offer = offerRes.rows[0];
 
+        // Only the customer who created the request (or a superadmin) may
+        // accept/decline offers on it.
+        const ownerRes = await db.query('SELECT customer_id FROM marketplace_requests WHERE id = $1', [offer.request_id]);
+        const ownerId = ownerRes.rows[0]?.customer_id;
+        if (ownerId && req.user?.id !== ownerId && req.user?.role !== 'superadmin') {
+            return res.status(403).json({ message: 'You can only respond to offers on your own requests.' });
+        }
+
         if (action === 'accept') {
             await db.query("UPDATE marketplace_offers SET status = 'accepted' WHERE id = $1", [offerId]);
             await db.query("UPDATE marketplace_requests SET status = 'completed' WHERE id = $1", [offer.request_id]);
@@ -242,6 +265,11 @@ export const respondToOffer = async (req: express.Request, res: express.Response
 
 export const getStorePendingMatches = async (req: express.Request, res: express.Response) => {
     const { storeId } = req.params;
+    // A store may only read its own pending matches.
+    const ownStoreId = (req as any).tenant?.storeId || req.user?.currentStoreId;
+    if (storeId !== ownStoreId && req.user?.role !== 'superadmin') {
+        return res.status(403).json({ message: 'Forbidden' });
+    }
     try {
         const result = await db.query(`
             SELECT m.*, r.query, r.target_price, r.customer_name, r.created_at as request_created_at

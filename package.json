@@ -11,7 +11,8 @@
     "db:seed": "ts-node src/seed.ts",
     "db:reset": "ts-node src/reset_db.ts",
     "superadmin:reset": "ts-node src/scripts/reset_superadmin.ts",
-    "test:financial": "node tests/financial-invariants.test.mjs"
+    "test:financial": "node tests/financial-invariants.test.mjs",
+    "test:contract": "node tests/desktop-contract.test.mjs"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.19.0",

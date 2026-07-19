@@ -219,8 +219,24 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 export const createSale = async (req: express.Request, res: express.Response) => {
     const client = await db._pool.connect();
     const { payments, ...saleData } = req.body as Sale;
-    const transactionId = generateId(saleData.paymentStatus === 'unpaid' ? 'INV' : 'SALE');
-    const timestamp = new Date().toISOString();
+    // Offline-first clients (desktop app, queued web sales) key their local
+    // records — and later returns — by a client-generated transactionId, so a
+    // stable client id is honored. The web app's "temp_*" placeholders and
+    // anything unsafe fall back to a server-minted id.
+    const clientTxId = typeof saleData.transactionId === 'string' ? saleData.transactionId.trim() : '';
+    const transactionId = /^(?!temp_)[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/.test(clientTxId)
+        ? clientTxId
+        : generateId(saleData.paymentStatus === 'unpaid' ? 'INV' : 'SALE');
+    // Offline sales sync hours or days after the fact; reports must attribute
+    // them to when they happened, not when they arrived. Client timestamps are
+    // trusted within [-90d, +5min] of server time.
+    const nowMs = Date.now();
+    const clientTsMs = Date.parse(String(saleData.timestamp || ''));
+    const timestamp = Number.isFinite(clientTsMs)
+        && clientTsMs <= nowMs + 5 * 60 * 1000
+        && clientTsMs >= nowMs - 90 * 24 * 60 * 60 * 1000
+        ? new Date(clientTsMs).toISOString()
+        : new Date().toISOString();
 
     // Enforce tenant context
     const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
@@ -492,8 +508,14 @@ export const createSale = async (req: express.Request, res: express.Response) =>
 
         res.status(201).json(saleResponse);
 
-    } catch (error) {
+    } catch (error: any) {
         await client.query('ROLLBACK');
+        // A client-supplied transactionId that already exists means this sale
+        // was already recorded (e.g. a retry whose idempotency cache expired) —
+        // signal "already there" rather than a retryable server failure.
+        if (error?.code === '23505' && String(error?.constraint || '').startsWith('sales_')) {
+            return res.status(409).json({ message: 'A sale with this transactionId already exists.', transactionId });
+        }
         console.error('Error creating sale:', error);
         res.status(500).json({ message: 'Failed to create sale' });
     } finally {

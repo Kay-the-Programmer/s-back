@@ -90,6 +90,25 @@ export const protect = async (req: express.Request, res: express.Response, next:
             };
             req.user = user;
 
+            // ── Email-verification gate (unbypassable choke point) ──────────────
+            // Every protected route passes through here, so no token — however it
+            // was obtained — grants access to any application resource while the
+            // account's email is unverified. The ONLY endpoints reachable while
+            // unverified are the ones required to complete verification or inspect
+            // the session. `superadmin` is exempt: it is a seeded platform operator
+            // and can never be reached through self-registration (registerUser and
+            // googleLogin hardcode non-superadmin roles).
+            const lowerUrl = (req.originalUrl || req.url || '').toLowerCase();
+            const verificationExempt = /^\/api\/auth\/(me|resend-verification|verify-registration|verify-email|logout)(\/|\?|$)/.test(lowerUrl);
+            if (!user.isVerified && user.role !== 'superadmin' && !verificationExempt) {
+                return res.status(403).json({
+                    message: 'Please verify your email address to continue.',
+                    code: 'EMAIL_NOT_VERIFIED',
+                    requiresVerification: true,
+                    email: user.email,
+                });
+            }
+
             // Enforce store activation unless superadmin.
             // Store-agnostic routes are exempt: /auth/* (session) and /stores/*
             // (the Business Manager — check-name, register, mine, summary,

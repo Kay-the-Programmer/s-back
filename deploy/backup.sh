@@ -4,7 +4,8 @@
 # Backs up BOTH the Postgres database and the uploads/ directory (product
 # images live on local disk when Cloudinary is not configured — losing them
 # is losing every product photo). Keeps 14 days locally. Optionally uploads
-# to OCI Object Storage if the `oci` CLI is configured and BUCKET is set.
+# to Google Cloud Storage if the `gsutil` CLI is configured and BUCKET is set.
+# Set up offsite copies — local-only backups do not survive losing the VM.
 set -euo pipefail
 
 BACKUP_DIR="${BACKUP_DIR:-$HOME/backups}"
@@ -28,9 +29,9 @@ fi
 find "$BACKUP_DIR" -name 'salepilot-*.sql.gz' -mtime +14 -delete
 find "$BACKUP_DIR" -name 'uploads-*.tar.gz' -mtime +14 -delete
 
-# Optional offsite copy (OCI Object Storage, 20 GB Always Free)
-if [ -n "$BUCKET" ] && command -v oci >/dev/null 2>&1; then
-    oci os object put --bucket-name "$BUCKET" --file "$FILE" --name "$(basename "$FILE")" --force
-    [ -f "$UPLOADS_FILE" ] && oci os object put --bucket-name "$BUCKET" --file "$UPLOADS_FILE" --name "$(basename "$UPLOADS_FILE")" --force
+# Optional offsite copy (Google Cloud Storage, 5 GB Always Free in a US region)
+if [ -n "$BUCKET" ] && command -v gsutil >/dev/null 2>&1; then
+    gsutil cp "$FILE" "gs://$BUCKET/$(basename "$FILE")"
+    [ -f "$UPLOADS_FILE" ] && gsutil cp "$UPLOADS_FILE" "gs://$BUCKET/$(basename "$UPLOADS_FILE")"
     echo "$(date -Is) uploaded to bucket $BUCKET"
 fi

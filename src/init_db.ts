@@ -100,7 +100,7 @@ async function initializeDatabase() {
             const salt = await bcrypt.genSalt(10);
             const passwordHash = await bcrypt.hash('password', salt);
             await client.query(
-                'INSERT INTO users (id, name, email, password_hash, role) VALUES ($1, $2, $3, $4, $5)',
+                'INSERT INTO users (id, name, email, password_hash, role, is_verified) VALUES ($1, $2, $3, $4, $5, TRUE)',
                 ['user_admin_default', 'Admin User', 'admin@sale-pilot.com', passwordHash, 'admin']
             );
             console.log('✅ Default admin user created (admin@sale-pilot.com / password)');
@@ -119,12 +119,21 @@ async function initializeDatabase() {
             const salt2 = await bcrypt.genSalt(10);
             const passwordHash2 = await bcrypt.hash(superAdminPassword, salt2);
             await client.query(
-                'INSERT INTO users (id, name, email, password_hash, role) VALUES ($1, $2, $3, $4, $5)',
+                'INSERT INTO users (id, name, email, password_hash, role, is_verified) VALUES ($1, $2, $3, $4, $5, TRUE)',
                 ['user_superadmin_default', 'Super Admin', superAdminEmail, passwordHash2, 'superadmin']
             );
             // Never log the password — container logs persist and are readable.
             console.log(`✅ Superadmin user created (${superAdminEmail})`);
         }
+        // Idempotently ensure operator accounts are verified so the email-
+        // verification gate can never lock them out — covers DBs seeded before
+        // is_verified was set at insert time. Superadmin is also role-exempt.
+        await client.query(
+            `UPDATE users SET is_verified = TRUE
+             WHERE (id IN ('user_admin_default', 'user_superadmin_default') OR email = $1)
+               AND is_verified IS NOT TRUE`,
+            [superAdminEmail]
+        );
         await client.query('COMMIT');
 
         // Phase A1: Multi-tenant base tables and columns

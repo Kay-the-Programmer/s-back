@@ -71,10 +71,14 @@ router.post('/register-supplier', registerSupplier);
 router.post('/forgot-password', forgotPassword);
 router.post('/reset-password', resetPassword);
 
-// Email Verification
+// Email Verification.
+// These must be reachable WITHOUT a session: under the enforced flow an
+// unverified account is never issued a token, so it can only complete
+// verification through these public, email-addressed endpoints. Brute-force is
+// bounded by the strict authLimiter applied to them in index.ts.
 router.post('/verify-email', verifyEmail);
 router.post('/verify-registration', verifyRegistration);
-router.post('/resend-verification', protect, resendVerificationEmail); // Protected usually, or allow plain post if only email
+router.post('/resend-verification', resendVerificationEmail);
 
 /**
  * @openapi

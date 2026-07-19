@@ -49,6 +49,25 @@ export const loginUser = async (req: express.Request, res: express.Response) => 
         const user = result.rows[0];
 
         if (user && user.password_hash && (await bcrypt.compare(String(password), user.password_hash))) {
+            // Hard gate: an unverified account cannot obtain a session. We issue no
+            // token and instead re-send a fresh OTP so the user can verify. The
+            // seeded superadmin is exempt (see the protect-middleware rationale).
+            if (!user.is_verified && user.role !== 'superadmin') {
+                try {
+                    const otp = generateOTP();
+                    await db.query('UPDATE users SET verification_token = $1 WHERE id = $2', [otp, user.id]);
+                    invalidateUserCache(user.id);
+                    await sendOTPVerificationEmail(user.email, otp);
+                } catch (e) {
+                    console.error('[login] Failed to resend verification OTP:', e);
+                }
+                return res.status(403).json({
+                    message: 'Please verify your email address before signing in. We just sent a new verification code to your inbox.',
+                    code: 'EMAIL_NOT_VERIFIED',
+                    requiresVerification: true,
+                    email: user.email,
+                });
+            }
             const userResponse = toCamelCase({
                 id: user.id,
                 name: user.name,
@@ -118,9 +137,12 @@ export const registerUser = async (req: express.Request, res: express.Response) 
             // Don't fail registration, just log it. User can request resend.
         }
 
+        // No session token is issued at registration — the account is unusable
+        // until the email is verified (enforced by loginUser + the protect gate).
+        // The client must call /auth/verify-registration, then /auth/login.
         const userResponse = toCamelCase({
             ...newUser,
-            token: generateToken(newUser.id),
+            requiresVerification: true,
         });
 
         return res.status(201).json(userResponse);
@@ -174,9 +196,10 @@ export const registerCustomer = async (req: express.Request, res: express.Respon
             await sendOTPVerificationEmail(newUser.email, verificationToken);
         } catch (e) { console.error('Email send failed', e); }
 
+        // No session token at registration — verify email first, then log in.
         const userResponse = toCamelCase({
             ...newUser,
-            token: generateToken(newUser.id),
+            requiresVerification: true,
         });
 
         return res.status(201).json(userResponse);
@@ -222,9 +245,10 @@ export const registerSupplier = async (req: express.Request, res: express.Respon
             await sendOTPVerificationEmail(newUser.email, verificationToken);
         } catch (e) { console.error('Email send failed', e); }
 
+        // No session token at registration — verify email first, then log in.
         const userResponse = toCamelCase({
             ...newUser,
-            token: generateToken(newUser.id),
+            requiresVerification: true,
         });
 
         return res.status(201).json(userResponse);
@@ -483,6 +507,11 @@ export const googleLogin = async (req: express.Request, res: express.Response) =
         const name = googleUser.displayName;
         const normEmail = String(email).toLowerCase();
         const profilePicture = googleUser.photoUrl || null;
+        // Trust the identity provider's own verification signal. Real Google
+        // sign-ins carry a verified email; only treat it as unverified if the
+        // provider explicitly says so. This keeps the "no unverified sessions"
+        // guarantee consistent across the password and Google paths.
+        const emailVerified = googleUser.emailVerified !== false;
 
         // Check if user exists
         const result = await db.query(`
@@ -510,12 +539,15 @@ export const googleLogin = async (req: express.Request, res: express.Response) =
 
             const insertResult = await db.query(
                 'INSERT INTO users(id, name, email, password_hash, role, profile_picture, is_verified) VALUES($1, $2, $3, $4, $5, $6, $7) RETURNING id, name, email, role, phone, profile_picture, is_verified',
-                [id, String(name || 'Google User'), normEmail, password_hash, role, profilePicture, true]
+                [id, String(name || 'Google User'), normEmail, password_hash, role, profilePicture, emailVerified]
             );
             user = insertResult.rows[0];
         } else {
-            // If user exists but is not verified, mark them as verified now that they've logged in via Google
-            if (!user.is_verified) {
+            // If the user exists but is unverified, only promote them to verified
+            // when the identity provider confirms the email. This prevents Google
+            // sign-in from being used to skip verification on an account whose
+            // email the provider has NOT verified.
+            if (!user.is_verified && emailVerified) {
                 await db.query('UPDATE users SET is_verified = TRUE WHERE id = $1', [user.id]);
                 user.is_verified = true;
                 invalidateUserCache(user.id);

@@ -125,14 +125,16 @@ export const finalizeStockTake = async (req: express.Request, res: express.Respo
         let totalAdjustmentValue = 0;
 
         for (const item of session.items) {
-            if (item.counted !== null && Number(item.counted) !== Number(item.expected)) {
+            // session.items are raw DB rows — snake_case column names.
+            const productId = item.product_id;
+            if (productId && item.counted !== null && Number(item.counted) !== Number(item.expected)) {
                 // Fetch current cost price to value the adjustment
-                const productRes = await client.query("SELECT cost_price FROM products WHERE id = $1 AND store_id = $2", [item.productId, storeId]);
+                const productRes = await client.query("SELECT cost_price FROM products WHERE id = $1 AND store_id = $2", [productId, storeId]);
                 const costPrice = productRes.rowCount > 0 ? parseFloat(productRes.rows[0].cost_price || 0) : 0;
                 const diff = Number(item.counted) - Number(item.expected);
                 totalAdjustmentValue += (diff * costPrice);
 
-                await client.query("UPDATE products SET stock = $1 WHERE id = $2 AND store_id = $3", [item.counted, item.productId, storeId]);
+                await client.query("UPDATE products SET stock = $1 WHERE id = $2 AND store_id = $3", [item.counted, productId, storeId]);
             }
         }
 

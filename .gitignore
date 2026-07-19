@@ -7,6 +7,7 @@ yarn-error.log
 # Environment variables (any file that could hold real secrets)
 .env
 .env.*
+!.env.example
 !.env.production.example
 prod.env
 *.env.bak*

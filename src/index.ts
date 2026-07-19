@@ -114,7 +114,10 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
   message: { message: 'Too many attempts. Please try again in a few minutes.' },
 });
-for (const p of ['/api/auth/login', '/api/auth/register', '/api/auth/google', '/api/auth/forgot-password', '/api/auth/reset-password']) {
+// verify-* and resend-verification are included so a 6-digit OTP can't be
+// brute-forced: skipSuccessfulRequests means only wrong guesses count, capping
+// attempts at 30 per 10 min per IP.
+for (const p of ['/api/auth/login', '/api/auth/register', '/api/auth/register-customer', '/api/auth/register-supplier', '/api/auth/google', '/api/auth/forgot-password', '/api/auth/reset-password', '/api/auth/verify-registration', '/api/auth/verify-email', '/api/auth/resend-verification']) {
   app.use(p, authLimiter);
 }
 // Generous global limiter — a ceiling against runaway clients/scrapers, far

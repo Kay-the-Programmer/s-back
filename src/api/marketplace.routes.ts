@@ -59,7 +59,7 @@ router.get('/requests/recent', getRecentRequests);
  *         schema:
  *           type: string
  */
-router.get('/requests/:id', getRequestDetails);
+router.get('/requests/:id', protect, getRequestDetails);
 
 /**
  * @openapi
@@ -96,7 +96,7 @@ router.get('/my-orders', protect, getMyOrders);
  *         schema:
  *           type: string
  */
-router.post('/offers/:offerId/respond', respondToOffer);
+router.post('/offers/:offerId/respond', protect, respondToOffer);
 
 /**
  * @openapi
@@ -114,7 +114,7 @@ router.post('/offers/:offerId/respond', respondToOffer);
  *               requestId: { type: string }
  *               price: { type: number }
  */
-router.post('/offers', submitOffer);
+router.post('/offers', protect, submitOffer);
 
 /**
  * @openapi
@@ -129,6 +129,6 @@ router.post('/offers', submitOffer);
  *         schema:
  *           type: string
  */
-router.get('/stores/:storeId/matches', getStorePendingMatches);
+router.get('/stores/:storeId/matches', protect, getStorePendingMatches);
 
 export default router;
