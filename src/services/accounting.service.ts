@@ -192,6 +192,13 @@ const recordSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) 
         { accountId: inventoryAccount.id, accountName: inventoryAccount.name, type: 'credit', amount: totalCogs },
     ];
 
+    // Online-order delivery fee is part of sale.total (debited to cash/AR
+    // below) so it needs a matching credit line to keep the entry balanced.
+    const deliveryFee = Number((sale as any).deliveryFee || 0);
+    if (deliveryFee > 0.001) {
+        journalLines.push({ accountId: defaultRevenueAccount.id, accountName: defaultRevenueAccount.name, type: 'credit', amount: deliveryFee });
+    }
+
     if (amountPaid > 0) {
         if (sale.cashReceived && sale.changeDue && sale.cashReceived > 0) {
             // Explicitly record gross cash in and change out for better audit trail
@@ -325,6 +332,12 @@ const voidSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) =>
         { accountId: taxAccount.id, accountName: taxAccount.name, type: 'debit', amount: sale.tax },
         { accountId: inventoryAccount.id, accountName: inventoryAccount.name, type: 'debit', amount: totalCogs },
     ];
+
+    // Mirror recordSale's delivery-fee credit so the reversal balances too.
+    const voidDeliveryFee = Number((sale as any).deliveryFee || 0);
+    if (voidDeliveryFee > 0.001) {
+        journalLines.push({ accountId: defaultRevenueAccount.id, accountName: defaultRevenueAccount.name, type: 'debit', amount: voidDeliveryFee });
+    }
 
     if (amountPaid > 0) {
         journalLines.push({ accountId: cashAccount.id, accountName: cashAccount.name, type: 'credit', amount: amountPaid });

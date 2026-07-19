@@ -465,6 +465,14 @@ async function initializeDatabase() {
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_customers_store_id ON customers(store_id);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_customers_store_id_created_at ON customers(store_id, created_at);`);
+        // Link store-scoped customer records to a marketplace user account.
+        // customers.id is a GLOBAL PK, so a signed-in buyer cannot reuse their
+        // user id as the customer id in more than one store — per-store records
+        // get their own ids and point back to the account via user_id.
+        await client.query(`ALTER TABLE customers ADD COLUMN IF NOT EXISTS user_id TEXT;`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_customers_user_id ON customers(user_id);`);
+        // Backfill: legacy rows created by online checkout used id = users.id.
+        await client.query(`UPDATE customers SET user_id = id WHERE user_id IS NULL AND id IN (SELECT id FROM users);`);
         // Sales and related
         await client.query(`
             CREATE TABLE IF NOT EXISTS sales (
@@ -523,6 +531,8 @@ async function initializeDatabase() {
                     -- Cashier attribution shown on receipts ("Attended by")
                     ALTER TABLE sales ADD COLUMN IF NOT EXISTS attended_by TEXT;
                     ALTER TABLE sales ADD COLUMN IF NOT EXISTS attended_by_id TEXT;
+                    -- Online-order delivery fee (0 for POS/pickup); included in total
+                    ALTER TABLE sales ADD COLUMN IF NOT EXISTS delivery_fee DECIMAL(10,2) NOT NULL DEFAULT 0;
                     
                     ALTER TABLE sales ALTER COLUMN fulfillment_status SET DEFAULT 'fulfilled';
                     ALTER TABLE sales ALTER COLUMN channel SET DEFAULT 'pos';
@@ -760,6 +770,11 @@ async function initializeDatabase() {
         // Premium add-on entitlements (modular packaging). Empty by default, so
         // gated features such as SMS messaging start locked until granted.
         await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS enabled_modules TEXT[] NOT NULL DEFAULT '{}';`);
+        // B2B wholesale marketplace: stores that opt in are listed as suppliers
+        // on /marketplace so retailers can source stock from them.
+        await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS is_wholesale_supplier BOOLEAN NOT NULL DEFAULT FALSE;`);
+        // Flat delivery fee charged on online orders fulfilled by delivery.
+        await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS delivery_fee DECIMAL(10,2) NOT NULL DEFAULT 0;`);
         // Migrate legacy singleton settings table to per-store if needed
         await client.query(`
             DO $$

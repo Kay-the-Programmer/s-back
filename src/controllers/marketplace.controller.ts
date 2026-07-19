@@ -306,16 +306,20 @@ export const getMyOrders = async (req: express.Request, res: express.Response) =
     try {
         // Fetch sales where the customer_id matches the logged-in user
         // We also join with sale_items to get product details (simplified JSON agg)
+        // Match both legacy rows (customer_id = user id directly) and the
+        // per-store customer records that link back via customers.user_id.
         const result = await db.query(`
             SELECT s.*,
                    ss.name as store_name,
+                   ss.currency as store_currency,
                    COALESCE(json_agg(jsonb_build_object('name', p.name, 'quantity', si.quantity, 'price', si.price_at_sale)) FILTER (WHERE si.id IS NOT NULL), '[]') as items
             FROM sales s
             JOIN store_settings ss ON s.store_id = ss.store_id
+            LEFT JOIN customers c ON s.customer_id = c.id AND c.store_id = s.store_id
             LEFT JOIN sale_items si ON s.transaction_id = si.sale_id AND si.store_id = s.store_id
             LEFT JOIN products p ON si.product_id = p.id AND p.store_id = s.store_id
-            WHERE s.customer_id = $1
-            GROUP BY s.transaction_id, ss.name
+            WHERE s.customer_id = $1 OR c.user_id = $1
+            GROUP BY s.transaction_id, ss.name, ss.currency
             ORDER BY s.timestamp DESC
         `, [customerId]);
 

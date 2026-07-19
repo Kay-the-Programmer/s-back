@@ -3,6 +3,8 @@ import db from '../db_client';
 import { toCamelCase, generateId } from '../utils/helpers';
 import { accountingService } from '../services/accounting.service';
 import SocketService from '../services/socket.service';
+import { sendTemplatedEmail } from '../services/email-template.service';
+import { pushService } from '../services/push.service';
 
 // Whitelisted sort options → SQL. Never interpolate the raw query param.
 const PRODUCT_SORTS: Record<string, string> = {
@@ -60,7 +62,7 @@ export const getShopInfo = async (req: express.Request, res: express.Response) =
 
         // Also fetch public store settings (currency, contact info, etc.)
         const settingsResult = await db.query(
-            'SELECT name, address, phone, email, website, currency, tax_rate, is_online_store_enabled, receipt_message FROM store_settings WHERE store_id = $1',
+            'SELECT name, address, phone, email, website, currency, tax_rate, delivery_fee, is_online_store_enabled, is_wholesale_supplier, receipt_message FROM store_settings WHERE store_id = $1',
             [storeId]
         );
 
@@ -187,12 +189,17 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
     // Sanitize free-text customer fields: trim + length-cap. These are stored and
     // later rendered in the store dashboard, so keep them bounded.
     const capStr = (v: any, max: number) => String(v ?? '').trim().slice(0, max) || null;
+    // Fulfillment method drives the delivery fee; legacy clients that don't
+    // send it are treated as fee-free (fee only ever applies to 'delivery').
+    const fulfillment = req.body.fulfillment === 'pickup' ? 'pickup'
+        : req.body.fulfillment === 'delivery' ? 'delivery' : null;
     customerDetails = {
         name: capStr(customerDetails.name, 120),
         email: capStr(customerDetails.email, 254)?.toLowerCase() || null,
         phone: capStr(customerDetails.phone, 32),
         address: capStr(customerDetails.address, 500),
         note: capStr(customerDetails.note, 500),
+        ...(fulfillment ? { fulfillment } : {}),
     };
     if (customerDetails.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerDetails.email)) {
         return res.status(400).json({ message: 'Invalid email address.' });
@@ -225,27 +232,27 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
         const userId = (req as any).user?.id || null;
 
         if (userId) {
-            // Authenticated User: Use their UserID as CustomerID for this store
-            // Check if they are already a customer record in this store
+            // Authenticated buyer: find this store's customer record for the
+            // account. customers.id is a GLOBAL PK, so re-using the user id as
+            // the customer id only works for ONE store — a buyer ordering from
+            // a second store collided on the PK and the whole checkout rolled
+            // back. Per-store records now get their own ids and link back to
+            // the account via customers.user_id (legacy rows kept id=userId,
+            // hence the OR).
             const customerRes = await client.query(
-                'SELECT id FROM customers WHERE id = $1 AND store_id = $2',
+                'SELECT id FROM customers WHERE (user_id = $1 OR id = $1) AND store_id = $2',
                 [userId, storeId]
             );
 
             if ((customerRes.rowCount || 0) > 0) {
                 customerId = customerRes.rows[0].id;
             } else {
-                // Register them as a customer in this store using their UserID
-                customerId = userId;
-
-                // If checking by email found a different ID, we effectively ignore it here 
-                // in favor of the UserID to ensure Marketplace Dashboard visibility.
-                // NOTE: We could merge, but that's complex. For now, we prioritize the UserID link.
-
+                customerId = generateId('cus');
                 await client.query(
-                    'INSERT INTO customers (id, name, email, phone, address, store_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, NOW())',
+                    'INSERT INTO customers (id, user_id, name, email, phone, address, store_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())',
                     [
                         customerId,
+                        userId,
                         customerDetails.name,
                         customerDetails.email,
                         customerDetails.phone,
@@ -362,26 +369,30 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
         }
 
         // Tax at the store's configured rate (was a hardcoded 10% placeholder).
-        const settingsRes = await client.query('SELECT tax_rate FROM store_settings WHERE store_id = $1', [storeId]);
+        const settingsRes = await client.query('SELECT tax_rate, delivery_fee FROM store_settings WHERE store_id = $1', [storeId]);
         const taxRatePct = settingsRes.rowCount ? Number(settingsRes.rows[0].tax_rate) || 0 : 0;
         const round2 = (n: number) => Math.round(n * 100) / 100;
         subtotal = round2(subtotal);
         const tax = round2(subtotal * (taxRatePct / 100));
-        const total = round2(subtotal + tax);
+        // Flat store-configured delivery fee, charged only on delivery orders.
+        const deliveryFee = fulfillment === 'delivery'
+            ? round2(Math.max(0, settingsRes.rowCount ? Number(settingsRes.rows[0].delivery_fee) || 0 : 0))
+            : 0;
+        const total = round2(subtotal + tax + deliveryFee);
         const transactionId = generateId('ord');
         const timestamp = new Date().toISOString();
 
         // 3. Create Sale Record
         await client.query(
             `INSERT INTO sales (
-                transaction_id, "timestamp", customer_id, total, subtotal, tax, discount, 
-                payment_status, fulfillment_status, channel, customer_details, 
-                amount_paid, refund_status, store_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+                transaction_id, "timestamp", customer_id, total, subtotal, tax, discount,
+                payment_status, fulfillment_status, channel, customer_details,
+                amount_paid, refund_status, store_id, delivery_fee
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
             [
                 transactionId, timestamp, customerId, total, subtotal, tax, 0,
                 'unpaid', 'pending', 'online', JSON.stringify(customerDetails),
-                0, 'none', storeId
+                0, 'none', storeId, deliveryFee
             ]
         );
 
@@ -407,6 +418,7 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
             total,
             subtotal,
             tax,
+            deliveryFee,
             discount: 0,
             paymentStatus: 'unpaid',
             amountPaid: 0,
@@ -422,6 +434,9 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
             message: 'Order placed successfully',
             orderId: transactionId,
             total,
+            subtotal,
+            tax,
+            deliveryFee,
             status: 'pending',
             timestamp,
             customerId,
@@ -443,6 +458,34 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
             console.error('Failed to broadcast new shop order via socket:', socketError);
         }
 
+        // Durable owner notification + web push (mirrors the POS createSale
+        // pattern) — the socket event above is lost unless a dashboard is open.
+        try {
+            await pushService.sendToStore(storeId, {
+                title: 'New online order 🛍️',
+                body: `Order ${transactionId} — ${customerDetails.name} — ${total.toFixed(2)} (${fulfillment || 'delivery/pickup'})`,
+                url: '/pos/history',
+            }, ['admin', 'staff', 'superadmin']);
+        } catch (pushError) {
+            console.error('Failed to send push notification for shop order:', pushError);
+        }
+
+        // Order confirmation email to the buyer (configurable engine template).
+        if (customerDetails.email) {
+            try {
+                const nameRes = await db.query('SELECT name, currency FROM store_settings WHERE store_id = $1', [storeId]);
+                await sendTemplatedEmail('ORDER_CONFIRMATION', customerDetails.email, {
+                    storeName: nameRes.rows[0]?.name || 'the store',
+                    currency: nameRes.rows[0]?.currency?.symbol || 'K',
+                    userName: customerDetails.name || 'Customer',
+                    transactionId,
+                    total,
+                });
+            } catch (emailError) {
+                console.error('Failed to send shop order confirmation email:', emailError);
+            }
+        }
+
         res.status(201).json(orderResponse);
 
     } catch (error) {
@@ -460,12 +503,17 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
 
 export const getPublicStores = async (req: express.Request, res: express.Response) => {
     try {
+        // ?wholesale=1 → only stores that opted into the B2B wholesale
+        // marketplace (the /marketplace supplier directory uses this).
+        const wholesaleOnly = String(req.query.wholesale || '') === '1';
         const result = await db.query(`
-            SELECT s.id, s.name, s.status, ss.address, ss.phone, ss.email, ss.website, 
+            SELECT s.id, s.name, s.status, ss.address, ss.phone, ss.email, ss.website,
+            COALESCE(ss.is_wholesale_supplier, FALSE) as is_wholesale_supplier,
             COALESCE(ss.currency, '{"code":"USD","symbol":"$","position":"before"}') as currency
             FROM stores s
             LEFT JOIN store_settings ss ON s.id = ss.store_id
             WHERE s.status = 'active' AND (ss.is_online_store_enabled IS NULL OR ss.is_online_store_enabled = TRUE)
+            ${wholesaleOnly ? 'AND ss.is_wholesale_supplier = TRUE' : ''}
         `);
 
         // Helper to parse currency safely
@@ -503,6 +551,10 @@ export const getGlobalProducts = async (req: express.Request, res: express.Respo
             AND s.status = 'active'
             AND (ss.is_online_store_enabled IS NULL OR ss.is_online_store_enabled = TRUE)
         `;
+        // ?wholesale=1 → only products from opted-in wholesale suppliers.
+        if (String(req.query.wholesale || '') === '1') {
+            whereClause += ` AND ss.is_wholesale_supplier = TRUE`;
+        }
         const params: any[] = [];
 
         if (search) {
@@ -591,7 +643,7 @@ export const getShopOrderStatus = async (req: express.Request, res: express.Resp
 
     try {
         const saleRes = await db.query(
-            `SELECT transaction_id, "timestamp", total, subtotal, tax,
+            `SELECT transaction_id, "timestamp", total, subtotal, tax, delivery_fee,
                     payment_status, fulfillment_status, customer_details
              FROM sales
              WHERE transaction_id = $1 AND store_id = $2 AND channel = 'online'`,
@@ -633,6 +685,7 @@ export const getShopOrderStatus = async (req: express.Request, res: express.Resp
             total: parseFloat(sale.total),
             subtotal: parseFloat(sale.subtotal),
             tax: parseFloat(sale.tax),
+            delivery_fee: parseFloat(sale.delivery_fee || 0),
             payment_status: sale.payment_status,
             fulfillment_status: sale.fulfillment_status,
             customer_name: details.name || null,

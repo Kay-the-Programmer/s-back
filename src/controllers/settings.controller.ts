@@ -125,8 +125,8 @@ export const updateSettings = async (req: express.Request, res: express.Response
         newSettings.enableStoreCredit = newSettings.enableStoreCredit === true;
 
         const query = `
-            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled, lenco_public_key, lenco_secret_key)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled, lenco_public_key, lenco_secret_key, is_wholesale_supplier, delivery_fee)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, COALESCE($18, FALSE), COALESCE($19, 0))
             ON CONFLICT (store_id) DO UPDATE SET
                                            name = EXCLUDED.name,
                                            address = EXCLUDED.address,
@@ -143,7 +143,9 @@ export const updateSettings = async (req: express.Request, res: express.Response
                                            supplier_payment_methods = EXCLUDED.supplier_payment_methods,
                                            is_online_store_enabled = EXCLUDED.is_online_store_enabled,
                                            lenco_public_key = EXCLUDED.lenco_public_key,
-                                           lenco_secret_key = EXCLUDED.lenco_secret_key
+                                           lenco_secret_key = EXCLUDED.lenco_secret_key,
+                                           is_wholesale_supplier = COALESCE($18, store_settings.is_wholesale_supplier),
+                                           delivery_fee = COALESCE($19, store_settings.delivery_fee)
             RETURNING *;
         `;
         const values = [
@@ -153,7 +155,11 @@ export const updateSettings = async (req: express.Request, res: express.Response
             newSettings.skuPrefix, newSettings.enableStoreCredit, JSON.stringify(newSettings.paymentMethods), JSON.stringify(newSettings.supplierPaymentMethods),
             newSettings.isOnlineStoreEnabled ?? true,
             newSettings.lencoPublicKey,
-            newSettings.lencoSecretKey
+            newSettings.lencoSecretKey,
+            // undefined → null → COALESCE keeps the stored value, so settings
+            // screens that don't know these fields can't silently reset them.
+            (newSettings as any).isWholesaleSupplier === undefined ? null : (newSettings as any).isWholesaleSupplier === true,
+            (newSettings as any).deliveryFee === undefined ? null : Math.max(0, Number((newSettings as any).deliveryFee) || 0)
         ];
 
         const result = await db.query(query, values);
