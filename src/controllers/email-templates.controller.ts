@@ -132,7 +132,10 @@ export const testEmailTemplateHandler = async (req: express.Request, res: expres
             html: typeof req.body?.html === 'string' ? req.body.html : undefined,
         });
         if (!rendered) return res.status(404).json({ message: 'Unknown email template.' });
-        await sendEmail(to, `[TEST] ${rendered.subject}`, rendered.html);
+        const sent = await sendEmail(to, `[TEST] ${rendered.subject}`, rendered.html);
+        if (!sent) {
+            return res.status(502).json({ message: 'The email transport rejected the message — check BREVO_API_KEY / SMTP settings and the server logs.' });
+        }
         await auditService.log(req.user!, 'Email Template Test Sent', `Template: ${key} → ${to}`);
         return res.status(200).json({ message: `Test email sent to ${to}.` });
     } catch (e: any) {

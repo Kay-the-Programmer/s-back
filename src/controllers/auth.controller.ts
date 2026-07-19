@@ -53,18 +53,22 @@ export const loginUser = async (req: express.Request, res: express.Response) => 
             // token and instead re-send a fresh OTP so the user can verify. The
             // seeded superadmin is exempt (see the protect-middleware rationale).
             if (!user.is_verified && user.role !== 'superadmin') {
+                let otpSent = false;
                 try {
                     const otp = generateOTP();
                     await db.query('UPDATE users SET verification_token = $1 WHERE id = $2', [otp, user.id]);
                     invalidateUserCache(user.id);
-                    await sendOTPVerificationEmail(user.email, otp);
+                    otpSent = await sendOTPVerificationEmail(user.email, otp);
                 } catch (e) {
                     console.error('[login] Failed to resend verification OTP:', e);
                 }
                 return res.status(403).json({
-                    message: 'Please verify your email address before signing in. We just sent a new verification code to your inbox.',
+                    message: otpSent
+                        ? 'Please verify your email address before signing in. We just sent a new verification code to your inbox.'
+                        : 'Please verify your email address before signing in. We could not send a verification code right now — use "Resend code" in a moment.',
                     code: 'EMAIL_NOT_VERIFIED',
                     requiresVerification: true,
+                    emailSent: otpSent,
                     email: user.email,
                 });
             }
@@ -129,12 +133,13 @@ export const registerUser = async (req: express.Request, res: express.Response) 
             await referralService.processReferral(newUser.id, signupReferralCode);
         }
 
-        // Send OTP verification email
+        // Send OTP verification email. The account is created either way (the
+        // user can "Resend code" later), but the client is told the truth.
+        let emailSent = false;
         try {
-            await sendOTPVerificationEmail(newUser.email, verificationToken);
+            emailSent = await sendOTPVerificationEmail(newUser.email, verificationToken);
         } catch (emailError) {
             console.error('Failed to send verification email:', emailError);
-            // Don't fail registration, just log it. User can request resend.
         }
 
         // No session token is issued at registration — the account is unusable
@@ -143,6 +148,7 @@ export const registerUser = async (req: express.Request, res: express.Response) 
         const userResponse = toCamelCase({
             ...newUser,
             requiresVerification: true,
+            emailSent,
         });
 
         return res.status(201).json(userResponse);
@@ -192,14 +198,16 @@ export const registerCustomer = async (req: express.Request, res: express.Respon
         }
 
         // Send verification email
+        let emailSent = false;
         try {
-            await sendOTPVerificationEmail(newUser.email, verificationToken);
+            emailSent = await sendOTPVerificationEmail(newUser.email, verificationToken);
         } catch (e) { console.error('Email send failed', e); }
 
         // No session token at registration — verify email first, then log in.
         const userResponse = toCamelCase({
             ...newUser,
             requiresVerification: true,
+            emailSent,
         });
 
         return res.status(201).json(userResponse);
@@ -241,14 +249,16 @@ export const registerSupplier = async (req: express.Request, res: express.Respon
         );
         const newUser = insertResult.rows[0];
 
+        let emailSent = false;
         try {
-            await sendOTPVerificationEmail(newUser.email, verificationToken);
+            emailSent = await sendOTPVerificationEmail(newUser.email, verificationToken);
         } catch (e) { console.error('Email send failed', e); }
 
         // No session token at registration — verify email first, then log in.
         const userResponse = toCamelCase({
             ...newUser,
             requiresVerification: true,
+            emailSent,
         });
 
         return res.status(201).json(userResponse);
@@ -367,8 +377,12 @@ export const resendVerificationEmail = async (req: express.Request, res: express
         await db.query('UPDATE users SET verification_token = $1 WHERE id = $2', [newToken, user.id]);
         console.log(`[resend-verification] Database updated with new token.`);
 
-        await sendOTPVerificationEmail(targetEmail, newToken);
-        console.log(`[resend-verification] Email service called successfully.`);
+        const sent = await sendOTPVerificationEmail(targetEmail, newToken);
+        if (!sent) {
+            // The email transport is configured but rejected/failed — telling the
+            // user "sent" here would strand them at the OTP screen.
+            return res.status(502).json({ message: 'We could not send the verification email. Please try again shortly.' });
+        }
 
         res.json({ message: 'Verification email sent' });
     } catch (error: any) {

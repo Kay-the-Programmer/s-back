@@ -19,11 +19,15 @@ export const notificationSchedulerService = {
             if (tips.length === 0) return;
 
             // Account age approximated from the 'user-<ms>-...' id timestamp.
+            // Ids are TEXT and not all follow that shape (e.g. seeded 'user-fintest-...'),
+            // so only rows whose second segment is numeric are considered.
             const usersResult = await db.query(`
                 SELECT id, name, email, referral_code,
                 (EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(CAST(SPLIT_PART(id, '-', 2) AS BIGINT) / 1000.0))) / 86400)::INT as days_since_reg
                 FROM users
-                WHERE id LIKE 'user-%' AND is_verified = TRUE AND email IS NOT NULL
+                WHERE id LIKE 'user-%'
+                  AND SPLIT_PART(id, '-', 2) ~ '^[0-9]{1,18}$'
+                  AND is_verified = TRUE AND email IS NOT NULL
             `);
 
             for (const user of usersResult.rows) {

@@ -6,7 +6,56 @@ import { appUrl } from '../utils/helpers';
 // Force node to resolve IPv4 addresses first to avoid ENETUNREACH when attempting to connect to IPv6 servers like smtp.gmail.com
 dns.setDefaultResultOrder('ipv4first');
 
-// ─── Nodemailer Configuration ──────────────────────────────────────────────────
+// ─── Sender identity ───────────────────────────────────────────────────────────
+// Brevo requires the sender to be a verified sender/domain in the Brevo account.
+// EMAIL_FROM / EMAIL_FROM_NAME win; otherwise SMTP_FROM ('"Name" <addr>') is parsed.
+const getSender = (): { name: string; email: string } => {
+    const raw = process.env.SMTP_FROM || '"SalePilot" <noreply@salepilot.com>';
+    const match = raw.match(/^\s*"?([^"<]*)"?\s*<([^>]+)>\s*$/);
+    return {
+        name: process.env.EMAIL_FROM_NAME || (match?.[1]?.trim() || 'SalePilot'),
+        email: process.env.EMAIL_FROM || (match?.[2]?.trim() || raw.trim()),
+    };
+};
+
+// ─── Transport 1: Brevo HTTPS API ──────────────────────────────────────────────
+// Free-tier hosts (Render, Railway, …) block outbound SMTP ports entirely, so
+// when BREVO_API_KEY is set we send over HTTPS (port 443) instead. Takes
+// priority over SMTP wherever both are configured.
+const sendViaBrevo = async (to: string, subject: string, html: string, text?: string): Promise<boolean> => {
+    try {
+        const sender = getSender();
+        const resp = await fetch('https://api.brevo.com/v3/smtp/email', {
+            method: 'POST',
+            headers: {
+                'api-key': process.env.BREVO_API_KEY as string,
+                'Content-Type': 'application/json',
+                accept: 'application/json',
+            },
+            body: JSON.stringify({
+                sender,
+                to: [{ email: to }],
+                subject,
+                htmlContent: html,
+                ...(text ? { textContent: text } : {}),
+            }),
+            signal: AbortSignal.timeout(20_000),
+        });
+        if (!resp.ok) {
+            const body = await resp.text().catch(() => '');
+            console.error(`[email] Brevo API error ${resp.status} for "${subject}" -> ${to}: ${body.slice(0, 300)}`);
+            return false;
+        }
+        const data: any = await resp.json().catch(() => ({}));
+        console.log(`[email] Sent via Brevo: ${data.messageId || '(no id)'} -> ${to}`);
+        return true;
+    } catch (error) {
+        console.error('[email] Error sending email via Brevo:', error);
+        return false;
+    }
+};
+
+// ─── Transport 2: SMTP (nodemailer) ────────────────────────────────────────────
 const getTransporter = () => {
     // If SMTP environment variables are not set, return null
     if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
@@ -29,12 +78,23 @@ const getTransporter = () => {
     } as any);
 };
 
-export const sendEmail = async (to: string, subject: string, html: string, text?: string) => {
+/**
+ * Send an email. Returns `true` when a transport accepted the message (or when
+ * no transport is configured — dev mode, where the content is console-logged so
+ * local flows keep working), `false` when a configured transport failed, so
+ * callers on critical paths (registration OTP) can tell the user honestly.
+ */
+export const sendEmail = async (to: string, subject: string, html: string, text?: string): Promise<boolean> => {
+    // Preferred: HTTPS API — works on hosts that block outbound SMTP.
+    if (process.env.BREVO_API_KEY) {
+        return sendViaBrevo(to, subject, html, text);
+    }
+
     const transporter = getTransporter();
 
-    // Fallback: If no SMTP configured, log the email content to console and still write to Firestore
+    // Fallback: If no transport configured, log the email content to console and still write to Firestore
     if (!transporter) {
-        console.warn(`\n=== EMAIL NOT SENT (NO SMTP CONFIG) ===\nTo: ${to}\nSubject: ${subject}\n\n${text || 'HTML Content (see below)\n' + html}\n=======================================\n`);
+        console.warn(`\n=== EMAIL NOT SENT (NO BREVO/SMTP CONFIG) ===\nTo: ${to}\nSubject: ${subject}\n\n${text || 'HTML Content (see below)\n' + html}\n=======================================\n`);
 
         // Optionally keep writing to Firestore for records, but don't fail if it doesn't work.
         if (adminDb) {
@@ -48,7 +108,7 @@ export const sendEmail = async (to: string, subject: string, html: string, text?
                 });
             } catch (e) { }
         }
-        return;
+        return true;
     }
 
     try {
@@ -60,8 +120,10 @@ export const sendEmail = async (to: string, subject: string, html: string, text?
             html,
         });
         console.log(`[email] Message sent: ${info.messageId}`);
+        return true;
     } catch (error) {
         console.error('[email] Error sending email via Nodemailer:', error);
+        return false;
     }
 };
 
@@ -94,21 +156,21 @@ export const sendVerificationEmail = async (email: string, token: string) => {
 };
 
 // ─── OTP Verification email ────────────────────────────────────────────────────
-export const sendOTPVerificationEmail = async (email: string, otp: string) => {
+export const sendOTPVerificationEmail = async (email: string, otp: string): Promise<boolean> => {
     const subject = 'Your SalePilot Verification Code';
     const text = `Your SalePilot verification code is: ${otp}`;
     const html = buildOtpHtml(otp);
 
-    await sendEmail(email, subject, html, text);
+    return sendEmail(email, subject, html, text);
 };
 
 // ─── Store OTP Verification email ──────────────────────────────────────────────
-export const sendStoreOTPVerificationEmail = async (email: string, storeName: string, otp: string) => {
+export const sendStoreOTPVerificationEmail = async (email: string, storeName: string, otp: string): Promise<boolean> => {
     const subject = 'Verify your new SalePilot store';
     const text = `Your verification code for ${storeName} is: ${otp}`;
     const html = buildOtpHtml(otp);
 
-    await sendEmail(email, subject, html, text);
+    return sendEmail(email, subject, html, text);
 };
 
 // ─── Password reset email ──────────────────────────────────────────────────────
