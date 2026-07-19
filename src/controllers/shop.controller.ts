@@ -1,8 +1,26 @@
 import express from 'express';
 import db from '../db_client';
-import { toCamelCase } from '../utils/helpers';
+import { toCamelCase, generateId } from '../utils/helpers';
 import { accountingService } from '../services/accounting.service';
 import SocketService from '../services/socket.service';
+
+// Whitelisted sort options → SQL. Never interpolate the raw query param.
+const PRODUCT_SORTS: Record<string, string> = {
+    name: 'name ASC',
+    price_asc: 'price ASC',
+    price_desc: 'price DESC',
+    newest: 'created_at DESC NULLS LAST, name ASC',
+};
+
+const parsePageParams = (req: express.Request, defaultLimit = 24, maxLimit = 60) => {
+    // Envelope pagination only kicks in when the caller explicitly sends
+    // `page` — otherwise legacy consumers keep getting a plain array.
+    const rawPage = parseInt(String(req.query.page ?? ''), 10);
+    const paginated = Number.isFinite(rawPage) && rawPage > 0;
+    const page = paginated ? rawPage : 1;
+    const limit = Math.min(maxLimit, Math.max(1, parseInt(String(req.query.limit || ''), 10) || defaultLimit));
+    return { page, limit, paginated };
+};
 
 // Helper to filter product fields for public display
 const sanitizeProduct = (product: any) => {
@@ -61,28 +79,47 @@ export const getShopInfo = async (req: express.Request, res: express.Response) =
 export const getShopProducts = async (req: express.Request, res: express.Response) => {
     const { storeId } = req.params;
     const { categoryId, search } = req.query;
+    const { page, limit, paginated } = parsePageParams(req);
+    const orderBy = PRODUCT_SORTS[String(req.query.sort || '')] || PRODUCT_SORTS.name;
 
     try {
-        let queryText = `
-            SELECT * FROM products 
-            WHERE store_id = $1 AND status = 'active'
-        `;
+        let whereClause = `WHERE store_id = $1 AND status = 'active'`;
         const params: any[] = [storeId];
 
         if (categoryId) {
             params.push(categoryId);
-            queryText += ` AND category_id = $${params.length}`;
+            whereClause += ` AND category_id = $${params.length}`;
+        }
+
+        // Availability facet: ?inStock=1 hides sold-out items.
+        if (String(req.query.inStock || '') === '1') {
+            whereClause += ` AND stock > 0`;
         }
 
         if (search) {
             params.push(`%${search}%`);
-            queryText += ` AND (LOWER(name) LIKE LOWER($${params.length}) OR LOWER(description) LIKE LOWER($${params.length}))`;
+            whereClause += ` AND (LOWER(name) LIKE LOWER($${params.length}) OR LOWER(description) LIKE LOWER($${params.length}) OR LOWER(COALESCE(brand,'')) LIKE LOWER($${params.length}) OR LOWER(COALESCE(sku,'')) LIKE LOWER($${params.length}))`;
         }
 
-        queryText += ` ORDER BY name ASC`;
+        let queryText = `SELECT * FROM products ${whereClause} ORDER BY ${orderBy}`;
 
+        if (paginated) {
+            // Envelope response: { items, total, page, pageSize }
+            const countRes = await db.query(`SELECT COUNT(*)::int AS total FROM products ${whereClause}`, params);
+            const total = countRes.rows[0]?.total ?? 0;
+            const pageParams = [...params, limit, (page - 1) * limit];
+            queryText += ` LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+            const result = await db.query(queryText, pageParams);
+            return res.status(200).json({
+                items: toCamelCase(result.rows.map(sanitizeProduct)),
+                total,
+                page,
+                pageSize: limit,
+            });
+        }
+
+        // Legacy contract: plain array when no `page` param is sent.
         const result = await db.query(queryText, params);
-
         const sanitizedProducts = result.rows.map(sanitizeProduct);
         res.status(200).json(toCamelCase(sanitizedProducts));
     } catch (error) {
@@ -113,8 +150,15 @@ export const getShopProductById = async (req: express.Request, res: express.Resp
 export const getShopCategories = async (req: express.Request, res: express.Response) => {
     const { storeId } = req.params;
     try {
+        // Only categories that actually contain live products — a storefront
+        // filter with zero results is noise. product_count powers "(N)" badges.
         const result = await db.query(
-            'SELECT id, name, parent_id FROM categories WHERE store_id = $1 ORDER BY name ASC',
+            `SELECT c.id, c.name, c.parent_id, COUNT(p.id)::int AS product_count
+             FROM categories c
+             JOIN products p ON p.category_id = c.id AND p.store_id = c.store_id AND p.status = 'active'
+             WHERE c.store_id = $1
+             GROUP BY c.id, c.name, c.parent_id
+             ORDER BY c.name ASC`,
             [storeId]
         );
         res.status(200).json(toCamelCase(result.rows));
@@ -126,14 +170,32 @@ export const getShopCategories = async (req: express.Request, res: express.Respo
 
 export const createShopOrder = async (req: express.Request, res: express.Response) => {
     const { storeId } = req.params;
-    const { cart, customerDetails } = req.body;
+    const { cart } = req.body;
+    let { customerDetails } = req.body;
 
-    if (!cart || cart.length === 0) {
+    if (!cart || !Array.isArray(cart) || cart.length === 0) {
         return res.status(400).json({ message: 'Cart cannot be empty' });
     }
+    if (cart.length > 100) {
+        return res.status(400).json({ message: 'Too many items in cart.' });
+    }
 
-    if (!customerDetails || !customerDetails.name) {
+    if (!customerDetails || !String(customerDetails.name || '').trim()) {
         return res.status(400).json({ message: 'Customer details (name) required' });
+    }
+
+    // Sanitize free-text customer fields: trim + length-cap. These are stored and
+    // later rendered in the store dashboard, so keep them bounded.
+    const capStr = (v: any, max: number) => String(v ?? '').trim().slice(0, max) || null;
+    customerDetails = {
+        name: capStr(customerDetails.name, 120),
+        email: capStr(customerDetails.email, 254)?.toLowerCase() || null,
+        phone: capStr(customerDetails.phone, 32),
+        address: capStr(customerDetails.address, 500),
+        note: capStr(customerDetails.note, 500),
+    };
+    if (customerDetails.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerDetails.email)) {
+        return res.status(400).json({ message: 'Invalid email address.' });
     }
 
     const client = await db._pool.connect();
@@ -141,9 +203,26 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
     try {
         await client.query('BEGIN');
 
+        // 0. The store must exist, be active, and have its online store enabled —
+        // otherwise a disabled shop could still accept orders via direct API calls.
+        const storeRes = await client.query(
+            `SELECT s.id FROM stores s
+             LEFT JOIN store_settings ss ON s.id = ss.store_id
+             WHERE s.id = $1 AND s.status = 'active'
+               AND (ss.is_online_store_enabled IS NULL OR ss.is_online_store_enabled = TRUE)`,
+            [storeId]
+        );
+        if (storeRes.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ message: 'Store not found or not accepting online orders.' });
+        }
+
         // 1. Handle Customer (Find or Create)
         let customerId = null;
-        const { userId } = req.body; // Extract userId if authenticated
+        // SECURITY: identity comes ONLY from the verified session (optionalProtect),
+        // never from the request body — a guest could otherwise attach orders to
+        // (and create customer records under) any user's id.
+        const userId = (req as any).user?.id || null;
 
         if (userId) {
             // Authenticated User: Use their UserID as CustomerID for this store
@@ -184,7 +263,7 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
             if ((customerRes.rowCount || 0) > 0) {
                 customerId = customerRes.rows[0].id;
             } else {
-                customerId = `cus_${Math.random().toString(36).substr(2, 9)}`;
+                customerId = generateId('cus');
                 await client.query(
                     'INSERT INTO customers (id, name, email, phone, address, store_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, NOW())',
                     [
@@ -199,7 +278,7 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
             }
         } else {
             // Guest without email
-            customerId = `cus_${Math.random().toString(36).substr(2, 9)}`;
+            customerId = generateId('cus');
             await client.query(
                 'INSERT INTO customers (id, name, email, phone, address, store_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, NOW())',
                 [
@@ -224,15 +303,17 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
                 continue;
             }
 
-            // Validate quantity
+            // Validate quantity (bounded to keep math + storage sane)
             const quantity = parseFloat(item.quantity);
-            if (isNaN(quantity) || quantity <= 0) {
+            if (isNaN(quantity) || quantity <= 0 || quantity > 9999) {
                 console.warn(`Invalid quantity for product ${productId}:`, item.quantity);
                 continue;
             }
 
+            // FOR UPDATE: lock the row so two concurrent checkouts can't both
+            // pass the stock check and oversell the same units.
             const prodRes = await client.query(
-                'SELECT id, price, cost_price, name, stock FROM products WHERE id = $1 AND store_id = $2',
+                'SELECT id, price, cost_price, name, stock FROM products WHERE id = $1 AND store_id = $2 AND status = \'active\' FOR UPDATE',
                 [productId, storeId]
             );
 
@@ -241,6 +322,20 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
                 continue;
             }
             const product = prodRes.rows[0];
+
+            // Stock validation: never let an online order drive stock negative.
+            const available = parseFloat(product.stock);
+            if (!isNaN(available) && available < quantity) {
+                await client.query('ROLLBACK');
+                return res.status(409).json({
+                    message: available > 0
+                        ? `Only ${available} of "${product.name}" left in stock. Please adjust your cart.`
+                        : `"${product.name}" is out of stock. Please remove it from your cart.`,
+                    code: 'INSUFFICIENT_STOCK',
+                    productId,
+                    available,
+                });
+            }
 
             const price = parseFloat(product.price);
             if (isNaN(price)) {
@@ -273,7 +368,7 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
         subtotal = round2(subtotal);
         const tax = round2(subtotal * (taxRatePct / 100));
         const total = round2(subtotal + tax);
-        const transactionId = `ord_${Math.random().toString(36).substr(2, 9)}`;
+        const transactionId = generateId('ord');
         const timestamp = new Date().toISOString();
 
         // 3. Create Sale Record
@@ -395,19 +490,66 @@ export const getPublicStores = async (req: express.Request, res: express.Respons
 };
 
 export const getGlobalProducts = async (req: express.Request, res: express.Response) => {
+    const { search } = req.query;
+    const { page, limit, paginated } = parsePageParams(req);
+    const sortKey = String(req.query.sort || '');
+    const orderBy = PRODUCT_SORTS[sortKey]
+        ? PRODUCT_SORTS[sortKey].replace(/^(name|price|created_at)/g, 'p.$1')
+        : 'p.name ASC';
+
     try {
-        const result = await db.query(`
-            SELECT p.*, s.name as store_name, 
+        let whereClause = `
+            WHERE p.status = 'active'
+            AND s.status = 'active'
+            AND (ss.is_online_store_enabled IS NULL OR ss.is_online_store_enabled = TRUE)
+        `;
+        const params: any[] = [];
+
+        if (search) {
+            params.push(`%${search}%`);
+            whereClause += ` AND (LOWER(p.name) LIKE LOWER($${params.length}) OR LOWER(COALESCE(p.description,'')) LIKE LOWER($${params.length}) OR LOWER(COALESCE(p.brand,'')) LIKE LOWER($${params.length}) OR LOWER(s.name) LIKE LOWER($${params.length}))`;
+        }
+
+        const baseQuery = `
+            SELECT p.*, s.name as store_name,
             COALESCE(ss.currency, '{"code":"USD","symbol":"$","position":"before"}') as store_currency
             FROM products p
             JOIN stores s ON p.store_id = s.id
             LEFT JOIN store_settings ss ON s.id = ss.store_id
-            WHERE p.status = 'active' 
-            AND s.status = 'active'
-            AND (ss.is_online_store_enabled IS NULL OR ss.is_online_store_enabled = TRUE)
-            ORDER BY p.name ASC
-            LIMIT 100
-        `);
+            ${whereClause}
+            ORDER BY ${orderBy}
+        `;
+
+        if (paginated) {
+            const countRes = await db.query(`
+                SELECT COUNT(*)::int AS total
+                FROM products p
+                JOIN stores s ON p.store_id = s.id
+                LEFT JOIN store_settings ss ON s.id = ss.store_id
+                ${whereClause}
+            `, params);
+            const total = countRes.rows[0]?.total ?? 0;
+            const result = await db.query(`${baseQuery} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`, [...params, limit, (page - 1) * limit]);
+            const parseCurrencyRow = (currencyStr: any) => {
+                try {
+                    return typeof currencyStr === 'string' ? JSON.parse(currencyStr) : currencyStr;
+                } catch (e) {
+                    return { code: 'USD', symbol: '$', position: 'before' };
+                }
+            };
+            return res.status(200).json({
+                items: toCamelCase(result.rows.map(p => ({
+                    ...sanitizeProduct(p),
+                    store_name: p.store_name,
+                    currency: parseCurrencyRow(p.store_currency)
+                }))),
+                total,
+                page,
+                pageSize: limit,
+            });
+        }
+
+        const result = await db.query(`${baseQuery} LIMIT 100`, params);
 
         // Helper to parse currency safely
         const parseCurrency = (currencyStr: any) => {
@@ -427,5 +569,81 @@ export const getGlobalProducts = async (req: express.Request, res: express.Respo
     } catch (error) {
         console.error('Error fetching global products:', error);
         res.status(500).json({ message: 'Failed to fetch products' });
+    }
+};
+
+/**
+ * Public order-status lookup for storefront customers.
+ * GET /shop/:storeId/orders/:orderId?email=  (or ?phone=)
+ *
+ * Anti-enumeration: the order id alone is not enough — the caller must also
+ * supply the email or phone that was used at checkout. Returns a minimal,
+ * sanitized view (no internal customer ids, no cost prices).
+ */
+export const getShopOrderStatus = async (req: express.Request, res: express.Response) => {
+    const { storeId, orderId } = req.params;
+    const email = String(req.query.email || '').trim().toLowerCase();
+    const phone = String(req.query.phone || '').replace(/\D/g, '');
+
+    if (!email && !phone) {
+        return res.status(400).json({ message: 'Provide the email or phone used at checkout.' });
+    }
+
+    try {
+        const saleRes = await db.query(
+            `SELECT transaction_id, "timestamp", total, subtotal, tax,
+                    payment_status, fulfillment_status, customer_details
+             FROM sales
+             WHERE transaction_id = $1 AND store_id = $2 AND channel = 'online'`,
+            [orderId, storeId]
+        );
+        if (saleRes.rowCount === 0) {
+            return res.status(404).json({ message: 'Order not found.' });
+        }
+        const sale = saleRes.rows[0];
+
+        let details: any = {};
+        try {
+            details = typeof sale.customer_details === 'string'
+                ? JSON.parse(sale.customer_details)
+                : (sale.customer_details || {});
+        } catch { /* keep empty */ }
+
+        const detailEmail = String(details.email || '').trim().toLowerCase();
+        const detailPhone = String(details.phone || '').replace(/\D/g, '');
+        const emailMatches = !!email && !!detailEmail && detailEmail === email;
+        const phoneMatches = !!phone && !!detailPhone && (detailPhone === phone || detailPhone.endsWith(phone) || phone.endsWith(detailPhone));
+
+        if (!emailMatches && !phoneMatches) {
+            // Same response as a miss — do not confirm the order exists.
+            return res.status(404).json({ message: 'Order not found.' });
+        }
+
+        const itemsRes = await db.query(
+            `SELECT si.quantity, si.price_at_sale, p.name
+             FROM sale_items si
+             LEFT JOIN products p ON si.product_id = p.id
+             WHERE si.sale_id = $1 AND si.store_id = $2`,
+            [orderId, storeId]
+        );
+
+        res.status(200).json(toCamelCase({
+            order_id: sale.transaction_id,
+            timestamp: sale.timestamp,
+            total: parseFloat(sale.total),
+            subtotal: parseFloat(sale.subtotal),
+            tax: parseFloat(sale.tax),
+            payment_status: sale.payment_status,
+            fulfillment_status: sale.fulfillment_status,
+            customer_name: details.name || null,
+            items: itemsRes.rows.map(r => ({
+                name: r.name || 'Item',
+                quantity: parseFloat(r.quantity),
+                price: parseFloat(r.price_at_sale),
+            })),
+        }));
+    } catch (error) {
+        console.error(`Error fetching order status ${orderId}:`, error);
+        res.status(500).json({ message: 'Error fetching order status' });
     }
 };

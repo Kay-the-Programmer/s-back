@@ -1,5 +1,6 @@
 import express from 'express';
-import { getShopInfo, getShopProducts, getShopProductById, getShopCategories, createShopOrder, getPublicStores, getGlobalProducts } from '../controllers/shop.controller';
+import { getShopInfo, getShopProducts, getShopProductById, getShopCategories, createShopOrder, getPublicStores, getGlobalProducts, getShopOrderStatus } from '../controllers/shop.controller';
+import { optionalProtect } from '../middleware/auth.middleware';
 
 const router = express.Router();
 
@@ -118,6 +119,36 @@ router.get('/:storeId/products/:productId', getShopProductById);
  *               customerDetails:
  *                 type: object
  */
-router.post('/:storeId/orders', createShopOrder);
+// optionalProtect: a signed-in customer's identity comes from their token
+// (never the request body); guests order anonymously.
+router.post('/:storeId/orders', optionalProtect, createShopOrder);
+
+/**
+ * @openapi
+ * /shop/{storeId}/orders/{orderId}:
+ *   get:
+ *     tags: [Shop]
+ *     summary: Public order-status lookup (requires matching checkout email or phone)
+ *     parameters:
+ *       - in: path
+ *         name: storeId
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: path
+ *         name: orderId
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: email
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: phone
+ *         schema:
+ *           type: string
+ */
+router.get('/:storeId/orders/:orderId', getShopOrderStatus);
 
 export default router;
