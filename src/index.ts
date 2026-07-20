@@ -170,6 +170,7 @@ import { runRecurringExpenses } from './controllers/recurring-expenses.controlle
 import { notificationSchedulerService } from './services/notification-scheduler.service';
 import { runSubscriptionLifecycle } from './services/subscription-lifecycle.service';
 import { runAddonRenewals } from './services/module-purchase.service';
+import { runStaleOrderCleanup } from './services/stale-order.service';
 import { runPlanRenewals } from './services/subscription.service';
 import { ensureCatalogSeeded } from './services/catalog.service';
 import { ensureEmailTemplatesSeeded } from './services/email-template.service';
@@ -225,6 +226,13 @@ const startServer = async () => {
     };
     runRenewals();
     setInterval(runRenewals, 12 * 60 * 60 * 1000);
+
+    // Auto-cancel stale unpaid online orders (pay-on-delivery no-shows) so
+    // they release the stock they reserved at checkout. Every 6 hours.
+    runStaleOrderCleanup().catch(err => console.error('[stale-orders] Error on startup run:', err));
+    setInterval(() => {
+      runStaleOrderCleanup().catch(err => console.error('[stale-orders] Error in interval run:', err));
+    }, 6 * 60 * 60 * 1000);
 
     // WhatsApp marketing automation: send due scheduled/recurring campaigns and
     // evaluate triggers (win-back, welcome, post-purchase) every 5 minutes.
