@@ -5,15 +5,32 @@ import SocketService from '../services/socket.service';
 
 const genId = (prefix: string) => `${prefix}_${Math.random().toString(36).substr(2, 9)}`;
 
-// Helper to find stores that have products matching the query
+// Find stores stocking what the request describes. Tokenized: "50 crates of
+// sourdough bread" matches products containing ANY significant word, ranked
+// by how many words each store's catalog hits — the whole-phrase match this
+// replaced almost never fired on natural-language requests. Stores are
+// returned best-match first, which is also the order sellers get notified in.
 const findMatchingStores = async (query: string) => {
-    const searchPattern = `%${query}%`;
+    const tokens = String(query || '')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(t => t.length >= 3)
+        .slice(0, 6);
+    if (tokens.length === 0) return [];
+
+    const params = tokens.map(t => `%${t}%`);
+    const hit = (i: number) => `(name ILIKE $${i + 1} OR COALESCE(description,'') ILIKE $${i + 1} OR COALESCE(brand,'') ILIKE $${i + 1})`;
+    const score = tokens.map((_, i) => `MAX(CASE WHEN ${hit(i)} THEN 1 ELSE 0 END)`).join(' + ');
+
     const result = await db.query(`
-        SELECT DISTINCT store_id
+        SELECT store_id, (${score}) AS score
         FROM products
-        WHERE (LOWER(name) LIKE LOWER($1) OR LOWER(description) LIKE LOWER($1))
-        AND status = 'active' AND store_id IS NOT NULL
-    `, [searchPattern]);
+        WHERE status = 'active' AND store_id IS NOT NULL
+          AND (${tokens.map((_, i) => hit(i)).join(' OR ')})
+        GROUP BY store_id
+        ORDER BY score DESC
+        LIMIT 25
+    `, params);
     return result.rows.map(r => r.store_id).filter(Boolean);
 };
 
