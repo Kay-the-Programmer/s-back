@@ -4,17 +4,17 @@ import { StoreSettings, Account, Category } from '../types';
 import { categoryHierarchy, initialAccountsData, BUSINESS_TYPES } from '../utils/initial-data';
 
 export class StoreInitService {
-    async initializeNewStore(storeId: string, storeName: string, businessTypes: string[] = [], phone?: string, address?: string) {
-        console.log(`Initializing store: ${storeName} (${storeId}) with types: ${businessTypes.join(', ')}`);
+    async initializeNewStore(storeId: string, storeName: string, businessTypes: string[] = [], phone?: string, address?: string, isWholesaleSupplier = false) {
+        console.log(`Initializing store: ${storeName} (${storeId}) with types: ${businessTypes.join(', ')}${isWholesaleSupplier ? ' [wholesale supplier]' : ''}`);
 
-        await this.seedSettings(storeId, storeName, phone, address);
+        await this.seedSettings(storeId, storeName, phone, address, isWholesaleSupplier);
         const accountsMap = await this.seedAccounts(storeId);
         await this.seedCategories(storeId, businessTypes);
 
         console.log(`✅ Store ${storeId} initialized successfully.`);
     }
 
-    private async seedSettings(storeId: string, storeName: string, phone?: string, address?: string) {
+    private async seedSettings(storeId: string, storeName: string, phone?: string, address?: string, isWholesaleSupplier = false) {
         const paymentMethods = [
             { id: 'cash', name: 'CASH' },
             { id: 'airtel', name: 'AIRTEL' },
@@ -41,8 +41,8 @@ export class StoreInitService {
         };
 
         const query = `
-            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled, lenco_public_key, lenco_secret_key)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled, lenco_public_key, lenco_secret_key, is_wholesale_supplier)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
             ON CONFLICT (store_id) DO NOTHING;
         `;
 
@@ -50,7 +50,7 @@ export class StoreInitService {
             storeId, defaults.name, defaults.address, defaults.phone, defaults.email, defaults.website,
             defaults.taxRate, JSON.stringify(defaults.currency), defaults.receiptMessage, defaults.lowStockThreshold,
             defaults.skuPrefix, defaults.enableStoreCredit, JSON.stringify(defaults.paymentMethods), JSON.stringify(defaults.supplierPaymentMethods),
-            defaults.isOnlineStoreEnabled, defaults.lencoPublicKey, defaults.lencoSecretKey
+            defaults.isOnlineStoreEnabled, defaults.lencoPublicKey, defaults.lencoSecretKey, isWholesaleSupplier
         ]);
     }
 

@@ -127,30 +127,56 @@ export const sendEmail = async (to: string, subject: string, html: string, text?
     }
 };
 
-// ─── Shared HTML template ──────────────────────────────────────────────────────
+// ─── Shared branded shell ──────────────────────────────────────────────────────
+// Mirrors the email-engine wrapper (email-template.service.ts): logo masthead on
+// navy, white body card, muted footer. Colours/font per salepilot/DESIGN.md; the
+// wordmark stays next to the logo image so image-blocking clients keep the brand.
+const NAVY = '#002b6b';
+const ORANGE = '#ff7f27';
+const INK = '#181c1e';
+const INK_MUTED = '#434651';
+const CANVAS = '#f7fafc';
+const HAIRLINE = '#c4c6d2';
+const FONT = "'Hanken Grotesk','Helvetica Neue',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif";
+
+const logoUrl = () => `${appUrl()}/images/salepilot.png`;
+
+const brandShell = (bodyHtml: string): string => `
+<div style="font-family:${FONT};max-width:600px;margin:0 auto;background:${CANVAS};padding:24px;">
+  <div style="background:${NAVY};border-radius:8px 8px 0 0;padding:24px 28px;text-align:center;">
+    <img src="${logoUrl()}" alt="SalePilot" width="48" height="48" style="display:block;margin:0 auto 10px;border:0;border-radius:12px;" />
+    <span style="color:#ffffff;font-size:22px;font-weight:700;letter-spacing:-0.02em;">Sale<span style="color:${ORANGE};">Pilot</span></span>
+  </div>
+  <div style="background:#ffffff;padding:32px 28px;border:1px solid ${HAIRLINE};border-top:0;">
+    ${bodyHtml}
+  </div>
+  <div style="text-align:center;padding:18px;color:${INK_MUTED};font-size:12px;">
+    © ${new Date().getFullYear()} SalePilot · <a href="${appUrl()}" style="color:${NAVY};text-decoration:none;font-weight:600;">salepilot.space</a>
+  </div>
+</div>`.trim();
+
+const ctaButton = (href: string, label: string): string =>
+    `<div style="text-align:center;margin:8px 0 4px;"><a href="${href}" style="display:inline-block;background:${ORANGE};color:#ffffff;text-decoration:none;font-weight:600;font-size:14px;line-height:20px;padding:14px 32px;border-radius:8px;">${label}</a></div>`;
+
 function buildOtpHtml(otp: string): string {
-    return `
-        <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:32px 24px;background:#f8fafc;border-radius:16px;">
-            <h1 style="color:#0f172a;font-size:22px;margin-bottom:8px;">Verify your email</h1>
-            <p style="color:#475569;font-size:15px;margin-bottom:24px;">Enter this code in SalePilot to complete your registration:</p>
-            <div style="background:#fff;border:2px solid #e2e8f0;padding:20px 32px;border-radius:12px;text-align:center;margin-bottom:24px;">
-                <span style="font-size:36px;font-weight:900;letter-spacing:0.35em;color:#0284c7;">${otp}</span>
-            </div>
-            <p style="color:#94a3b8;font-size:13px;">Code expires in 24&nbsp;hours. If you didn't sign up for SalePilot, ignore this email.</p>
-        </div>
-    `;
+    return brandShell(`
+    <h1 style="margin:0 0 12px;color:${INK};font-size:24px;font-weight:600;line-height:32px;letter-spacing:-0.01em;">Verify your email</h1>
+    <p style="margin:0 0 20px;color:${INK_MUTED};font-size:16px;line-height:24px;">Enter this code in SalePilot to complete your registration:</p>
+    <div style="background:${CANVAS};border:1px solid ${HAIRLINE};padding:20px 32px;border-radius:8px;text-align:center;margin:0 0 20px;">
+        <span style="font-size:36px;font-weight:800;letter-spacing:0.35em;color:${NAVY};">${otp}</span>
+    </div>
+    <p style="margin:0;color:${INK_MUTED};font-size:14px;line-height:20px;">Code expires in 24&nbsp;hours. If you didn't sign up for SalePilot, ignore this email.</p>`);
 }
 
 // ─── Verification link email ───────────────────────────────────────────────────
 export const sendVerificationEmail = async (email: string, token: string) => {
     const verificationUrl = `${appUrl()}/auth/verify-email?token=${token}`;
     const subject = 'Verify your email address';
-    const html = `
-        <h1>Welcome to SalePilot!</h1>
-        <p>Click below to verify your email and activate your account.</p>
-        <a href="${verificationUrl}" style="background-color:#2563eb;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Verify Email</a>
-        <p>Or copy this link: ${verificationUrl}</p>
-    `;
+    const html = brandShell(`
+    <h1 style="margin:0 0 12px;color:${INK};font-size:24px;font-weight:600;line-height:32px;letter-spacing:-0.01em;">Welcome to SalePilot!</h1>
+    <p style="margin:0 0 20px;color:${INK_MUTED};font-size:16px;line-height:24px;">Click below to verify your email and activate your account.</p>
+    ${ctaButton(verificationUrl, 'Verify email')}
+    <p style="margin:20px 0 0;color:${INK_MUTED};font-size:13px;line-height:20px;word-break:break-all;">Or copy this link: <a href="${verificationUrl}" style="color:${NAVY};">${verificationUrl}</a></p>`);
 
     await sendEmail(email, subject, html);
 };
@@ -177,12 +203,11 @@ export const sendStoreOTPVerificationEmail = async (email: string, storeName: st
 export const sendPasswordResetEmail = async (email: string, token: string) => {
     const resetUrl = `${appUrl()}/auth/reset-password?token=${token}`;
     const subject = 'Reset your SalePilot password';
-    const html = `
-        <h1>Password Reset Request</h1>
-        <p>Click below to reset your password. This link expires in 1 hour.</p>
-        <a href="${resetUrl}" style="background-color:#dc2626;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Reset Password</a>
-        <p>If you didn't request this, you can safely ignore this email.</p>
-    `;
+    const html = brandShell(`
+    <h1 style="margin:0 0 12px;color:${INK};font-size:24px;font-weight:600;line-height:32px;letter-spacing:-0.01em;">Password reset request</h1>
+    <p style="margin:0 0 20px;color:${INK_MUTED};font-size:16px;line-height:24px;">Click below to reset your password. This link expires in 1 hour.</p>
+    ${ctaButton(resetUrl, 'Reset password')}
+    <p style="margin:20px 0 0;color:${INK_MUTED};font-size:14px;line-height:20px;">If you didn't request this, you can safely ignore this email.</p>`);
 
     await sendEmail(email, subject, html);
 };
@@ -191,32 +216,20 @@ export const sendPasswordResetEmail = async (email: string, token: string) => {
 export const sendWelcomeEmail = async (email: string, name: string) => {
     const subject = 'Welcome to SalePilot! 🎉 Your email is verified';
     const text = `Hi ${name}, your SalePilot account has been successfully verified. You now have full access to all features.`;
-    const html = `
-        <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:32px 24px;background:#f8fafc;border-radius:16px;">
-            <div style="text-align:center;margin-bottom:28px;">
-                <div style="display:inline-flex;align-items:center;justify-content:center;width:64px;height:64px;background:#d1fae5;border-radius:16px;">
-                    <span style="font-size:32px;">✅</span>
-                </div>
-            </div>
-            <h1 style="color:#0f172a;font-size:22px;margin-bottom:8px;text-align:center;">You're all set, ${name}!</h1>
-            <p style="color:#475569;font-size:15px;margin-bottom:24px;text-align:center;">Your email has been successfully verified. Welcome to SalePilot — your business management platform.</p>
-            <div style="background:#fff;border:1px solid #e2e8f0;padding:20px 24px;border-radius:12px;margin-bottom:24px;">
-                <p style="margin:0 0 12px;font-size:14px;font-weight:700;color:#0f172a;">Here's what you can do now:</p>
-                <ul style="margin:0;padding-left:20px;color:#475569;font-size:14px;line-height:2;">
-                    <li>Set up your store and start adding inventory</li>
-                    <li>Process sales and track revenue in real time</li>
-                    <li>Manage customers, suppliers, and purchase orders</li>
-                    <li>Generate reports and financial summaries</li>
-                </ul>
-            </div>
-            <div style="text-align:center;">
-                <a href="${appUrl()}" style="display:inline-block;background:#0284c7;color:white;padding:12px 28px;text-decoration:none;border-radius:10px;font-weight:700;font-size:14px;">
-                    Go to Dashboard →
-                </a>
-            </div>
-            <p style="color:#94a3b8;font-size:12px;text-align:center;margin-top:28px;">If you have any questions, reply to this email or visit our support page.</p>
-        </div>
-    `;
+    const html = brandShell(`
+    <h1 style="margin:0 0 12px;color:${INK};font-size:24px;font-weight:600;line-height:32px;letter-spacing:-0.01em;text-align:center;">You're all set, ${name}!</h1>
+    <p style="margin:0 0 24px;color:${INK_MUTED};font-size:16px;line-height:24px;text-align:center;">Your email has been successfully verified. Welcome to SalePilot — your business management platform.</p>
+    <div style="background:${CANVAS};border:1px solid ${HAIRLINE};padding:20px 24px;border-radius:8px;margin:0 0 24px;">
+        <p style="margin:0 0 12px;font-size:14px;font-weight:700;color:${INK};">Here's what you can do now:</p>
+        <ul style="margin:0;padding-left:20px;color:${INK_MUTED};font-size:14px;line-height:2;">
+            <li>Set up your store and start adding inventory</li>
+            <li>Process sales and track revenue in real time</li>
+            <li>Manage customers, suppliers, and purchase orders</li>
+            <li>Generate reports and financial summaries</li>
+        </ul>
+    </div>
+    ${ctaButton(appUrl(), 'Go to Dashboard →')}
+    <p style="margin:20px 0 0;color:${INK_MUTED};font-size:13px;line-height:20px;text-align:center;">If you have any questions, reply to this email or visit our support page.</p>`);
 
     await sendEmail(email, subject, html, text);
 };

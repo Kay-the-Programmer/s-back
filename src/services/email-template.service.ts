@@ -66,6 +66,7 @@ const globalContext = (): Record<string, string | number> => {
     const base = appUrl();
     return {
         appUrl: base,
+        logoUrl: `${base}/images/salepilot.png`,
         dashboardUrl: `${base}/dash`,
         posUrl: `${base}/pos`,
         inventoryUrl: `${base}/inv/items`,
@@ -101,11 +102,23 @@ const SUBTLE = '#ebeef0';        // DESIGN.md surface-container
 // Hanken Grotesk where the client supports web fonts; clean system fallback otherwise.
 const FONT = "'Hanken Grotesk','Helvetica Neue',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif";
 
+// The navy masthead. BRAND_HEADER (logo image + wordmark) is what every template
+// renders today; LEGACY_HEADER is the pre-logo text-only version, kept verbatim so
+// ensureEmailTemplatesSeeded can upgrade rows already stored in the DB. The
+// {{logoUrl}} token resolves at render time (globalContext), and the wordmark
+// stays alongside the image so the brand survives image-blocking mail clients.
+const LEGACY_HEADER = `  <div style="background:${NAVY};border-radius:8px 8px 0 0;padding:22px 28px;text-align:center;">
+    <span style="color:#ffffff;font-size:22px;font-weight:700;letter-spacing:-0.02em;">Sale<span style="color:${ORANGE};">Pilot</span></span>
+  </div>`;
+
+const BRAND_HEADER = `  <div style="background:${NAVY};border-radius:8px 8px 0 0;padding:24px 28px;text-align:center;">
+    <img src="{{logoUrl}}" alt="SalePilot" width="48" height="48" style="display:block;margin:0 auto 10px;border:0;border-radius:12px;" />
+    <span style="color:#ffffff;font-size:22px;font-weight:700;letter-spacing:-0.02em;">Sale<span style="color:${ORANGE};">Pilot</span></span>
+  </div>`;
+
 const wrap = (opts: { heading: string; intro: string; detailRows?: string; ctaLabel?: string; ctaVar?: string; footnote?: string }) => `
 <div style="font-family:${FONT};max-width:600px;margin:0 auto;background:${CANVAS};padding:24px;">
-  <div style="background:${NAVY};border-radius:8px 8px 0 0;padding:22px 28px;text-align:center;">
-    <span style="color:#ffffff;font-size:22px;font-weight:700;letter-spacing:-0.02em;">Sale<span style="color:${ORANGE};">Pilot</span></span>
-  </div>
+${BRAND_HEADER}
   <div style="background:#ffffff;padding:32px 28px;border:1px solid ${HAIRLINE};border-top:0;">
     <h1 style="margin:0 0 12px;color:${INK};font-size:24px;font-weight:600;line-height:32px;letter-spacing:-0.01em;">${opts.heading}</h1>
     <p style="margin:0 0 20px;color:${INK_MUTED};font-size:16px;line-height:24px;">${opts.intro}</p>
@@ -548,6 +561,14 @@ export const ensureEmailTemplatesSeeded = async (dbClient: { query: (t: string, 
             [t.key, t.name, t.subject, t.html, t.defaultEnabled, JSON.stringify(defaultConfig(t)), t.category ?? 'event'],
         );
     }
+    // Upgrade rows stored before the logo existed: swap the text-only masthead for
+    // the logo one wherever it survives verbatim. Edits elsewhere in a template are
+    // untouched, a customised masthead is left alone, and re-runs are no-ops.
+    await dbClient.query(
+        `UPDATE email_templates SET html = REPLACE(html, $1, $2), updated_at = NOW()
+         WHERE POSITION($1 IN html) > 0`,
+        [LEGACY_HEADER, BRAND_HEADER],
+    );
 };
 
 // ── Custom tips (superadmin-built, DB-only) ─────────────────────────────────
@@ -558,6 +579,7 @@ export const TIP_VARIABLES: EmailTemplateVar[] = [
     { name: 'userName', description: 'The user’s name' },
     { name: 'referralCode', description: 'The user’s referral code' },
     { name: 'appUrl', description: 'App home' },
+    { name: 'logoUrl', description: 'SalePilot logo image URL' },
     { name: 'dashboardUrl', description: 'Dashboard' },
     { name: 'posUrl', description: 'POS register' },
     { name: 'inventoryUrl', description: 'Inventory' },

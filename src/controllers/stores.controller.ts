@@ -160,9 +160,13 @@ export const registerStore = async (req: express.Request, res: express.Response)
 
       invalidateUserCache(user.id);
 
-      // 4. Initialize the new store with defaults (creates the store_settings row)
+      // 4. Initialize the new store with defaults (creates the store_settings row).
+      // isWholesaleSupplier: supplier registration — the store opts into the
+      // B2B wholesale marketplace from day one (same flag as the Online Store
+      // app toggle, so it can be turned off later).
       const businessTypes = req.body.businessTypes || [];
-      await storeInitService.initializeNewStore(storeId, String(name).trim(), businessTypes, phone, address);
+      const isWholesaleSupplier = req.body.isWholesaleSupplier === true;
+      await storeInitService.initializeNewStore(storeId, String(name).trim(), businessTypes, phone, address, isWholesaleSupplier);
 
       // Grant the premium add-ons for the duration of the intro trial so the user
       // experiences the paid features. The lifecycle job revokes these at trial end
