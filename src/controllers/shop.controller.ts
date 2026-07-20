@@ -47,6 +47,7 @@ const sanitizeProduct = (product: any) => {
         // (null = retail price applies) and minimum order quantity.
         wholesale_price: product.wholesale_price != null ? parseFloat(product.wholesale_price) : null,
         min_order_quantity: product.min_order_quantity != null ? parseInt(product.min_order_quantity, 10) : null,
+        price_tiers: product.price_tiers ?? null,
         // Denormalized review aggregates (maintained by submitProductReview).
         rating_avg: product.rating_avg != null ? parseFloat(product.rating_avg) : null,
         rating_count: product.rating_count != null ? parseInt(product.rating_count, 10) : 0,
@@ -336,7 +337,7 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
             // FOR UPDATE: lock the row so two concurrent checkouts can't both
             // pass the stock check and oversell the same units.
             const prodRes = await client.query(
-                'SELECT id, price, cost_price, name, stock, wholesale_price, min_order_quantity FROM products WHERE id = $1 AND store_id = $2 AND status = \'active\' FOR UPDATE',
+                'SELECT id, price, cost_price, name, stock, wholesale_price, min_order_quantity, price_tiers FROM products WHERE id = $1 AND store_id = $2 AND status = \'active\' FOR UPDATE',
                 [productId, storeId]
             );
 
@@ -375,9 +376,19 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
 
             // Wholesale suppliers charge wholesale_price when set; the DB is
             // authoritative either way — client-sent prices are never trusted.
-            const price = isWholesaleBuyer && product.wholesale_price != null
+            let price = isWholesaleBuyer && product.wholesale_price != null
                 ? parseFloat(product.wholesale_price)
                 : parseFloat(product.price);
+            // Quantity-break tiers (wholesale buyers only): the deepest tier
+            // whose minQty the line reaches wins.
+            if (isWholesaleBuyer && Array.isArray(product.price_tiers)) {
+                for (const t of [...product.price_tiers]
+                    .map((x: any) => ({ minQty: parseInt(String(x.minQty), 10), price: parseFloat(String(x.price)) }))
+                    .filter(x => Number.isInteger(x.minQty) && x.minQty >= 2 && x.price > 0)
+                    .sort((a, b) => a.minQty - b.minQty)) {
+                    if (quantity >= t.minQty) price = t.price;
+                }
+            }
             if (isNaN(price)) {
                 console.error(`Invalid price for product ${productId}:`, product.price);
                 continue;

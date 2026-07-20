@@ -9,6 +9,27 @@ import { MODULES, FREE_PRODUCT_LIMIT, isModuleEnabled } from '../services/entitl
 import path from "path";
 import fs from "fs";
 
+/**
+ * Normalize wholesale quantity-break tiers into canonical JSON (or null).
+ * Accepts a JSON string (multipart) or an array (JSON clients); keeps at most
+ * 5 valid entries {minQty>=2 int, price>0}, sorted ascending by minQty.
+ */
+export const normalizePriceTiers = (raw: any): string | null => {
+    if (raw === undefined || raw === null || raw === '') return null;
+    try {
+        const arr = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!Array.isArray(arr)) return null;
+        const tiers = arr
+            .map((t: any) => ({ minQty: parseInt(String(t.minQty), 10), price: parseFloat(String(t.price)) }))
+            .filter(t => Number.isInteger(t.minQty) && t.minQty >= 2 && Number.isFinite(t.price) && t.price > 0)
+            .sort((a, b) => a.minQty - b.minQty)
+            .slice(0, 5);
+        return tiers.length > 0 ? JSON.stringify(tiers) : null;
+    } catch {
+        return null;
+    }
+};
+
 // Helper function to handle file uploads and existing images
 const processImageUrls = async (files: Express.Multer.File[], existingImages: string[] = []): Promise<string[]> => {
     const uploadPromises = files.map(file => storageService.uploadFile(file));
@@ -117,6 +138,7 @@ export const createProduct = async (req: express.Request, res: express.Response)
         const cartons_received = req.body.cartons_received ?? req.body.cartonsReceived;
         const wholesale_price = req.body.wholesale_price ?? req.body.wholesalePrice;
         const min_order_quantity = req.body.min_order_quantity ?? req.body.minOrderQuantity;
+        const price_tiers = req.body.price_tiers ?? req.body.priceTiers;
 
         const files = req.files as Express.Multer.File[];
         const id = generateId('prod');
@@ -170,6 +192,7 @@ export const createProduct = async (req: express.Request, res: express.Response)
             // B2B wholesale marketplace pricing
             wholesalePrice: wholesale_price && wholesale_price.toString().trim() ? parseFloat(wholesale_price.toString()) : null,
             minOrderQuantity: min_order_quantity && min_order_quantity.toString().trim() ? parseInt(min_order_quantity.toString(), 10) : null,
+            priceTiers: normalizePriceTiers(price_tiers),
         };
 
         // Additional validation
@@ -182,8 +205,8 @@ export const createProduct = async (req: express.Request, res: express.Response)
         }
 
         const queryText = `
-            INSERT INTO products(id, name, description, sku, barcode, category_id, supplier_id, price, cost_price, stock, unit_of_measure, image_urls, brand, status, reorder_point, weight, dimensions, safety_stock, variants, custom_attributes, store_id, carton_price, units_per_carton, cartons_received, wholesale_price, min_order_quantity)
-            VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+            INSERT INTO products(id, name, description, sku, barcode, category_id, supplier_id, price, cost_price, stock, unit_of_measure, image_urls, brand, status, reorder_point, weight, dimensions, safety_stock, variants, custom_attributes, store_id, carton_price, units_per_carton, cartons_received, wholesale_price, min_order_quantity, price_tiers)
+            VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
             RETURNING *;
         `;
         const values = [
@@ -213,6 +236,7 @@ export const createProduct = async (req: express.Request, res: express.Response)
             processedValues.cartonsReceived,
             processedValues.wholesalePrice,
             processedValues.minOrderQuantity,
+            processedValues.priceTiers,
         ];
 
         console.log('Executing query with values:', values);
@@ -353,6 +377,7 @@ export const updateProduct = async (req: express.Request, res: express.Response)
     // ?? not || — an explicit empty string means "clear this wholesale field".
     const wholesale_price = body.wholesale_price ?? body.wholesalePrice;
     const min_order_quantity = body.min_order_quantity ?? body.minOrderQuantity;
+    const price_tiers = body.price_tiers ?? body.priceTiers;
 
     const files = (req.files as Express.Multer.File[]) || [];
 
@@ -429,8 +454,8 @@ export const updateProduct = async (req: express.Request, res: express.Response)
                 cost_price = $8, stock = $9, unit_of_measure = $10, image_urls = $11, brand = $12, status = $13, reorder_point = $14,
                 custom_attributes = $15, weight = $16, dimensions = $17, safety_stock = $18, variants = $19,
                 carton_price = $20, units_per_carton = $21, cartons_received = $22,
-                wholesale_price = $23, min_order_quantity = $24
-            WHERE id = $25 AND store_id = $26
+                wholesale_price = $23, min_order_quantity = $24, price_tiers = $25
+            WHERE id = $26 AND store_id = $27
             RETURNING *;
         `;
 
@@ -505,6 +530,10 @@ export const updateProduct = async (req: express.Request, res: express.Response)
             min_order_quantity === undefined || min_order_quantity === null
                 ? currentRow.min_order_quantity
                 : (String(min_order_quantity).trim() === '' ? null : parseInt(String(min_order_quantity), 10)),
+            // undefined keeps stored tiers; anything else re-normalizes ('' / [] clear).
+            price_tiers === undefined
+                ? (currentRow.price_tiers == null ? null : JSON.stringify(currentRow.price_tiers))
+                : normalizePriceTiers(price_tiers),
             id,
             storeId,
         ];

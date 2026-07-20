@@ -443,6 +443,9 @@ async function initializeDatabase() {
                     -- (NULL = use the retail price) and minimum order quantity.
                     ALTER TABLE products ADD COLUMN IF NOT EXISTS wholesale_price NUMERIC(12,2) DEFAULT NULL;
                     ALTER TABLE products ADD COLUMN IF NOT EXISTS min_order_quantity INTEGER DEFAULT NULL;
+                    -- Quantity-break tiers for wholesale buyers:
+                    -- [{"minQty":12,"price":5.00}, ...] sorted ascending.
+                    ALTER TABLE products ADD COLUMN IF NOT EXISTS price_tiers JSONB DEFAULT NULL;
                 END IF;
             END $$;
         `);
