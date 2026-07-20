@@ -480,6 +480,9 @@ async function initializeDatabase() {
         await client.query(`CREATE INDEX IF NOT EXISTS idx_customers_user_id ON customers(user_id);`);
         // Backfill: legacy rows created by online checkout used id = users.id.
         await client.query(`UPDATE customers SET user_id = id WHERE user_id IS NULL AND id IN (SELECT id FROM users);`);
+        // Trade credit: cap on a customer's outstanding balance for online
+        // orders (NULL = no cap; today's unrestricted pay-on-delivery).
+        await client.query(`ALTER TABLE customers ADD COLUMN IF NOT EXISTS credit_limit DECIMAL(12,2) DEFAULT NULL;`);
         // Sales and related
         await client.query(`
             CREATE TABLE IF NOT EXISTS sales (
@@ -540,6 +543,12 @@ async function initializeDatabase() {
                     ALTER TABLE sales ADD COLUMN IF NOT EXISTS attended_by_id TEXT;
                     -- Online-order delivery fee (0 for POS/pickup); included in total
                     ALTER TABLE sales ADD COLUMN IF NOT EXISTS delivery_fee DECIMAL(10,2) NOT NULL DEFAULT 0;
+                    -- 'accepted': supplier confirmed an online order (between
+                    -- pending and fulfilled/shipped). Recreate the CHECK to
+                    -- include it (constraint name follows PG's default).
+                    ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_fulfillment_status_check;
+                    ALTER TABLE sales ADD CONSTRAINT sales_fulfillment_status_check
+                        CHECK (fulfillment_status IN ('pending','accepted','fulfilled','shipped','cancelled'));
                     
                     ALTER TABLE sales ALTER COLUMN fulfillment_status SET DEFAULT 'fulfilled';
                     ALTER TABLE sales ALTER COLUMN channel SET DEFAULT 'pos';
@@ -786,6 +795,8 @@ async function initializeDatabase() {
         await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS free_delivery_above DECIMAL(12,2) DEFAULT NULL;`);
         // Public storefront/marketplace blurb shown on supplier cards + shop hero.
         await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS store_description TEXT;`);
+        // Store logo (uploaded via POST /settings/logo, served from /uploads).
+        await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS logo_url TEXT;`);
         // Product reviews: one per buyer per product, gated server-side to
         // verified purchases. Aggregates are denormalized onto products
         // (rating_avg/rating_count, updated in the review-write transaction)

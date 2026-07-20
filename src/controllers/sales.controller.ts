@@ -601,7 +601,7 @@ export const updateFulfillmentStatus = async (req: express.Request, res: express
     const { id } = req.params;
     const { status } = req.body; // pending, fulfilled, shipped, cancelled
 
-    const validStatuses = ['pending', 'fulfilled', 'shipped', 'cancelled'];
+    const validStatuses = ['pending', 'accepted', 'fulfilled', 'shipped', 'cancelled'];
     if (!validStatuses.includes(status)) {
         return res.status(400).json({ message: 'Invalid fulfillment status' });
     }
@@ -666,16 +666,27 @@ export const updateFulfillmentStatus = async (req: express.Request, res: express
                 [status, id, storeId]
             );
 
-            // Send Push Notification to Customer
+            // Send Push Notification to Customer — resolve the ACCOUNT id:
+            // customer records are store-scoped (cus-…) and link to the user
+            // via customers.user_id (legacy rows reused the user id directly).
             if (sale.customerId) {
                 try {
+                    const uidRes = await client.query(
+                        `SELECT COALESCE(c.user_id, u.id) AS uid
+                         FROM customers c LEFT JOIN users u ON u.id = c.id
+                         WHERE c.id = $1 AND c.store_id = $2`,
+                        [sale.customerId, storeId]
+                    );
+                    const buyerUserId = uidRes.rows[0]?.uid;
+                    if (!buyerUserId) throw new Error('no linked user account');
                     const { pushService } = await import('../services/push.service');
                     let statusMsg = `Your order ${id} is now ${status}!`;
+                    if (status === 'accepted') statusMsg = `The store accepted your order ${id} and is preparing it. 👍`;
                     if (status === 'shipped') statusMsg = `Great news! Your order ${id} has been shipped. 🚚`;
                     if (status === 'fulfilled') statusMsg = `Your order ${id} has been fulfilled and is ready. ✅`;
                     if (status === 'cancelled') statusMsg = `Your order ${id} has been cancelled. ℹ️`;
 
-                    await pushService.sendToUsers([sale.customerId], {
+                    await pushService.sendToUsers([buyerUserId], {
                         title: 'Order Update',
                         body: statusMsg,
                         url: `/marketplace/orders` // or relevant tracking page

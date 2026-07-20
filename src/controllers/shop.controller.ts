@@ -70,7 +70,7 @@ export const getShopInfo = async (req: express.Request, res: express.Response) =
 
         // Also fetch public store settings (currency, contact info, etc.)
         const settingsResult = await db.query(
-            'SELECT name, address, phone, email, website, currency, tax_rate, delivery_fee, free_delivery_above, store_description, is_online_store_enabled, is_wholesale_supplier, receipt_message FROM store_settings WHERE store_id = $1',
+            'SELECT name, address, phone, email, website, currency, tax_rate, delivery_fee, free_delivery_above, store_description, logo_url, is_online_store_enabled, is_wholesale_supplier, receipt_message FROM store_settings WHERE store_id = $1',
             [storeId]
         );
 
@@ -426,6 +426,32 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
             ? round2(Math.max(0, settingsRes.rowCount ? Number(settingsRes.rows[0].delivery_fee) || 0 : 0))
             : 0;
         const total = round2(subtotal + tax + deliveryFee);
+
+        // Trade credit: when the store has set a credit limit for this
+        // customer, their outstanding balance + this order may not exceed it.
+        // (No limit set = today's unrestricted pay-on-delivery.) Row-locked so
+        // two concurrent orders can't both squeeze under the cap.
+        if (customerId) {
+            const creditRes = await client.query(
+                'SELECT credit_limit, account_balance FROM customers WHERE id = $1 AND store_id = $2 FOR UPDATE',
+                [customerId, storeId]
+            );
+            const limit = creditRes.rows[0]?.credit_limit;
+            if (limit != null) {
+                const balance = Number(creditRes.rows[0].account_balance) || 0;
+                if (balance + total > Number(limit)) {
+                    await client.query('ROLLBACK');
+                    return res.status(402).json({
+                        message: `This order exceeds your credit limit with this store. Available credit: ${Math.max(0, Number(limit) - balance).toFixed(2)} — settle outstanding orders or reduce the order.`,
+                        code: 'CREDIT_LIMIT_EXCEEDED',
+                        creditLimit: Number(limit),
+                        balance,
+                        available: Math.max(0, Number(limit) - balance),
+                    });
+                }
+            }
+        }
+
         const transactionId = generateId('ord');
         const timestamp = new Date().toISOString();
 
@@ -454,6 +480,16 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
             await client.query(
                 'UPDATE products SET stock = stock - $1 WHERE id = $2 AND store_id = $3',
                 [item.quantity, item.productId, storeId]
+            );
+        }
+
+        // 4b. Track the customer's outstanding balance (denormalized AR).
+        // The cancel paths (manual + stale-order job) already REVERSE this,
+        // so creating it here makes the pair symmetric.
+        if (customerId) {
+            await client.query(
+                'UPDATE customers SET account_balance = account_balance + $1 WHERE id = $2 AND store_id = $3',
+                [total, customerId, storeId]
             );
         }
 
@@ -555,7 +591,7 @@ export const getPublicStores = async (req: express.Request, res: express.Respons
         const wholesaleOnly = String(req.query.wholesale || '') === '1';
         const result = await db.query(`
             SELECT s.id, s.name, s.status, s.is_verified, ss.address, ss.phone, ss.email, ss.website,
-            ss.store_description,
+            ss.store_description, ss.logo_url,
             COALESCE(ss.is_wholesale_supplier, FALSE) as is_wholesale_supplier,
             COALESCE(ss.currency, '{"code":"USD","symbol":"$","position":"before"}') as currency
             FROM stores s
@@ -582,6 +618,79 @@ export const getPublicStores = async (req: express.Request, res: express.Respons
     } catch (error) {
         console.error('Error fetching public stores:', error);
         res.status(500).json({ message: 'Failed to fetch stores' });
+    }
+};
+
+/**
+ * Crawler-friendly share page for a product. SPAs can't serve per-page OG
+ * tags, so share links point HERE: bots (WhatsApp/Facebook/Twitter) read the
+ * OpenGraph meta, humans are redirected to the storefront product page.
+ */
+export const getProductSharePage = async (req: express.Request, res: express.Response) => {
+    const { storeId, productId } = req.params;
+    const appUrl = (process.env.PUBLIC_APP_URL || process.env.FRONTEND_URL || 'https://salepilot.space').replace(/\/$/, '');
+    const target = `${appUrl}/shop/${encodeURIComponent(storeId)}/product/${encodeURIComponent(productId)}`;
+    const esc = (v: any) => String(v ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
+    try {
+        const result = await db.query(
+            `SELECT p.name, p.description, p.price, p.image_urls, ss.name AS store_name, ss.currency
+             FROM products p LEFT JOIN store_settings ss ON p.store_id = ss.store_id
+             WHERE p.id = $1 AND p.store_id = $2 AND p.status = 'active'`,
+            [productId, storeId]
+        );
+        if (result.rowCount === 0) return res.redirect(302, target);
+        const p = result.rows[0];
+        const symbol = p.currency?.symbol || 'K';
+        const img = Array.isArray(p.image_urls) && p.image_urls[0]
+            ? (String(p.image_urls[0]).startsWith('http') ? p.image_urls[0] : `${req.protocol}://${req.get('host')}${p.image_urls[0]}`)
+            : '';
+        const title = `${p.name} — ${p.store_name || 'SalePilot store'}`;
+        const desc = `${symbol}${Number(p.price).toFixed(2)} · ${String(p.description || 'Order online, pay on delivery or pickup.').slice(0, 150)}`;
+        res.set('Cache-Control', 'public, max-age=300').send(`<!doctype html>
+<html><head><meta charset="utf-8">
+<title>${esc(title)}</title>
+<meta name="description" content="${esc(desc)}">
+<meta property="og:type" content="product">
+<meta property="og:title" content="${esc(title)}">
+<meta property="og:description" content="${esc(desc)}">
+${img ? `<meta property="og:image" content="${esc(img)}">` : ''}
+<meta property="og:url" content="${esc(target)}">
+<meta name="twitter:card" content="${img ? 'summary_large_image' : 'summary'}">
+<meta http-equiv="refresh" content="0;url=${esc(target)}">
+</head><body>
+<p>Redirecting to <a href="${esc(target)}">${esc(title)}</a>…</p>
+<script>location.replace(${JSON.stringify(target)});</script>
+</body></html>`);
+    } catch (error) {
+        console.error(`Error building share page for ${productId}:`, error);
+        res.redirect(302, target);
+    }
+};
+
+/**
+ * Signed-in buyer's credit standing with THIS store (trade credit): their
+ * limit, outstanding balance and available headroom. Nulls when the store
+ * hasn't granted a credit line.
+ */
+export const getMyCredit = async (req: express.Request, res: express.Response) => {
+    const { storeId } = req.params;
+    const userId = (req as any).user?.id;
+    if (!userId) return res.status(401).json({ message: 'Sign in required.' });
+    try {
+        const result = await db.query(
+            `SELECT credit_limit, account_balance FROM customers
+             WHERE (user_id = $1 OR id = $1) AND store_id = $2 LIMIT 1`,
+            [userId, storeId]
+        );
+        if (result.rowCount === 0 || result.rows[0].credit_limit == null) {
+            return res.status(200).json({ creditLimit: null, balance: 0, available: null });
+        }
+        const limit = Number(result.rows[0].credit_limit);
+        const balance = Number(result.rows[0].account_balance) || 0;
+        res.status(200).json({ creditLimit: limit, balance, available: Math.max(0, limit - balance) });
+    } catch (error) {
+        console.error('Error fetching credit standing:', error);
+        res.status(500).json({ message: 'Failed to fetch credit standing' });
     }
 };
 

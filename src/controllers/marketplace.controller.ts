@@ -9,12 +9,12 @@ const genId = (prefix: string) => `${prefix}_${Math.random().toString(36).substr
 const findMatchingStores = async (query: string) => {
     const searchPattern = `%${query}%`;
     const result = await db.query(`
-        SELECT DISTINCT store_id 
-        FROM products 
+        SELECT DISTINCT store_id
+        FROM products
         WHERE (LOWER(name) LIKE LOWER($1) OR LOWER(description) LIKE LOWER($1))
-        AND status = 'active'
+        AND status = 'active' AND store_id IS NOT NULL
     `, [searchPattern]);
-    return result.rows.map(r => r.store_id);
+    return result.rows.map(r => r.store_id).filter(Boolean);
 };
 
 export const getRecentRequests = async (req: express.Request, res: express.Response) => {
@@ -75,6 +75,14 @@ const notifyNextSeller = async (requestId: string) => {
             storeId: match.store_id
         });
     }
+
+    // Mark the match as notified — without this the supplier inbox
+    // (getStorePendingMatches, status='notified') and submitOffer's match
+    // update could never fire, and the same seller was re-notified forever.
+    await db.query(
+        `UPDATE marketplace_matches SET status = 'notified', updated_at = NOW() WHERE id = $1`,
+        [match.id]
+    );
 
     return true;
 };
@@ -155,6 +163,9 @@ export const getRequestDetails = async (req: express.Request, res: express.Respo
 
 export const submitOffer = async (req: express.Request, res: express.Response) => {
     const { requestId, sellerPrice, productId } = req.body;
+    if (!requestId || !(Number(sellerPrice) > 0)) {
+        return res.status(400).json({ message: 'A request id and a positive price are required.' });
+    }
     const offerId = genId('moff');
     // The offering store is the authenticated user's store — never trusted
     // from the body, so one store cannot submit offers in another's name.

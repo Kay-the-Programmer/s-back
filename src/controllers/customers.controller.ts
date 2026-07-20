@@ -60,16 +60,24 @@ export const createCustomer = async (req: express.Request, res: express.Response
 
 export const updateCustomer = async (req: express.Request, res: express.Response) => {
     const { id } = req.params;
-    const { name, email, phone, address, notes, storeCredit, accountBalance } = req.body;
+    const { name, email, phone, address, notes, storeCredit, accountBalance, creditLimit } = req.body;
 
     try {
         const storeId = req.tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
             return res.status(400).json({ message: 'Store context required' });
         }
+        // creditLimit: undefined keeps the stored value; '' / null clears the
+        // credit line; a number sets/updates the cap on outstanding balance.
+        const creditLimitValue = creditLimit === undefined
+            ? undefined
+            : (creditLimit === null || String(creditLimit).trim() === '' ? null : Math.max(0, Number(creditLimit) || 0));
         const result = await db.query(
-            'UPDATE customers SET name=$1, email=$2, phone=$3, address=$4, notes=$5, store_credit=$6, account_balance=$7 WHERE id=$8 AND store_id = $9 RETURNING *',
-            [name, email, phone, address, notes, storeCredit, accountBalance, id, storeId]
+            `UPDATE customers SET name=$1, email=$2, phone=$3, address=$4, notes=$5, store_credit=$6, account_balance=$7,
+                credit_limit = CASE WHEN $10 THEN $11::numeric ELSE credit_limit END
+             WHERE id=$8 AND store_id = $9 RETURNING *`,
+            [name, email, phone, address, notes, storeCredit, accountBalance, id, storeId,
+                creditLimitValue !== undefined, creditLimitValue === undefined ? null : creditLimitValue]
         );
         if (result.rowCount === 0) {
             return res.status(404).json({ message: 'Customer not found' });

@@ -78,6 +78,36 @@ export const getSettings = async (req: express.Request, res: express.Response) =
     }
 };
 
+/**
+ * Upload/replace the store logo. Multipart single file ("logo") → storage
+ * service (local /uploads volume or Cloudinary) → store_settings.logo_url.
+ */
+export const uploadStoreLogo = async (req: express.Request, res: express.Response) => {
+    try {
+        const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
+        if (!storeId) return res.status(400).json({ message: 'No store selected.' });
+        const file = (req as any).file as Express.Multer.File | undefined;
+        if (!file) return res.status(400).json({ message: 'No logo file received.' });
+        if (!String(file.mimetype || '').startsWith('image/')) {
+            return res.status(400).json({ message: 'The logo must be an image.' });
+        }
+        const { storageService } = await import('../services/storage.service');
+        const url = await storageService.uploadFile(file);
+        const result = await db.query(
+            'UPDATE store_settings SET logo_url = $1 WHERE store_id = $2 RETURNING logo_url',
+            [url, storeId]
+        );
+        if (result.rowCount === 0) {
+            return res.status(404).json({ message: 'Store settings not found.' });
+        }
+        auditService.log(req.user!, 'Settings Updated', 'Store logo uploaded.');
+        res.status(200).json({ logoUrl: result.rows[0].logo_url });
+    } catch (error) {
+        console.error('Error uploading store logo:', error);
+        res.status(500).json({ message: 'Failed to upload logo' });
+    }
+};
+
 export const updateSettings = async (req: express.Request, res: express.Response) => {
     const newSettings: StoreSettings = req.body;
     try {

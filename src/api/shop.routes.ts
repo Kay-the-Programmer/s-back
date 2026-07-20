@@ -1,6 +1,6 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
-import { getShopInfo, getShopProducts, getShopProductById, getShopCategories, createShopOrder, getPublicStores, getGlobalProducts, getGlobalCategories, getShopOrderStatus, getProductReviews, submitProductReview } from '../controllers/shop.controller';
+import { getShopInfo, getShopProducts, getShopProductById, getShopCategories, createShopOrder, getPublicStores, getGlobalProducts, getGlobalCategories, getShopOrderStatus, getProductReviews, submitProductReview, getProductSharePage, getMyCredit } from '../controllers/shop.controller';
 import { optionalProtect, protect } from '../middleware/auth.middleware';
 
 const router = express.Router();
@@ -121,6 +121,12 @@ router.get('/:storeId/products/:productId', getShopProductById);
 // throttled with the lookup budget (they share the abuse profile).
 router.get('/:storeId/products/:productId/reviews', getProductReviews);
 router.post('/:storeId/products/:productId/reviews', lookupLimiter, protect, submitProductReview);
+
+// Crawler-friendly share page (OG tags + redirect to the SPA product page).
+router.get('/:storeId/products/:productId/share', getProductSharePage);
+
+// Signed-in buyer's trade-credit standing with this store.
+router.get('/:storeId/my-credit', protect, getMyCredit);
 
 /**
  * @openapi

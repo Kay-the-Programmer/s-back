@@ -1,8 +1,12 @@
 import express from 'express';
-import { getSettings, updateSettings } from '../controllers/settings.controller';
+import { getSettings, updateSettings, uploadStoreLogo } from '../controllers/settings.controller';
 import { protect, adminOnly, requirePermission } from '../middleware/auth.middleware';
+import upload from '../middleware/upload.middleware';
 
 const router = express.Router();
+
+// Store logo upload (multipart single "logo") — admin only.
+router.post('/logo', protect, adminOnly, upload.single('logo'), uploadStoreLogo);
 
 /**
  * @openapi
