@@ -43,6 +43,26 @@ export const getStoreNotifications = async (req: express.Request, res: express.R
     }
 };
 
+/**
+ * Buyer-scoped notifications: everything addressed to the signed-in user
+ * across all stores (order updates, cancellations, …). Powers the
+ * marketplace bell — buyers have no store context to poll by.
+ */
+export const getMyNotifications = async (req: express.Request, res: express.Response) => {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ message: 'User not authenticated' });
+    try {
+        const result = await db.query(
+            `SELECT * FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 30`,
+            [userId]
+        );
+        res.status(200).json(toCamelCase(result.rows));
+    } catch (error) {
+        console.error('Error fetching user notifications:', error);
+        res.status(500).json({ message: 'Failed to fetch notifications' });
+    }
+};
+
 // createLowStockNotification is no longer used directly as alerts are handled in products/sales controllers via pushService.sendToStore
 
 export const markAsRead = async (req: express.Request, res: express.Response) => {

@@ -779,6 +779,20 @@ async function initializeDatabase() {
         await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS is_wholesale_supplier BOOLEAN NOT NULL DEFAULT FALSE;`);
         // Flat delivery fee charged on online orders fulfilled by delivery.
         await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS delivery_fee DECIMAL(10,2) NOT NULL DEFAULT 0;`);
+        // Waive the delivery fee for orders at/above this subtotal (NULL = never).
+        await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS free_delivery_above DECIMAL(12,2) DEFAULT NULL;`);
+        // Public storefront/marketplace blurb shown on supplier cards + shop hero.
+        await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS store_description TEXT;`);
+        // Trigram indexes keep the public %substring% product search fast as
+        // catalogs grow (queries use ILIKE, which these GIN indexes serve).
+        try {
+            await client.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`);
+            await client.query(`CREATE INDEX IF NOT EXISTS idx_products_name_trgm ON products USING GIN (name gin_trgm_ops);`);
+            await client.query(`CREATE INDEX IF NOT EXISTS idx_products_desc_trgm ON products USING GIN (description gin_trgm_ops);`);
+            await client.query(`CREATE INDEX IF NOT EXISTS idx_products_brand_trgm ON products USING GIN (brand gin_trgm_ops);`);
+        } catch (e) {
+            console.warn('[init_db] pg_trgm unavailable — product search stays unindexed:', (e as Error).message);
+        }
         // Migrate legacy singleton settings table to per-store if needed
         await client.query(`
             DO $$

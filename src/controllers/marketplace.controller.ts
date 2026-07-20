@@ -312,7 +312,7 @@ export const getMyOrders = async (req: express.Request, res: express.Response) =
             SELECT s.*,
                    ss.name as store_name,
                    ss.currency as store_currency,
-                   COALESCE(json_agg(jsonb_build_object('name', p.name, 'quantity', si.quantity, 'price', si.price_at_sale)) FILTER (WHERE si.id IS NOT NULL), '[]') as items
+                   COALESCE(json_agg(jsonb_build_object('name', p.name, 'quantity', si.quantity, 'price', si.price_at_sale, 'productId', si.product_id)) FILTER (WHERE si.id IS NOT NULL), '[]') as items
             FROM sales s
             JOIN store_settings ss ON s.store_id = ss.store_id
             LEFT JOIN customers c ON s.customer_id = c.id AND c.store_id = s.store_id

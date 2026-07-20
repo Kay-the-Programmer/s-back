@@ -1,6 +1,6 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
-import { getShopInfo, getShopProducts, getShopProductById, getShopCategories, createShopOrder, getPublicStores, getGlobalProducts, getShopOrderStatus } from '../controllers/shop.controller';
+import { getShopInfo, getShopProducts, getShopProductById, getShopCategories, createShopOrder, getPublicStores, getGlobalProducts, getGlobalCategories, getShopOrderStatus } from '../controllers/shop.controller';
 import { optionalProtect } from '../middleware/auth.middleware';
 
 const router = express.Router();
@@ -50,6 +50,7 @@ router.get('/stores', getPublicStores);
  *         description: List of global products
  */
 router.get('/global-products', getGlobalProducts);
+router.get('/global-categories', getGlobalCategories);
 
 /**
  * @openapi

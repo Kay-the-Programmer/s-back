@@ -66,7 +66,7 @@ export const getShopInfo = async (req: express.Request, res: express.Response) =
 
         // Also fetch public store settings (currency, contact info, etc.)
         const settingsResult = await db.query(
-            'SELECT name, address, phone, email, website, currency, tax_rate, delivery_fee, is_online_store_enabled, is_wholesale_supplier, receipt_message FROM store_settings WHERE store_id = $1',
+            'SELECT name, address, phone, email, website, currency, tax_rate, delivery_fee, free_delivery_above, store_description, is_online_store_enabled, is_wholesale_supplier, receipt_message FROM store_settings WHERE store_id = $1',
             [storeId]
         );
 
@@ -104,7 +104,8 @@ export const getShopProducts = async (req: express.Request, res: express.Respons
 
         if (search) {
             params.push(`%${search}%`);
-            whereClause += ` AND (LOWER(name) LIKE LOWER($${params.length}) OR LOWER(description) LIKE LOWER($${params.length}) OR LOWER(COALESCE(brand,'')) LIKE LOWER($${params.length}) OR LOWER(COALESCE(sku,'')) LIKE LOWER($${params.length}))`;
+            // ILIKE (not LOWER/LIKE) so the pg_trgm GIN indexes can serve it.
+            whereClause += ` AND (name ILIKE $${params.length} OR description ILIKE $${params.length} OR COALESCE(brand,'') ILIKE $${params.length} OR COALESCE(sku,'') ILIKE $${params.length})`;
         }
 
         let queryText = `SELECT * FROM products ${whereClause} ORDER BY ${orderBy}`;
@@ -231,6 +232,10 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
         // Wholesale suppliers sell at wholesale_price (when set) and can
         // enforce a per-product minimum order quantity.
         const isWholesaleStore = storeRes.rows[0].is_wholesale_supplier === true;
+        // Trade pricing is gated behind a signed-in account: guests on a
+        // wholesale storefront buy at RETAIL prices with no MOQ (the store
+        // doubles as a consumer shop), signed-in buyers get wholesale terms.
+        const isWholesaleBuyer = isWholesaleStore && !!(req as any).user?.id;
 
         // 1. Handle Customer (Find or Create)
         let customerId = null;
@@ -353,7 +358,7 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
             }
 
             // Wholesale MOQ: suppliers can require a minimum per-line quantity.
-            const moq = isWholesaleStore && product.min_order_quantity != null
+            const moq = isWholesaleBuyer && product.min_order_quantity != null
                 ? parseInt(product.min_order_quantity, 10) : 0;
             if (moq > 1 && quantity < moq) {
                 await client.query('ROLLBACK');
@@ -367,7 +372,7 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
 
             // Wholesale suppliers charge wholesale_price when set; the DB is
             // authoritative either way — client-sent prices are never trusted.
-            const price = isWholesaleStore && product.wholesale_price != null
+            const price = isWholesaleBuyer && product.wholesale_price != null
                 ? parseFloat(product.wholesale_price)
                 : parseFloat(product.price);
             if (isNaN(price)) {
@@ -394,13 +399,16 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
         }
 
         // Tax at the store's configured rate (was a hardcoded 10% placeholder).
-        const settingsRes = await client.query('SELECT tax_rate, delivery_fee FROM store_settings WHERE store_id = $1', [storeId]);
+        const settingsRes = await client.query('SELECT tax_rate, delivery_fee, free_delivery_above FROM store_settings WHERE store_id = $1', [storeId]);
         const taxRatePct = settingsRes.rowCount ? Number(settingsRes.rows[0].tax_rate) || 0 : 0;
         const round2 = (n: number) => Math.round(n * 100) / 100;
         subtotal = round2(subtotal);
         const tax = round2(subtotal * (taxRatePct / 100));
-        // Flat store-configured delivery fee, charged only on delivery orders.
-        const deliveryFee = fulfillment === 'delivery'
+        // Flat store-configured delivery fee, charged only on delivery orders
+        // and waived at/above the store's free-delivery threshold.
+        const freeAbove = settingsRes.rowCount && settingsRes.rows[0].free_delivery_above != null
+            ? Number(settingsRes.rows[0].free_delivery_above) : null;
+        const deliveryFee = fulfillment === 'delivery' && !(freeAbove != null && subtotal >= freeAbove)
             ? round2(Math.max(0, settingsRes.rowCount ? Number(settingsRes.rows[0].delivery_fee) || 0 : 0))
             : 0;
         const total = round2(subtotal + tax + deliveryFee);
@@ -532,7 +540,8 @@ export const getPublicStores = async (req: express.Request, res: express.Respons
         // marketplace (the /marketplace supplier directory uses this).
         const wholesaleOnly = String(req.query.wholesale || '') === '1';
         const result = await db.query(`
-            SELECT s.id, s.name, s.status, ss.address, ss.phone, ss.email, ss.website,
+            SELECT s.id, s.name, s.status, s.is_verified, ss.address, ss.phone, ss.email, ss.website,
+            ss.store_description,
             COALESCE(ss.is_wholesale_supplier, FALSE) as is_wholesale_supplier,
             COALESCE(ss.currency, '{"code":"USD","symbol":"$","position":"before"}') as currency
             FROM stores s
@@ -562,6 +571,33 @@ export const getPublicStores = async (req: express.Request, res: express.Respons
     }
 };
 
+/**
+ * Cross-store category facet for the marketplace grid. Categories are
+ * per-store, so we aggregate by NAME across all live wholesale catalogs.
+ */
+export const getGlobalCategories = async (req: express.Request, res: express.Response) => {
+    try {
+        const wholesaleOnly = String(req.query.wholesale || '') === '1';
+        const result = await db.query(`
+            SELECT INITCAP(LOWER(c.name)) AS name, COUNT(p.id)::int AS product_count
+            FROM products p
+            JOIN categories c ON p.category_id = c.id AND c.store_id = p.store_id
+            JOIN stores s ON p.store_id = s.id
+            LEFT JOIN store_settings ss ON s.id = ss.store_id
+            WHERE p.status = 'active' AND s.status = 'active'
+              AND (ss.is_online_store_enabled IS NULL OR ss.is_online_store_enabled = TRUE)
+              ${wholesaleOnly ? 'AND ss.is_wholesale_supplier = TRUE' : ''}
+            GROUP BY LOWER(c.name)
+            ORDER BY product_count DESC, name ASC
+            LIMIT 30
+        `);
+        res.status(200).json(toCamelCase(result.rows));
+    } catch (error) {
+        console.error('Error fetching global categories:', error);
+        res.status(500).json({ message: 'Failed to fetch categories' });
+    }
+};
+
 export const getGlobalProducts = async (req: express.Request, res: express.Response) => {
     const { search } = req.query;
     const { page, limit, paginated } = parsePageParams(req);
@@ -584,7 +620,16 @@ export const getGlobalProducts = async (req: express.Request, res: express.Respo
 
         if (search) {
             params.push(`%${search}%`);
-            whereClause += ` AND (LOWER(p.name) LIKE LOWER($${params.length}) OR LOWER(COALESCE(p.description,'')) LIKE LOWER($${params.length}) OR LOWER(COALESCE(p.brand,'')) LIKE LOWER($${params.length}) OR LOWER(s.name) LIKE LOWER($${params.length}))`;
+            // ILIKE (not LOWER/LIKE) so the pg_trgm GIN indexes can serve it.
+            whereClause += ` AND (p.name ILIKE $${params.length} OR COALESCE(p.description,'') ILIKE $${params.length} OR COALESCE(p.brand,'') ILIKE $${params.length} OR s.name ILIKE $${params.length})`;
+        }
+
+        // Cross-store category facet: categories are per-store, so the
+        // marketplace filters by category NAME (case-insensitive).
+        const categoryName = String(req.query.category || '').trim();
+        if (categoryName) {
+            params.push(categoryName.toLowerCase());
+            whereClause += ` AND p.category_id IN (SELECT c.id FROM categories c WHERE LOWER(c.name) = $${params.length})`;
         }
 
         const baseQuery = `

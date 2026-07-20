@@ -1,5 +1,5 @@
 import express from 'express';
-import { getStoreNotifications, markAsRead } from '../controllers/notifications.controller';
+import { getStoreNotifications, getMyNotifications, markAsRead } from '../controllers/notifications.controller';
 import { protect } from '../middleware/auth.middleware';
 
 const router = express.Router();
@@ -25,6 +25,9 @@ const router = express.Router();
  *         description: Unauthorized
  */
 router.get('/stores/:storeId', protect, getStoreNotifications);
+
+// Buyer bell: the signed-in user's own notifications across all stores.
+router.get('/mine', protect, getMyNotifications);
 
 /**
  * @openapi

@@ -125,8 +125,8 @@ export const updateSettings = async (req: express.Request, res: express.Response
         newSettings.enableStoreCredit = newSettings.enableStoreCredit === true;
 
         const query = `
-            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled, lenco_public_key, lenco_secret_key, is_wholesale_supplier, delivery_fee)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, COALESCE($18, FALSE), COALESCE($19, 0))
+            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled, lenco_public_key, lenco_secret_key, is_wholesale_supplier, delivery_fee, free_delivery_above, store_description)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, COALESCE($18, FALSE), COALESCE($19, 0), $20, $21)
             ON CONFLICT (store_id) DO UPDATE SET
                                            name = EXCLUDED.name,
                                            address = EXCLUDED.address,
@@ -145,7 +145,9 @@ export const updateSettings = async (req: express.Request, res: express.Response
                                            lenco_public_key = EXCLUDED.lenco_public_key,
                                            lenco_secret_key = EXCLUDED.lenco_secret_key,
                                            is_wholesale_supplier = COALESCE($18, store_settings.is_wholesale_supplier),
-                                           delivery_fee = COALESCE($19, store_settings.delivery_fee)
+                                           delivery_fee = COALESCE($19, store_settings.delivery_fee),
+                                           free_delivery_above = CASE WHEN $22 THEN $20 ELSE store_settings.free_delivery_above END,
+                                           store_description = CASE WHEN $23 THEN $21 ELSE store_settings.store_description END
             RETURNING *;
         `;
         const values = [
@@ -159,7 +161,14 @@ export const updateSettings = async (req: express.Request, res: express.Response
             // undefined → null → COALESCE keeps the stored value, so settings
             // screens that don't know these fields can't silently reset them.
             (newSettings as any).isWholesaleSupplier === undefined ? null : (newSettings as any).isWholesaleSupplier === true,
-            (newSettings as any).deliveryFee === undefined ? null : Math.max(0, Number((newSettings as any).deliveryFee) || 0)
+            (newSettings as any).deliveryFee === undefined ? null : Math.max(0, Number((newSettings as any).deliveryFee) || 0),
+            // Nullable fields need a separate "was provided" flag ($22/$23)
+            // since NULL is itself a meaningful value ("no threshold" / blank).
+            (newSettings as any).freeDeliveryAbove === undefined || (newSettings as any).freeDeliveryAbove === null || String((newSettings as any).freeDeliveryAbove).trim() === ''
+                ? null : Math.max(0, Number((newSettings as any).freeDeliveryAbove) || 0),
+            (newSettings as any).storeDescription === undefined ? null : String((newSettings as any).storeDescription).slice(0, 600),
+            (newSettings as any).freeDeliveryAbove !== undefined,
+            (newSettings as any).storeDescription !== undefined
         ];
 
         const result = await db.query(query, values);
