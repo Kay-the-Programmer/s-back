@@ -783,6 +783,28 @@ async function initializeDatabase() {
         await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS free_delivery_above DECIMAL(12,2) DEFAULT NULL;`);
         // Public storefront/marketplace blurb shown on supplier cards + shop hero.
         await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS store_description TEXT;`);
+        // Product reviews: one per buyer per product, gated server-side to
+        // verified purchases. Aggregates are denormalized onto products
+        // (rating_avg/rating_count, updated in the review-write transaction)
+        // so listing queries stay single-table.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS product_reviews (
+                id TEXT PRIMARY KEY,
+                store_id TEXT NOT NULL,
+                product_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                order_id TEXT,
+                author_name TEXT,
+                rating INT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+                comment TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (store_id, product_id, user_id)
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_reviews_product ON product_reviews(store_id, product_id);`);
+        await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS rating_avg NUMERIC(3,2) DEFAULT NULL;`);
+        await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS rating_count INT NOT NULL DEFAULT 0;`);
+
         // Trigram indexes keep the public %substring% product search fast as
         // catalogs grow (queries use ILIKE, which these GIN indexes serve).
         try {

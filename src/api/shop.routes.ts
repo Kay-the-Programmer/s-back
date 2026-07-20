@@ -1,7 +1,7 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
-import { getShopInfo, getShopProducts, getShopProductById, getShopCategories, createShopOrder, getPublicStores, getGlobalProducts, getGlobalCategories, getShopOrderStatus } from '../controllers/shop.controller';
-import { optionalProtect } from '../middleware/auth.middleware';
+import { getShopInfo, getShopProducts, getShopProductById, getShopCategories, createShopOrder, getPublicStores, getGlobalProducts, getGlobalCategories, getShopOrderStatus, getProductReviews, submitProductReview } from '../controllers/shop.controller';
+import { optionalProtect, protect } from '../middleware/auth.middleware';
 
 const router = express.Router();
 
@@ -116,6 +116,11 @@ router.get('/:storeId/products', getShopProducts);
  *           type: string
  */
 router.get('/:storeId/products/:productId', getShopProductById);
+
+// Reviews: public read; writes require a signed-in verified buyer and are
+// throttled with the lookup budget (they share the abuse profile).
+router.get('/:storeId/products/:productId/reviews', getProductReviews);
+router.post('/:storeId/products/:productId/reviews', lookupLimiter, protect, submitProductReview);
 
 /**
  * @openapi

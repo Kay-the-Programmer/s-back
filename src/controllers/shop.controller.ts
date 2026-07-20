@@ -47,6 +47,9 @@ const sanitizeProduct = (product: any) => {
         // (null = retail price applies) and minimum order quantity.
         wholesale_price: product.wholesale_price != null ? parseFloat(product.wholesale_price) : null,
         min_order_quantity: product.min_order_quantity != null ? parseInt(product.min_order_quantity, 10) : null,
+        // Denormalized review aggregates (maintained by submitProductReview).
+        rating_avg: product.rating_avg != null ? parseFloat(product.rating_avg) : null,
+        rating_count: product.rating_count != null ? parseInt(product.rating_count, 10) : 0,
     };
 };
 
@@ -568,6 +571,112 @@ export const getPublicStores = async (req: express.Request, res: express.Respons
     } catch (error) {
         console.error('Error fetching public stores:', error);
         res.status(500).json({ message: 'Failed to fetch stores' });
+    }
+};
+
+/**
+ * Public review listing for a product: latest reviews + summary.
+ */
+export const getProductReviews = async (req: express.Request, res: express.Response) => {
+    const { storeId, productId } = req.params;
+    try {
+        const [listRes, aggRes] = await Promise.all([
+            db.query(
+                `SELECT id, author_name, rating, comment, created_at
+                 FROM product_reviews
+                 WHERE store_id = $1 AND product_id = $2
+                 ORDER BY created_at DESC
+                 LIMIT 20`,
+                [storeId, productId]
+            ),
+            db.query(
+                `SELECT COALESCE(AVG(rating), 0)::numeric(3,2) AS avg, COUNT(*)::int AS count
+                 FROM product_reviews WHERE store_id = $1 AND product_id = $2`,
+                [storeId, productId]
+            ),
+        ]);
+        res.status(200).json(toCamelCase({
+            summary: { average: parseFloat(aggRes.rows[0].avg), count: aggRes.rows[0].count },
+            reviews: listRes.rows,
+        }));
+    } catch (error) {
+        console.error(`Error fetching reviews for ${productId}:`, error);
+        res.status(500).json({ message: 'Failed to fetch reviews' });
+    }
+};
+
+/**
+ * Submit (or update) a review. Verified-purchase gate: the signed-in user
+ * must have a non-cancelled online order from this store containing the
+ * product — either directly (legacy customer_id = user id) or via the
+ * customers.user_id account link. One review per buyer per product.
+ */
+export const submitProductReview = async (req: express.Request, res: express.Response) => {
+    const { storeId, productId } = req.params;
+    const userId = (req as any).user?.id;
+    if (!userId) return res.status(401).json({ message: 'Sign in to review products.' });
+
+    const rating = parseInt(String(req.body.rating), 10);
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+        return res.status(400).json({ message: 'Rating must be between 1 and 5.' });
+    }
+    const comment = String(req.body.comment ?? '').trim().slice(0, 1000) || null;
+
+    try {
+        // Verified-purchase check.
+        const purchase = await db.query(
+            `SELECT s.transaction_id
+             FROM sales s
+             JOIN sale_items si ON si.sale_id = s.transaction_id AND si.store_id = s.store_id
+             LEFT JOIN customers c ON c.id = s.customer_id AND c.store_id = s.store_id
+             WHERE s.store_id = $1 AND si.product_id = $2 AND s.channel = 'online'
+               AND s.fulfillment_status <> 'cancelled'
+               AND (s.customer_id = $3 OR c.user_id = $3)
+             ORDER BY s.timestamp DESC LIMIT 1`,
+            [storeId, productId, userId]
+        );
+        if (purchase.rowCount === 0) {
+            return res.status(403).json({
+                message: 'Only buyers who have ordered this item can review it.',
+                code: 'NOT_A_VERIFIED_BUYER',
+            });
+        }
+
+        const nameRes = await db.query('SELECT name FROM users WHERE id = $1', [userId]);
+        const authorName = String(nameRes.rows[0]?.name || 'Verified buyer').slice(0, 120);
+
+        const client = await (db as any)._pool.connect();
+        try {
+            await client.query('BEGIN');
+            await client.query(
+                `INSERT INTO product_reviews (id, store_id, product_id, user_id, order_id, author_name, rating, comment)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                 ON CONFLICT (store_id, product_id, user_id)
+                 DO UPDATE SET rating = EXCLUDED.rating, comment = EXCLUDED.comment,
+                               author_name = EXCLUDED.author_name, created_at = NOW()`,
+                [generateId('rev'), storeId, productId, userId, purchase.rows[0].transaction_id, authorName, rating, comment]
+            );
+            // Refresh the denormalized aggregates listing queries rely on.
+            await client.query(
+                `UPDATE products p SET
+                    rating_avg = agg.avg, rating_count = agg.count
+                 FROM (SELECT AVG(rating)::numeric(3,2) AS avg, COUNT(*)::int AS count
+                       FROM product_reviews WHERE store_id = $1 AND product_id = $2) agg
+                 WHERE p.id = $2 AND p.store_id = $1`,
+                [storeId, productId]
+            );
+            await client.query('COMMIT');
+        } catch (err) {
+            await client.query('ROLLBACK');
+            throw err;
+        } finally {
+            client.release();
+        }
+
+        res.status(201).json({ message: 'Review saved. Thank you!' });
+    } catch (error) {
+        console.error(`Error saving review for ${productId}:`, error);
+        res.status(500).json({ message: 'Failed to save review' });
     }
 };
 
