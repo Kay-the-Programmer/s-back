@@ -439,6 +439,10 @@ async function initializeDatabase() {
                     ALTER TABLE products ADD COLUMN IF NOT EXISTS carton_price NUMERIC(12,4) DEFAULT NULL;
                     ALTER TABLE products ADD COLUMN IF NOT EXISTS units_per_carton INTEGER DEFAULT NULL;
                     ALTER TABLE products ADD COLUMN IF NOT EXISTS cartons_received INTEGER DEFAULT NULL;
+                    -- B2B wholesale marketplace: per-unit price for retailer buyers
+                    -- (NULL = use the retail price) and minimum order quantity.
+                    ALTER TABLE products ADD COLUMN IF NOT EXISTS wholesale_price NUMERIC(12,2) DEFAULT NULL;
+                    ALTER TABLE products ADD COLUMN IF NOT EXISTS min_order_quantity INTEGER DEFAULT NULL;
                 END IF;
             END $$;
         `);

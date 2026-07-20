@@ -42,7 +42,11 @@ const sanitizeProduct = (product: any) => {
         dimensions: product.dimensions,
         variants: product.variants,
         custom_attributes: product.custom_attributes,
-        store_id: product.store_id
+        store_id: product.store_id,
+        // B2B wholesale marketplace: per-unit price for retailer buyers
+        // (null = retail price applies) and minimum order quantity.
+        wholesale_price: product.wholesale_price != null ? parseFloat(product.wholesale_price) : null,
+        min_order_quantity: product.min_order_quantity != null ? parseInt(product.min_order_quantity, 10) : null,
     };
 };
 
@@ -213,7 +217,8 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
         // 0. The store must exist, be active, and have its online store enabled —
         // otherwise a disabled shop could still accept orders via direct API calls.
         const storeRes = await client.query(
-            `SELECT s.id FROM stores s
+            `SELECT s.id, COALESCE(ss.is_wholesale_supplier, FALSE) AS is_wholesale_supplier
+             FROM stores s
              LEFT JOIN store_settings ss ON s.id = ss.store_id
              WHERE s.id = $1 AND s.status = 'active'
                AND (ss.is_online_store_enabled IS NULL OR ss.is_online_store_enabled = TRUE)`,
@@ -223,6 +228,9 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
             await client.query('ROLLBACK');
             return res.status(404).json({ message: 'Store not found or not accepting online orders.' });
         }
+        // Wholesale suppliers sell at wholesale_price (when set) and can
+        // enforce a per-product minimum order quantity.
+        const isWholesaleStore = storeRes.rows[0].is_wholesale_supplier === true;
 
         // 1. Handle Customer (Find or Create)
         let customerId = null;
@@ -320,7 +328,7 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
             // FOR UPDATE: lock the row so two concurrent checkouts can't both
             // pass the stock check and oversell the same units.
             const prodRes = await client.query(
-                'SELECT id, price, cost_price, name, stock FROM products WHERE id = $1 AND store_id = $2 AND status = \'active\' FOR UPDATE',
+                'SELECT id, price, cost_price, name, stock, wholesale_price, min_order_quantity FROM products WHERE id = $1 AND store_id = $2 AND status = \'active\' FOR UPDATE',
                 [productId, storeId]
             );
 
@@ -344,7 +352,24 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
                 });
             }
 
-            const price = parseFloat(product.price);
+            // Wholesale MOQ: suppliers can require a minimum per-line quantity.
+            const moq = isWholesaleStore && product.min_order_quantity != null
+                ? parseInt(product.min_order_quantity, 10) : 0;
+            if (moq > 1 && quantity < moq) {
+                await client.query('ROLLBACK');
+                return res.status(409).json({
+                    message: `"${product.name}" has a minimum order of ${moq}. Please increase the quantity or remove it.`,
+                    code: 'BELOW_MIN_QUANTITY',
+                    productId,
+                    minQuantity: moq,
+                });
+            }
+
+            // Wholesale suppliers charge wholesale_price when set; the DB is
+            // authoritative either way — client-sent prices are never trusted.
+            const price = isWholesaleStore && product.wholesale_price != null
+                ? parseFloat(product.wholesale_price)
+                : parseFloat(product.price);
             if (isNaN(price)) {
                 console.error(`Invalid price for product ${productId}:`, product.price);
                 continue;
