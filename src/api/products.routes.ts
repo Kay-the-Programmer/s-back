@@ -10,6 +10,7 @@ import {
     lookupExternalProduct,
 } from '../controllers/products.controller';
 import { protect, canManageInventory, requirePermission } from '../middleware/auth.middleware';
+import { importProducts } from '../controllers/product-import.controller';
 import upload from '../middleware/upload.middleware';
 
 const router = express.Router();
@@ -83,5 +84,40 @@ router.route('/:id')
 router.patch('/:id/stock', protect, canManageInventory, adjustStock);
 router.patch('/:id/archive', protect, canManageInventory, archiveProduct);
 router.get('/external-lookup/:barcode', protect, requirePermission('inventory:read'), lookupExternalProduct);
+
+/**
+ * @openapi
+ * /products/import:
+ *   post:
+ *     tags: [Products]
+ *     summary: Bulk-import products from a parsed CSV
+ *     description: >
+ *       Accepts rows parsed client-side. Send `dryRun: true` to validate and get
+ *       a per-row preview without writing anything; send `updateExisting: true`
+ *       to refresh products matched by SKU (or name) instead of skipping them.
+ *       The whole import runs in one transaction.
+ *     security: [{ bearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               rows:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     name: { type: string }
+ *                     sku: { type: string }
+ *                     category: { type: string }
+ *                     price: { type: number }
+ *                     costPrice: { type: number }
+ *                     stock: { type: number }
+ *               updateExisting: { type: boolean }
+ *               dryRun: { type: boolean }
+ */
+router.post('/import', protect, canManageInventory, importProducts);
 
 export default router;
