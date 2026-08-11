@@ -1236,6 +1236,68 @@ async function initializeDatabase() {
         await client.query(`CREATE INDEX IF NOT EXISTS idx_recurring_expenses_store ON recurring_expenses(store_id);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_recurring_expenses_next_run ON recurring_expenses(next_run_date);`);
 
+        // --- Sales documents: customer quotations & invoices ---
+        //
+        // These are *documents*, not a second revenue path. A sale remains the
+        // only thing that posts revenue/tax/COGS and moves stock; a document
+        // records what was offered or billed, and links to the sale it became
+        // via `converted_sale_id`. That keeps one definition of revenue across
+        // the reports (see accounting.service.recordSale).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS sales_documents (
+                id TEXT PRIMARY KEY,
+                store_id TEXT NOT NULL,
+                doc_type TEXT NOT NULL CHECK (doc_type IN ('quotation','invoice')),
+                number TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'draft'
+                    CHECK (status IN ('draft','sent','accepted','declined','expired','converted','cancelled')),
+                customer_id TEXT REFERENCES customers(id),
+                customer_name TEXT NOT NULL,
+                customer_phone TEXT,
+                customer_email TEXT,
+                customer_address TEXT,
+                issue_date DATE NOT NULL,
+                -- Quotations expire; invoices fall due. One column, meaning set
+                -- by doc_type, so "what date matters" is never ambiguous.
+                valid_until DATE,
+                subtotal DECIMAL(12,2) NOT NULL DEFAULT 0,
+                discount DECIMAL(12,2) NOT NULL DEFAULT 0,
+                tax DECIMAL(12,2) NOT NULL DEFAULT 0,
+                tax_rate DECIMAL(6,4) NOT NULL DEFAULT 0,
+                total DECIMAL(12,2) NOT NULL DEFAULT 0,
+                notes TEXT,
+                terms TEXT,
+                source_document_id TEXT REFERENCES sales_documents(id),
+                converted_sale_id TEXT,
+                converted_at TIMESTAMPTZ,
+                created_by TEXT NOT NULL,
+                created_by_name TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        // Document numbers are per store and per type (QUO-0001 / INV-0001).
+        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_documents_number ON sales_documents(store_id, doc_type, number);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_sales_documents_store_type ON sales_documents(store_id, doc_type, status);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_sales_documents_customer ON sales_documents(store_id, customer_id);`);
+
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS sales_document_items (
+                id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL REFERENCES sales_documents(id) ON DELETE CASCADE,
+                store_id TEXT NOT NULL,
+                -- Nullable: a quote may list something not yet in the catalogue.
+                product_id TEXT,
+                name TEXT NOT NULL,
+                sku TEXT,
+                quantity DECIMAL(12,3) NOT NULL,
+                unit_price DECIMAL(12,2) NOT NULL,
+                line_total DECIMAL(12,2) NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_sales_document_items_doc ON sales_document_items(document_id);`);
+
         // --- Stock Takes tables ---
         await client.query(`
             CREATE TABLE IF NOT EXISTS stock_takes (

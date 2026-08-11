@@ -55,6 +55,10 @@ export type Permission =
     | 'sales:perform'
     // Returns
     | 'returns:perform'
+    // Customer quotations & invoices. `create` covers drafting, issuing and
+    // converting a document; `manage` adds editing an issued one and deleting.
+    | 'sales_docs:create'
+    | 'sales_docs:manage'
     // Customers (CRM)
     | 'customers:read'
     | 'customers:create'
@@ -93,6 +97,8 @@ const STORE_PERMISSIONS: Permission[] = [
     'sales:read',
     'sales:perform',
     'returns:perform',
+    'sales_docs:create',
+    'sales_docs:manage',
     'customers:read',
     'customers:create',
     'customers:manage',
@@ -141,6 +147,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
         'sales:perform',
         'returns:perform',
         'expenses:record',
+        'sales_docs:create',
         'customers:read',
         'customers:create',
         'reports:sales',
