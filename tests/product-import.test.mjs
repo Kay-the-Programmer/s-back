@@ -183,10 +183,11 @@ const run = async () => {
     const noAuth = await req('POST', '/products/import', { rows: goodRows });
     check('an unauthenticated import is refused', noAuth.status === 401, `status ${noAuth.status}`);
 
-    // The freemium cap: drop the unlimited add-on and try to exceed the limit.
+    // The freemium cap: drop the unlimited add-on and import past FREE_PRODUCT_LIMIT
+    // (100 by default), which 4 existing + 120 new comfortably exceeds.
     await db.query(`UPDATE store_settings SET enabled_modules = '{}' WHERE store_id = $1`, [STORE_ID]);
     const capped = await req('POST', '/products/import', {
-        rows: Array.from({ length: 60 }, (_, i) => ({ name: `Capped ${RUN} ${i}`, price: '5' })),
+        rows: Array.from({ length: 120 }, (_, i) => ({ name: `Capped ${RUN} ${i}`, price: '5' })),
     }, admin);
     check('the free product cap applies to the whole batch', capped.status === 402, `status ${capped.status}`);
     check('nothing was imported when the cap blocked it', (await countProducts()) === 4, `count=${await countProducts()}`);
