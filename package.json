@@ -14,7 +14,8 @@
     "test:financial": "node tests/financial-invariants.test.mjs",
     "test:contract": "node tests/desktop-contract.test.mjs",
     "test:expenses": "node tests/staff-expenses.test.mjs",
-    "test:sales-docs": "node tests/sales-documents.test.mjs"
+    "test:sales-docs": "node tests/sales-documents.test.mjs",
+    "test:import": "node tests/product-import.test.mjs"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.19.0",
