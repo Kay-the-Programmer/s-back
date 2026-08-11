@@ -53,6 +53,7 @@ export const protect = async (req: express.Request, res: express.Response, next:
             } else {
                 const result = await db.query(`
                     SELECT u.id, u.name, u.email, u.role, u.phone, u.current_store_id, u.is_verified,
+                           s.status AS store_status,
                            s.subscription_status, s.subscription_ends_at, s.subscription_plan
                     FROM users u
                     LEFT JOIN stores s ON u.current_store_id = s.id
@@ -84,6 +85,7 @@ export const protect = async (req: express.Request, res: express.Response, next:
                 role: dbUser.role,
                 currentStoreId: dbUser.current_store_id || undefined,
                 isVerified: dbUser.is_verified,
+                storeStatus: dbUser.store_status,
                 subscriptionStatus: dbUser.subscription_status,
                 subscriptionEndsAt: dbUser.subscription_ends_at,
                 subscriptionPlan: dbUser.subscription_plan,
@@ -115,22 +117,34 @@ export const protect = async (req: express.Request, res: express.Response, next:
             // switch, verify are all account-level). Without this, an owner
             // whose ACTIVE store is suspended could never switch to one of
             // their healthy businesses — the whole account would be bricked.
-            const storeAgnostic = /^\/api\/(auth|stores)(\/|$|\?)/.test((req.originalUrl || req.url || '').toLowerCase());
+            const enforcePath = (req.originalUrl || req.url || '').toLowerCase();
+            const storeAgnostic = /^\/api\/(auth|stores)(\/|$|\?)/.test(enforcePath);
+            // Read-only notification polling stays reachable even when the store is
+            // suspended/canceled: it's the only channel that can still deliver the
+            // suspend/cancel notice explaining why access was cut off. Blocking it
+            // would create a catch-22 where the notice can never be seen.
+            const isNotificationRead =
+                req.method === 'GET' && /^\/api\/notifications(\/|$|\?)/.test(enforcePath);
             try {
-                if (!storeAgnostic && user.currentStoreId && user.role !== 'superadmin' && user.role !== 'customer') {
-                    const storeRes = await db.query('SELECT status, subscription_status FROM stores WHERE id = $1', [user.currentStoreId]);
+                if (!storeAgnostic && !isNotificationRead && user.currentStoreId && user.role !== 'superadmin' && user.role !== 'customer') {
+                    const storeRes = await db.query('SELECT status, subscription_status, status_reason FROM stores WHERE id = $1', [user.currentStoreId]);
                     const store = storeRes.rows[0];
                     if (!store) {
                         return res.status(403).json({ message: 'Store not found or not accessible' });
                     }
                     if (store.status !== 'active') {
-                        return res.status(403).json({ message: `Store is ${store.status}. Please contact support.` });
+                        const reason = String(store.status_reason || '').trim();
+                        return res.status(403).json({
+                            message: `Store is ${store.status}.${reason ? ` Reason: ${reason}.` : ''} Please contact support.`,
+                            code: 'STORE_INACTIVE',
+                            storeStatus: store.status,
+                        });
                     }
                     if (store.subscription_status === 'past_due') {
                         // Optionally allow grace; not blocking for past_due here.
                     }
                     if (store.subscription_status === 'canceled') {
-                        return res.status(403).json({ message: 'Subscription canceled. Store is not accessible.' });
+                        return res.status(403).json({ message: 'Subscription canceled. Store is not accessible.', code: 'SUBSCRIPTION_CANCELED' });
                     }
                 }
             } catch (e) {

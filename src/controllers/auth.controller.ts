@@ -41,8 +41,8 @@ export const loginUser = async (req: express.Request, res: express.Response) => 
         }
         const normEmail = String(email).toLowerCase();
         const result = await db.query(`
-            SELECT u.*, s.subscription_status, s.subscription_ends_at, s.subscription_plan 
-            FROM users u 
+            SELECT u.*, s.status AS store_status, s.subscription_status, s.subscription_ends_at, s.subscription_plan
+            FROM users u
             LEFT JOIN stores s ON u.current_store_id = s.id 
             WHERE u.email = $1
         `, [normEmail]);
@@ -81,6 +81,7 @@ export const loginUser = async (req: express.Request, res: express.Response) => 
                 profile_picture: user.profile_picture,
                 current_store_id: user.current_store_id,
                 is_verified: user.is_verified,
+                store_status: user.store_status,
                 subscription_status: user.subscription_status,
                 subscription_ends_at: user.subscription_ends_at,
                 subscription_plan: user.subscription_plan,
@@ -529,8 +530,8 @@ export const googleLogin = async (req: express.Request, res: express.Response) =
 
         // Check if user exists
         const result = await db.query(`
-            SELECT u.*, s.subscription_status, s.subscription_ends_at, s.subscription_plan 
-            FROM users u 
+            SELECT u.*, s.status AS store_status, s.subscription_status, s.subscription_ends_at, s.subscription_plan
+            FROM users u
             LEFT JOIN stores s ON u.current_store_id = s.id 
             WHERE u.email = $1
         `, [normEmail]);
@@ -587,6 +588,7 @@ export const googleLogin = async (req: express.Request, res: express.Response) =
             current_store_id: user.current_store_id,
             token: token,
             is_verified: user.is_verified,
+            store_status: user.store_status,
         });
         return res.json(userResponse);
 

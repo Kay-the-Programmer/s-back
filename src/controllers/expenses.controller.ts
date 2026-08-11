@@ -4,6 +4,24 @@ import { Expense } from '../types';
 import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { accountingService } from '../services/accounting.service';
+import { roleHasPermission, Role } from '../auth/rbac';
+
+/**
+ * Callers holding `expenses:manage` (admin) see the whole store's expenses.
+ * Everyone else who may reach these routes holds only `expenses:record`, and
+ * sees exactly the expenses they recorded — enforced here, in the queries, so
+ * it can't be bypassed by hitting an endpoint directly.
+ */
+/**
+ * Accounts an expense can be paid from — mirrors the web expense form
+ * (components/accounting/ExpenseFormModal.tsx): cash, or on account.
+ */
+const PAYMENT_SUB_TYPES = ['cash', 'accounts_payable'];
+
+const ownExpensesOnly = (req: express.Request): string | null =>
+    roleHasPermission(req.user?.role as Role | undefined, 'expenses:manage')
+        ? null
+        : (req.user?.id ?? 'unknown');
 
 // --- Expenses ---
 export const getExpenses = async (req: express.Request, res: express.Response) => {
@@ -20,9 +38,16 @@ export const getExpenses = async (req: express.Request, res: express.Response) =
             offset?: string
         };
 
+        const restrictTo = ownExpensesOnly(req);
+
         let query = 'SELECT * FROM expenses WHERE store_id = $1';
         const params: any[] = [storeId];
         let paramIndex = 2;
+
+        if (restrictTo) {
+            query += ` AND created_by = $${paramIndex++}`;
+            params.push(restrictTo);
+        }
 
         if (startDate) {
             query += ` AND date >= $${paramIndex++}`;
@@ -67,6 +92,11 @@ export const getExpenses = async (req: express.Request, res: express.Response) =
         const countParams: any[] = [storeId];
         let countParamIndex = 2;
 
+        if (restrictTo) {
+            countQuery += ` AND created_by = $${countParamIndex++}`;
+            countParams.push(restrictTo);
+        }
+
         if (startDate) {
             countQuery += ` AND date >= $${countParamIndex++}`;
             countParams.push(startDate);
@@ -105,17 +135,53 @@ export const getExpenseById = async (req: express.Request, res: express.Response
         const storeId = (req as any).tenant?.storeId;
         if (!storeId) return res.status(400).json({ message: 'No active store selected.' });
 
+        const restrictTo = ownExpensesOnly(req);
         const result = await db.query(
-            'SELECT * FROM expenses WHERE id = $1 AND store_id = $2',
-            [id, storeId]
+            restrictTo
+                ? 'SELECT * FROM expenses WHERE id = $1 AND store_id = $2 AND created_by = $3'
+                : 'SELECT * FROM expenses WHERE id = $1 AND store_id = $2',
+            restrictTo ? [id, storeId, restrictTo] : [id, storeId]
         );
         if (result.rowCount === 0) {
+            // Someone else's expense reads as "not found" — no existence leak.
             return res.status(404).json({ message: 'Expense not found' });
         }
         res.status(200).json(toCamelCase(result.rows[0]));
     } catch (error) {
         console.error('Error fetching expense:', error);
         res.status(500).json({ message: 'Error fetching expense' });
+    }
+};
+
+/**
+ * The accounts a recording form may offer: expense categories to charge, and
+ * the asset accounts (cash / bank / mobile money) an expense can be paid from.
+ *
+ * Exists so recording an expense doesn't require access to the chart of
+ * accounts — staff hold `expenses:record`, not `accounting:manage`.
+ */
+export const getExpenseAccountOptions = async (req: express.Request, res: express.Response) => {
+    try {
+        const storeId = (req as any).tenant?.storeId;
+        if (!storeId) return res.status(400).json({ message: 'No active store selected.' });
+
+        const result = await db.query(
+            `SELECT id, name, number, type, sub_type FROM accounts
+             WHERE store_id = $1 AND (type = 'expense' OR sub_type = ANY($2::text[]))
+             ORDER BY number`,
+            [storeId, PAYMENT_SUB_TYPES]
+        );
+        const rows = toCamelCase(result.rows) as
+            { id: string; name: string; number: string; type: string; subType: string | null }[];
+        res.status(200).json({
+            expenseAccounts: rows.filter(a => a.type === 'expense'),
+            // Same set the web expense form offers: pay in cash, or put it on
+            // account. Receivables and inventory are assets but not ways to pay.
+            paymentAccounts: rows.filter(a => a.subType && PAYMENT_SUB_TYPES.includes(a.subType)),
+        });
+    } catch (error) {
+        console.error('Error fetching expense account options:', error);
+        res.status(500).json({ message: 'Error fetching accounts' });
     }
 };
 
@@ -126,6 +192,11 @@ export const createExpense = async (req: express.Request, res: express.Response)
         return res.status(400).json({ message: 'Missing required fields' });
     }
 
+    const numericAmount = Number(amount);
+    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+        return res.status(400).json({ message: 'Amount must be a positive number.' });
+    }
+
     const id = generateId('exp');
     const userId = req.user?.id || 'unknown';
     const client = await (db as any)._pool.connect();
@@ -134,13 +205,37 @@ export const createExpense = async (req: express.Request, res: express.Response)
         const storeId = (req as any).tenant?.storeId;
         if (!storeId) return res.status(400).json({ message: 'No active store selected.' });
 
+        // Both accounts must belong to this store and be of the right kind.
+        // This route is no longer admin-only, so the posted account ids can't be
+        // taken on trust: without this a caller could charge any account in the
+        // ledger, or another store's.
+        const accounts = await client.query(
+            `SELECT id, name, type, sub_type FROM accounts WHERE store_id = $1 AND id = ANY($2::text[])`,
+            [storeId, [expenseAccountId, paymentAccountId]]
+        );
+        const byId = new Map<string, { id: string; name: string; type: string; sub_type: string | null }>(
+            accounts.rows.map((r: any) => [r.id, r])
+        );
+        const expenseAccount = byId.get(expenseAccountId);
+        const paymentAccount = byId.get(paymentAccountId);
+        if (!expenseAccount || expenseAccount.type !== 'expense') {
+            return res.status(400).json({ message: 'Unknown or invalid expense account.' });
+        }
+        if (!paymentAccount || !paymentAccount.sub_type || !PAYMENT_SUB_TYPES.includes(paymentAccount.sub_type)) {
+            return res.status(400).json({ message: 'Unknown or invalid payment account.' });
+        }
+        // Names come from the ledger, not the request — a client can't relabel
+        // an account by posting a different name alongside the id.
+        const chargedTo = expenseAccount.name ?? expenseAccountName;
+        const paidFrom = paymentAccount.name ?? paymentAccountName;
+
         await client.query('BEGIN');
 
         // Insert expense record
         const result = await client.query(
             `INSERT INTO expenses (id, store_id, date, description, amount, expense_account_id, expense_account_name, payment_account_id, payment_account_name, category, reference, created_by)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
-            [id, storeId, date, description, amount, expenseAccountId, expenseAccountName, paymentAccountId, paymentAccountName, category, reference, userId]
+            [id, storeId, date, description, numericAmount, expenseAccountId, chargedTo, paymentAccountId, paidFrom, category, reference, userId]
         );
 
         // Record the expense in the accounting system via journal entry
@@ -148,11 +243,11 @@ export const createExpense = async (req: express.Request, res: express.Response)
             id,
             date,
             description,
-            amount,
+            amount: numericAmount,
             expenseAccountId,
-            expenseAccountName,
+            expenseAccountName: chargedTo,
             paymentAccountId,
-            paymentAccountName,
+            paymentAccountName: paidFrom,
             category,
             reference,
             createdBy: userId,

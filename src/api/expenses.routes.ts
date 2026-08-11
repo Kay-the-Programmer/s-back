@@ -2,14 +2,42 @@ import express from 'express';
 import {
     getExpenses,
     getExpenseById,
+    getExpenseAccountOptions,
     createExpense,
     updateExpense,
     deleteExpense
 } from '../controllers/expenses.controller';
-import { protect, adminOnly } from '../middleware/auth.middleware';
+import { protect } from '../middleware/auth.middleware';
+import { requirePermission, requireAnyPermission } from '../auth/rbac';
 
 const router = express.Router();
-router.use(protect, adminOnly);
+router.use(protect);
+
+/**
+ * Two levels of access:
+ *   - `expenses:manage` (admin)  — the whole store's expenses, incl. edit/delete.
+ *   - `expenses:record` (staff)  — record an expense and see the ones you
+ *     recorded. The controller narrows every read to `created_by` for callers
+ *     who don't hold `expenses:manage`, so the route guard alone is never what
+ *     keeps one cashier's spending out of another's list.
+ */
+const canRecord = requireAnyPermission('expenses:manage', 'expenses:record');
+const canManage = requirePermission('expenses:manage');
+
+/**
+ * @openapi
+ * /expenses/accounts:
+ *   get:
+ *     tags: [Expenses]
+ *     summary: Accounts selectable when recording an expense
+ *     description: >
+ *       The expense categories and the cash/bank accounts an expense can be
+ *       paid from. Available to anyone who may record an expense, so the
+ *       recording form doesn't require access to the chart of accounts.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/accounts', canRecord, getExpenseAccountOptions);
 
 /**
  * @openapi
@@ -41,8 +69,8 @@ router.use(protect, adminOnly);
  *               paymentAccountId: { type: string }
  */
 router.route('/')
-    .get(getExpenses)
-    .post(createExpense);
+    .get(canRecord, getExpenses)
+    .post(canRecord, createExpense);
 
 /**
  * @openapi
@@ -70,8 +98,9 @@ router.route('/')
  *       - bearerAuth: []
  */
 router.route('/:id')
-    .get(getExpenseById)
-    .put(updateExpense)
-    .delete(deleteExpense);
+    .get(canRecord, getExpenseById)
+    // Editing or deleting rewrites the journal — admin only.
+    .put(canManage, updateExpense)
+    .delete(canManage, deleteExpense);
 
 export default router;

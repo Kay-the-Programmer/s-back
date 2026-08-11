@@ -121,6 +121,10 @@ export const updateStore = async (req: express.Request, res: express.Response) =
       }
       params.push(status);
       fields.push(`status = $${params.length}`);
+      // Persist the reason (cleared on reactivation) so the store-status 403 and
+      // the operator's device can explain why access was cut off.
+      params.push(status === 'active' ? null : String(reason).trim());
+      fields.push(`status_reason = $${params.length}`);
     }
     if (subscriptionStatus) {
       if (!['trial', 'active', 'past_due', 'canceled'].includes(subscriptionStatus)) {

@@ -37,6 +37,10 @@ export type Permission =
     // Finance
     | 'accounting:manage'
     | 'expenses:manage'
+    // Record an expense and see the ones you recorded — no edit, no delete, no
+    // visibility of anyone else's. Held by sales staff for petty cash at the
+    // till; `expenses:manage` (admin) is the full surface.
+    | 'expenses:record'
     | 'billing:manage'
     // Audit trail
     | 'audit:read'
@@ -79,6 +83,7 @@ const STORE_PERMISSIONS: Permission[] = [
     'settings:manage',
     'accounting:manage',
     'expenses:manage',
+    'expenses:record',
     'billing:manage',
     'audit:read',
     'inventory:read',
@@ -127,13 +132,15 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
         'ai:use',
     ],
 
-    // Sales staff: the POS, sales, returns, basic CRM and inventory look-ups.
-    // Cannot edit/delete customers, manage stock, finance or team.
+    // Sales staff: the POS, sales, returns, basic CRM and inventory look-ups,
+    // plus recording their own expenses (petty cash at the till).
+    // Cannot edit/delete customers, manage stock, team, or the books.
     staff: [
         'inventory:read',
         'sales:read',
         'sales:perform',
         'returns:perform',
+        'expenses:record',
         'customers:read',
         'customers:create',
         'reports:sales',

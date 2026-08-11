@@ -194,6 +194,9 @@ async function initializeDatabase() {
                 ALTER TABLE stores ADD COLUMN IF NOT EXISTS verification_documents JSONB DEFAULT '[]';
                 ALTER TABLE stores ADD COLUMN IF NOT EXISTS verification_token TEXT;
                 ALTER TABLE stores ADD COLUMN IF NOT EXISTS verification_token_expires TIMESTAMPTZ;
+                -- Reason a superadmin suspended/deactivated the store; surfaced in
+                -- the store-status 403 so the operator learns why access was cut off.
+                ALTER TABLE stores ADD COLUMN IF NOT EXISTS status_reason TEXT;
                 -- Set defaults and checks if missing by re-adding constraints
                 IF EXISTS (
                     SELECT 1 FROM information_schema.columns WHERE table_name='stores' AND column_name='status'

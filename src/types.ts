@@ -51,6 +51,7 @@ export interface User {
   role: 'superadmin' | 'admin' | 'staff' | 'inventory_manager' | 'customer' | 'supplier';
   currentStoreId?: string; // Multi-tenant: currently selected store ID
   isVerified?: boolean;
+  storeStatus?: 'active' | 'inactive' | 'suspended'; // Lifecycle status of the current store (superadmin suspend/deactivate)
   subscriptionStatus?: 'trial' | 'active' | 'past_due' | 'canceled';
   subscriptionEndsAt?: string;
   subscriptionPlan?: string;
