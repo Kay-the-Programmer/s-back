@@ -15,11 +15,33 @@ import { roleHasPermission, Role } from '../auth/rbac';
  * ledger, so the figures in Reports keep their single definition.
  */
 
-type DocType = 'quotation' | 'invoice';
+type DocType = 'quotation' | 'invoice' | 'delivery_note' | 'receipt';
+
+const DOC_TYPES: DocType[] = ['quotation', 'invoice', 'delivery_note', 'receipt'];
 
 const round2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100;
 
-const PREFIX: Record<DocType, string> = { quotation: 'QUO', invoice: 'INV' };
+const PREFIX: Record<DocType, string> = {
+    quotation: 'QUO',
+    invoice: 'INV',
+    delivery_note: 'DN',
+    receipt: 'RCP',
+};
+
+const DOC_LABEL: Record<DocType, string> = {
+    quotation: 'Quotation',
+    invoice: 'Invoice',
+    delivery_note: 'Delivery Note',
+    receipt: 'Receipt',
+};
+
+/**
+ * A delivery note lists goods handed over, not money — so it carries line items
+ * with no prices. A receipt is the mirror image: one amount acknowledged, with
+ * no line items at all.
+ */
+const needsLineItems = (t: DocType) => t !== 'receipt';
+const isMoneyDocument = (t: DocType) => t === 'quotation' || t === 'invoice' || t === 'receipt';
 
 /**
  * Status transitions we accept. Anything not listed is rejected, so a document
@@ -62,10 +84,14 @@ const buildTotals = (
     items: IncomingItem[],
     discountInput: unknown,
     taxRatePct: number,
+    /** Delivery notes list goods, not money — a zero unit price is expected. */
+    allowZeroPrice = false,
 ) => {
     const clean = items.map((raw, i) => {
         const quantity = Number(raw.quantity);
-        const unitPrice = Number(raw.unitPrice);
+        const unitPrice = allowZeroPrice && (raw.unitPrice === undefined || raw.unitPrice === null || raw.unitPrice === '')
+            ? 0
+            : Number(raw.unitPrice);
         const name = String(raw.name ?? '').trim();
         if (!name) throw new Error(`Line ${i + 1}: a description is required.`);
         if (!Number.isFinite(quantity) || quantity <= 0) {
@@ -190,26 +216,45 @@ export const createDocument = async (req: express.Request, res: express.Response
     const {
         docType, customerId, customerName, customerPhone, customerEmail, customerAddress,
         issueDate, validUntil, items, discount, notes, terms, sourceDocumentId,
+        amount, paymentMethod, paymentReference, deliveredBy, receivedBy,
     } = req.body as any;
 
-    if (docType !== 'quotation' && docType !== 'invoice') {
-        return res.status(400).json({ message: "docType must be 'quotation' or 'invoice'." });
+    if (!DOC_TYPES.includes(docType)) {
+        return res.status(400).json({ message: `docType must be one of: ${DOC_TYPES.join(', ')}.` });
     }
-    if (!Array.isArray(items) || items.length === 0) {
+    if (needsLineItems(docType) && (!Array.isArray(items) || items.length === 0)) {
         return res.status(400).json({ message: 'Add at least one line item.' });
     }
     if (!customerName || !String(customerName).trim()) {
-        return res.status(400).json({ message: 'A customer name is required.' });
+        return res.status(400).json({
+            message: docType === 'receipt' ? 'Who the money was received from is required.' : 'A customer name is required.',
+        });
     }
 
     const storeId = storeOf(req);
     if (!storeId) return res.status(400).json({ message: 'Store context required' });
 
     let totals;
-    try {
-        totals = buildTotals(items as IncomingItem[], discount, await storeTaxRate(storeId));
-    } catch (e: any) {
-        return res.status(400).json({ message: e.message });
+    if (docType === 'receipt') {
+        // A receipt acknowledges one figure. There are no lines to derive it
+        // from, so it's validated directly rather than through buildTotals.
+        const received = Number(amount);
+        if (!Number.isFinite(received) || received <= 0) {
+            return res.status(400).json({ message: 'Enter the amount received (greater than zero).' });
+        }
+        totals = { items: [], subtotal: round2(received), discount: 0, tax: 0, total: round2(received) };
+    } else {
+        try {
+            totals = buildTotals(
+                items as IncomingItem[],
+                discount,
+                // A delivery note carries no money, so no tax is applied to it.
+                docType === 'delivery_note' ? 0 : await storeTaxRate(storeId),
+                docType === 'delivery_note',
+            );
+        } catch (e: any) {
+            return res.status(400).json({ message: e.message });
+        }
     }
 
     // The customer, when given, must belong to this store.
@@ -237,17 +282,20 @@ export const createDocument = async (req: express.Request, res: express.Response
                         (id, store_id, doc_type, number, status, customer_id, customer_name,
                          customer_phone, customer_email, customer_address, issue_date, valid_until,
                          subtotal, discount, tax, tax_rate, total, notes, terms,
-                         source_document_id, created_by, created_by_name)
-                     VALUES ($1,$2,$3,$4,'draft',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+                         source_document_id, created_by, created_by_name,
+                         payment_method, payment_reference, delivered_by, received_by)
+                     VALUES ($1,$2,$3,$4,'draft',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
                      RETURNING *`,
                     [
                         id, storeId, docType, number, customerId || null, String(customerName).trim(),
                         customerPhone || null, customerEmail || null, customerAddress || null,
                         issueDate || new Date().toISOString().slice(0, 10), validUntil || null,
                         totals.subtotal, totals.discount, totals.tax,
-                        await storeTaxRate(storeId), totals.total,
+                        docType === 'delivery_note' ? 0 : await storeTaxRate(storeId), totals.total,
                         notes || null, terms || null, sourceDocumentId || null,
                         req.user?.id || 'unknown', req.user?.name || null,
+                        paymentMethod || null, paymentReference || null,
+                        deliveredBy || null, receivedBy || null,
                     ],
                 );
 
@@ -264,7 +312,7 @@ export const createDocument = async (req: express.Request, res: express.Response
                 }
 
                 await client.query('COMMIT');
-                auditService.log(req.user!, `${docType === 'quotation' ? 'Quotation' : 'Invoice'} Created`,
+                auditService.log(req.user!, `${DOC_LABEL[docType as DocType]} Created`,
                     `${number} for ${customerName} — ${totals.total}`);
                 const created = await fetchDocument(id, storeId);
                 return res.status(201).json(created);
@@ -288,6 +336,7 @@ export const updateDocument = async (req: express.Request, res: express.Response
     const {
         customerId, customerName, customerPhone, customerEmail, customerAddress,
         issueDate, validUntil, items, discount, notes, terms,
+        amount, paymentMethod, paymentReference, deliveredBy, receivedBy,
     } = req.body as any;
 
     const storeId = storeOf(req);
@@ -308,15 +357,29 @@ export const updateDocument = async (req: express.Request, res: express.Response
     if (!isEditable(row.status) && !canManage(req)) {
         return res.status(403).json({ message: 'Only a draft can be edited. Ask an admin to amend an issued document.' });
     }
-    if (!Array.isArray(items) || items.length === 0) {
+    const docType = row.doc_type as DocType;
+    if (needsLineItems(docType) && (!Array.isArray(items) || items.length === 0)) {
         return res.status(400).json({ message: 'Add at least one line item.' });
     }
 
     let totals;
-    try {
-        totals = buildTotals(items as IncomingItem[], discount, Number(row.tax_rate) || 0);
-    } catch (e: any) {
-        return res.status(400).json({ message: e.message });
+    if (docType === 'receipt') {
+        const received = Number(amount ?? row.total);
+        if (!Number.isFinite(received) || received <= 0) {
+            return res.status(400).json({ message: 'Enter the amount received (greater than zero).' });
+        }
+        totals = { items: [], subtotal: round2(received), discount: 0, tax: 0, total: round2(received) };
+    } else {
+        try {
+            totals = buildTotals(
+                items as IncomingItem[],
+                discount,
+                Number(row.tax_rate) || 0,
+                docType === 'delivery_note',
+            );
+        } catch (e: any) {
+            return res.status(400).json({ message: e.message });
+        }
     }
 
     const client = await (db as any)._pool.connect();
@@ -326,7 +389,9 @@ export const updateDocument = async (req: express.Request, res: express.Response
             `UPDATE sales_documents SET
                 customer_id = $1, customer_name = $2, customer_phone = $3, customer_email = $4,
                 customer_address = $5, issue_date = $6, valid_until = $7, subtotal = $8,
-                discount = $9, tax = $10, total = $11, notes = $12, terms = $13, updated_at = NOW()
+                discount = $9, tax = $10, total = $11, notes = $12, terms = $13,
+                payment_method = $16, payment_reference = $17, delivered_by = $18, received_by = $19,
+                updated_at = NOW()
              WHERE id = $14 AND store_id = $15`,
             [
                 customerId || null, String(customerName || row.customer_name).trim(),
@@ -334,6 +399,8 @@ export const updateDocument = async (req: express.Request, res: express.Response
                 issueDate || row.issue_date, validUntil || null,
                 totals.subtotal, totals.discount, totals.tax, totals.total,
                 notes || null, terms || null, id, storeId,
+                paymentMethod ?? row.payment_method, paymentReference ?? row.payment_reference,
+                deliveredBy ?? row.delivered_by, receivedBy ?? row.received_by,
             ],
         );
         await client.query('DELETE FROM sales_document_items WHERE document_id = $1', [id]);

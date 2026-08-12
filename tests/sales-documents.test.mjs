@@ -281,6 +281,99 @@ const run = async () => {
     const list = await req('GET', '/sales-documents?type=invoice', null, admin);
     check('documents can be filtered by type', (list.data?.items ?? []).every(d => d.docType === 'invoice') &&
         (list.data?.items ?? []).length === 1, `${(list.data?.items ?? []).length} invoice(s)`);
+
+    // ── 12. Manual delivery notes ──────────────────────────────────────────
+    // Goods handed over: quantities and descriptions, no money, signed for.
+    const ledgerBeforeManual = await ledgerAndStock();
+    const dn = await req('POST', '/sales-documents', {
+        docType: 'delivery_note',
+        customerName: 'Doc Customer',
+        customerAddress: 'Plot 12, Lusaka',
+        items: [
+            { name: 'Office Desk', quantity: 3 },
+            { name: 'Visitor Chair', quantity: 6, unitPrice: '' },
+        ],
+        deliveredBy: 'Driver Mwape',
+        notes: 'Delivered to reception',
+    }, staff);
+    check('staff can issue a delivery note', dn.status === 201, `status ${dn.status} ${JSON.stringify(dn.data).slice(0, 140)}`);
+    check('delivery notes get their own number series', dn.data?.number === 'DN-0001', dn.data?.number);
+    check('a delivery note carries no money', Number(dn.data?.total) === 0 && Number(dn.data?.tax) === 0,
+        `total ${dn.data?.total} tax ${dn.data?.tax}`);
+    check('lines without a price are accepted', (dn.data?.items || []).length === 2,
+        `${(dn.data?.items || []).length} line(s)`);
+    check('who delivered it is recorded', dn.data?.deliveredBy === 'Driver Mwape', dn.data?.deliveredBy);
+
+    const dnNoItems = await req('POST', '/sales-documents', {
+        docType: 'delivery_note', customerName: 'X', items: [],
+    }, staff);
+    check('a delivery note still needs at least one line', dnNoItems.status === 400, `status ${dnNoItems.status}`);
+
+    const dnConvert = await req('POST', `/sales-documents/${dn.data?.id}/convert-to-invoice`, {}, staff);
+    check('a delivery note cannot be converted to an invoice', dnConvert.status === 400, `status ${dnConvert.status}`);
+
+    // ── 13. Manual receipts ────────────────────────────────────────────────
+    const rcp = await req('POST', '/sales-documents', {
+        docType: 'receipt',
+        customerName: 'Chipata Lodge',
+        amount: '1250.50',
+        paymentMethod: 'cheque',
+        paymentReference: '004321',
+        notes: 'Part payment for office furniture',
+    }, staff);
+    check('staff can issue a receipt', rcp.status === 201, `status ${rcp.status} ${JSON.stringify(rcp.data).slice(0, 140)}`);
+    check('receipts get their own number series', rcp.data?.number === 'RCP-0001', rcp.data?.number);
+    check('the amount received is stored as the total',
+        Number(rcp.data?.total) === 1250.5 && Number(rcp.data?.subtotal) === 1250.5,
+        `total ${rcp.data?.total}`);
+    check('how it was paid is recorded',
+        rcp.data?.paymentMethod === 'cheque' && rcp.data?.paymentReference === '004321',
+        `${rcp.data?.paymentMethod} ${rcp.data?.paymentReference}`);
+    check('a receipt needs no line items', (rcp.data?.items || []).length === 0);
+
+    const rcpNoAmount = await req('POST', '/sales-documents', {
+        docType: 'receipt', customerName: 'X',
+    }, staff);
+    check('a receipt without an amount is rejected', rcpNoAmount.status === 400, rcpNoAmount.data?.message);
+    const rcpZero = await req('POST', '/sales-documents', {
+        docType: 'receipt', customerName: 'X', amount: 0,
+    }, staff);
+    check('a zero receipt is rejected', rcpZero.status === 400, `status ${rcpZero.status}`);
+    const rcpNegative = await req('POST', '/sales-documents', {
+        docType: 'receipt', customerName: 'X', amount: -50,
+    }, staff);
+    check('a negative receipt is rejected', rcpNegative.status === 400, `status ${rcpNegative.status}`);
+    const rcpNoName = await req('POST', '/sales-documents', {
+        docType: 'receipt', amount: 100,
+    }, staff);
+    check('a receipt must say who paid', rcpNoName.status === 400, `status ${rcpNoName.status}`);
+
+    // The whole point of the design: paperwork doesn't touch the books.
+    const ledgerAfterManual = await ledgerAndStock();
+    check(
+        'receipts and delivery notes post nothing to the ledger and move no stock',
+        ledgerAfterManual.journals === ledgerBeforeManual.journals &&
+        ledgerAfterManual.stock === ledgerBeforeManual.stock,
+        `journals ${ledgerBeforeManual.journals}→${ledgerAfterManual.journals}, stock ${ledgerBeforeManual.stock}→${ledgerAfterManual.stock}`,
+    );
+
+    // Editing a receipt keeps the receipt rules.
+    const rcpEdit = await req('PUT', `/sales-documents/${rcp.data?.id}`, {
+        customerName: 'Chipata Lodge', amount: '1300', paymentMethod: 'cash',
+    }, staff);
+    check('a draft receipt can be corrected', rcpEdit.status === 200 && Number(rcpEdit.data?.total) === 1300,
+        `status ${rcpEdit.status} total ${rcpEdit.data?.total}`);
+
+    const unknownType = await req('POST', '/sales-documents', {
+        docType: 'credit_note', customerName: 'X', items: [{ name: 'x', quantity: 1, unitPrice: 1 }],
+    }, staff);
+    check('an unknown document type is still rejected', unknownType.status === 400, `status ${unknownType.status}`);
+
+    // Numbering is independent per type.
+    const dn2 = await req('POST', '/sales-documents', {
+        docType: 'delivery_note', customerName: 'Another', items: [{ name: 'Filing Cabinet', quantity: 1 }],
+    }, staff);
+    check('each type numbers independently', dn2.data?.number === 'DN-0002', dn2.data?.number);
 };
 
 run()

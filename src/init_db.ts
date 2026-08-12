@@ -800,6 +800,11 @@ async function initializeDatabase() {
         await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS store_description TEXT;`);
         // Store logo (uploaded via POST /settings/logo, served from /uploads).
         await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS logo_url TEXT;`);
+        // Taxpayer ID + the trading line under the business name. Both are printed
+        // on receipts, delivery notes, quotations and invoices — a Zambian
+        // receipt is not valid paperwork without the TPIN.
+        await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS tpin TEXT;`);
+        await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS business_tagline TEXT;`);
         // Product reviews: one per buyer per product, gated server-side to
         // verified purchases. Aggregates are denormalized onto products
         // (rating_avg/rating_count, updated in the review-write transaction)
@@ -1297,6 +1302,28 @@ async function initializeDatabase() {
             );
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_sales_document_items_doc ON sales_document_items(document_id);`);
+
+        // Manual receipts and delivery notes — the paper books a shop keeps on the
+        // counter, issued from the app so they carry the same numbering, branding
+        // and TPIN. Like quotations and invoices these are *documents*: a receipt
+        // here records that a payment was acknowledged, it does not post to the
+        // ledger (the sale/payment does), so the books can't be double-counted.
+        await client.query(`
+            DO $$
+            BEGIN
+                ALTER TABLE sales_documents DROP CONSTRAINT IF EXISTS sales_documents_doc_type_check;
+                ALTER TABLE sales_documents ADD CONSTRAINT sales_documents_doc_type_check
+                    CHECK (doc_type IN ('quotation','invoice','delivery_note','receipt'));
+            EXCEPTION WHEN others THEN
+                RAISE WARNING 'Could not widen sales_documents.doc_type: %', SQLERRM;
+            END $$;
+        `);
+        // Receipt specifics (how the money arrived) and delivery-note specifics
+        // (who handed over, who signed for it).
+        await client.query(`ALTER TABLE sales_documents ADD COLUMN IF NOT EXISTS payment_method TEXT;`);
+        await client.query(`ALTER TABLE sales_documents ADD COLUMN IF NOT EXISTS payment_reference TEXT;`);
+        await client.query(`ALTER TABLE sales_documents ADD COLUMN IF NOT EXISTS delivered_by TEXT;`);
+        await client.query(`ALTER TABLE sales_documents ADD COLUMN IF NOT EXISTS received_by TEXT;`);
 
         // --- Stock Takes tables ---
         await client.query(`
