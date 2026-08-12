@@ -805,6 +805,12 @@ async function initializeDatabase() {
         // receipt is not valid paperwork without the TPIN.
         await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS tpin TEXT;`);
         await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS business_tagline TEXT;`);
+        // Bank accounts printed on invoices so a customer knows where to pay.
+        // Kept on the store (not on each invoice) because they're the same
+        // details every time — entered once, reused on every invoice after.
+        // JSONB rather than a table for the same reason payment_methods is: a
+        // short, store-scoped list that is always read and written whole.
+        await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS bank_accounts JSONB NOT NULL DEFAULT '[]'::jsonb;`);
         // Product reviews: one per buyer per product, gated server-side to
         // verified purchases. Aggregates are denormalized onto products
         // (rating_avg/rating_count, updated in the review-write transaction)

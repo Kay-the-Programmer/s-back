@@ -154,9 +154,43 @@ export const updateSettings = async (req: express.Request, res: express.Response
         // Using Boolean conversion to ensure it's always a boolean value
         newSettings.enableStoreCredit = newSettings.enableStoreCredit === true;
 
+        /**
+         * Bank accounts printed on invoices.
+         *
+         * Normalised here rather than trusted from the client: only the known
+         * fields survive, each is length-capped, and the list is capped too, so
+         * a settings save can't turn the column into an arbitrary blob. Returns
+         * null when the caller didn't send the field at all, which the COALESCE
+         * below reads as "leave the stored accounts alone" — an older settings
+         * screen must not be able to wipe them.
+         */
+        const text = (v: unknown, max: number) => String(v ?? '').trim().slice(0, max);
+        const rawAccounts = (newSettings as any).bankAccounts;
+        const bankAccounts = rawAccounts === undefined ? null : JSON.stringify(
+            (Array.isArray(rawAccounts) ? rawAccounts : [])
+                .filter((a: any) => a && typeof a === 'object')
+                .slice(0, 10)
+                .map((a: any, i: number) => ({
+                    id: text(a.id, 60) || `bank_${Date.now()}_${i}`,
+                    bankName: text(a.bankName, 80),
+                    swiftCode: text(a.swiftCode, 20),
+                    bankAddress: text(a.bankAddress, 160),
+                    accountName: text(a.accountName, 80),
+                    accountNumber: text(a.accountNumber, 40),
+                    // `branch` is what the first cut of this feature stored;
+                    // accept it so accounts saved then keep their branch.
+                    branchName: text(a.branchName ?? a.branch, 80),
+                    branchSortCode: text(a.branchSortCode, 20),
+                    showOnInvoices: a.showOnInvoices !== false,
+                }))
+                // A row with no bank and no number is an empty form the operator
+                // never filled in; storing it would print a blank line on invoices.
+                .filter((a: any) => a.bankName || a.accountNumber)
+        );
+
         const query = `
-            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled, lenco_public_key, lenco_secret_key, is_wholesale_supplier, delivery_fee, free_delivery_above, store_description, tpin, business_tagline)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, COALESCE($18, FALSE), COALESCE($19, 0), $20, $21, $24, $25)
+            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled, lenco_public_key, lenco_secret_key, is_wholesale_supplier, delivery_fee, free_delivery_above, store_description, tpin, business_tagline, bank_accounts)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, COALESCE($18, FALSE), COALESCE($19, 0), $20, $21, $24, $25, COALESCE($26::jsonb, '[]'::jsonb))
             ON CONFLICT (store_id) DO UPDATE SET
                                            name = EXCLUDED.name,
                                            address = EXCLUDED.address,
@@ -181,7 +215,8 @@ export const updateSettings = async (req: express.Request, res: express.Response
                                            -- Undefined (a settings screen that doesn't know the field)
                                            -- must leave the stored value alone, not blank it.
                                            tpin = COALESCE($24, store_settings.tpin),
-                                           business_tagline = COALESCE($25, store_settings.business_tagline)
+                                           business_tagline = COALESCE($25, store_settings.business_tagline),
+                                           bank_accounts = COALESCE($26::jsonb, store_settings.bank_accounts)
             RETURNING *;
         `;
         const values = [
@@ -207,6 +242,8 @@ export const updateSettings = async (req: express.Request, res: express.Response
             // quotations and invoices.
             (newSettings as any).tpin === undefined ? null : String((newSettings as any).tpin).trim().slice(0, 40),
             (newSettings as any).businessTagline === undefined ? null : String((newSettings as any).businessTagline).trim().slice(0, 120),
+            // Bank details for invoices; null = caller didn't send the field.
+            bankAccounts,
         ];
 
         const result = await db.query(query, values);
