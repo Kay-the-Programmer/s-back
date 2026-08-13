@@ -147,10 +147,13 @@ export const createProduct = async (req: express.Request, res: express.Response)
 
 
         // Input validation
-        if (!name || !category_id || !price) {
-            return res.status(400).json({
-                message: 'Missing required fields: name, category_id, and price are required'
-            });
+        // Only the name is truly required. Price and category are both optional
+        // so a store can record a product the moment it hears of it — a supplier
+        // line it plans to carry, stock arriving next week — and fill in the
+        // rest later. An unpriced product is kept off the POS rather than sold
+        // for nothing; an uncategorised one reports under "Uncategorized".
+        if (!name) {
+            return res.status(400).json({ message: 'Missing required field: name is required' });
         }
 
         // For new products, we only handle direct file uploads.
@@ -196,8 +199,8 @@ export const createProduct = async (req: express.Request, res: express.Response)
         };
 
         // Additional validation
-        if (processedValues.price <= 0) {
-            return res.status(400).json({ message: 'Price must be greater than 0' });
+        if (processedValues.price < 0) {
+            return res.status(400).json({ message: 'Price cannot be negative' });
         }
 
         if (processedValues.stock < 0) {

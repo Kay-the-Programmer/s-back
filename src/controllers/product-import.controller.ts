@@ -61,9 +61,11 @@ const parseRow = (raw: ImportRow): { ok: true; value: any } | { ok: false; reaso
     const name = text(raw.name);
     if (!name) return { ok: false, reason: 'Name is required.' };
 
-    const price = num(raw.price);
-    if (price === null) return { ok: false, reason: 'Price is required and must be a number.' };
-    if (price <= 0) return { ok: false, reason: 'Price must be greater than 0.' };
+    // A price-less row is legitimate: supplier catalogues and "stock this later"
+    // lists arrive without one. The product is recorded unpriced (0) and stays
+    // off the POS until someone prices it.
+    const price = num(raw.price) ?? 0;
+    if (price < 0) return { ok: false, reason: 'Price cannot be negative.' };
 
     const costPrice = num(raw.costPrice);
     if (costPrice !== null && costPrice < 0) return { ok: false, reason: 'Cost price cannot be negative.' };

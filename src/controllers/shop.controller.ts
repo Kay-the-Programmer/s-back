@@ -93,7 +93,9 @@ export const getShopProducts = async (req: express.Request, res: express.Respons
     const orderBy = PRODUCT_SORTS[String(req.query.sort || '')] || PRODUCT_SORTS.name;
 
     try {
-        let whereClause = `WHERE store_id = $1 AND status = 'active'`;
+        // price > 0 keeps products that are recorded but not yet priced out of
+        // the storefront — a shopper must never see something listed at nothing.
+        let whereClause = `WHERE store_id = $1 AND status = 'active' AND price > 0`;
         const params: any[] = [storeId];
 
         if (categoryId) {
@@ -143,7 +145,7 @@ export const getShopProductById = async (req: express.Request, res: express.Resp
     const { storeId, productId } = req.params;
     try {
         const result = await db.query(
-            'SELECT * FROM products WHERE id = $1 AND store_id = $2 AND status = \'active\'',
+            'SELECT * FROM products WHERE id = $1 AND store_id = $2 AND status = \'active\' AND price > 0',
             [productId, storeId]
         );
 
@@ -166,7 +168,7 @@ export const getShopCategories = async (req: express.Request, res: express.Respo
         const result = await db.query(
             `SELECT c.id, c.name, c.parent_id, COUNT(p.id)::int AS product_count
              FROM categories c
-             JOIN products p ON p.category_id = c.id AND p.store_id = c.store_id AND p.status = 'active'
+             JOIN products p ON p.category_id = c.id AND p.store_id = c.store_id AND p.status = 'active' AND p.price > 0
              WHERE c.store_id = $1
              GROUP BY c.id, c.name, c.parent_id
              ORDER BY c.name ASC`,
@@ -813,7 +815,7 @@ export const getGlobalCategories = async (req: express.Request, res: express.Res
             JOIN categories c ON p.category_id = c.id AND c.store_id = p.store_id
             JOIN stores s ON p.store_id = s.id
             LEFT JOIN store_settings ss ON s.id = ss.store_id
-            WHERE p.status = 'active' AND s.status = 'active'
+            WHERE p.status = 'active' AND p.price > 0 AND s.status = 'active'
               AND (ss.is_online_store_enabled IS NULL OR ss.is_online_store_enabled = TRUE)
               ${wholesaleOnly ? 'AND ss.is_wholesale_supplier = TRUE' : ''}
             GROUP BY LOWER(c.name)
@@ -838,6 +840,7 @@ export const getGlobalProducts = async (req: express.Request, res: express.Respo
     try {
         let whereClause = `
             WHERE p.status = 'active'
+            AND p.price > 0
             AND s.status = 'active'
             AND (ss.is_online_store_enabled IS NULL OR ss.is_online_store_enabled = TRUE)
         `;

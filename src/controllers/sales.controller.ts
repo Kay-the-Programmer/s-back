@@ -251,14 +251,17 @@ export const createSale = async (req: express.Request, res: express.Response) =>
     const transactionId = /^(?!temp_)[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/.test(clientTxId)
         ? clientTxId
         : generateId(saleData.paymentStatus === 'unpaid' ? 'INV' : 'SALE');
-    // Offline sales sync hours or days after the fact; reports must attribute
-    // them to when they happened, not when they arrived. Client timestamps are
-    // trusted within [-90d, +5min] of server time.
+    // Offline sales sync hours or days after the fact, and a store moving off
+    // paper books enters months of history by hand; reports must attribute both
+    // to when the sale happened, not when it was typed. Client timestamps are
+    // trusted within [-3y, +5min] of server time — the future stays closed so a
+    // wrong date can't park revenue in a period that hasn't happened.
     const nowMs = Date.now();
     const clientTsMs = Date.parse(String(saleData.timestamp || ''));
+    const BACKDATE_LIMIT_MS = 3 * 365 * 24 * 60 * 60 * 1000;
     const timestamp = Number.isFinite(clientTsMs)
         && clientTsMs <= nowMs + 5 * 60 * 1000
-        && clientTsMs >= nowMs - 90 * 24 * 60 * 60 * 1000
+        && clientTsMs >= nowMs - BACKDATE_LIMIT_MS
         ? new Date(clientTsMs).toISOString()
         : new Date().toISOString();
 
