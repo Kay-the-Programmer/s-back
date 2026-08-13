@@ -56,6 +56,30 @@ export const getSales = async (req: express.Request, res: express.Response) => {
         params.push(paymentStatus);
         whereClauses.push(`s.payment_status = $${params.length}`);
     }
+    // Free-text search across the transaction id, the customer (linked record or
+    // the snapshot on the sale) and the PRODUCTS sold. Product/customer matching
+    // uses EXISTS rather than the joined aliases so the same clause is valid in
+    // the count query, which only selects FROM sales.
+    const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+    if (search) {
+        params.push(`%${search}%`);
+        const term = `$${params.length}`;
+        whereClauses.push(`(
+            s.transaction_id ILIKE ${term}
+            OR s.customer_details->>'name' ILIKE ${term}
+            OR EXISTS (
+                SELECT 1 FROM customers c2
+                WHERE c2.id = s.customer_id AND c2.store_id = s.store_id AND c2.name ILIKE ${term}
+            )
+            OR EXISTS (
+                SELECT 1 FROM sale_items si2
+                JOIN products p2 ON p2.id = si2.product_id AND p2.store_id = si2.store_id
+                WHERE si2.sale_id = s.transaction_id AND si2.store_id = s.store_id
+                  AND (p2.name ILIKE ${term} OR p2.sku ILIKE ${term} OR p2.barcode ILIKE ${term})
+            )
+        )`);
+    }
+
     const { fulfillmentStatus, channel } = req.query as { [key: string]: string };
     if (fulfillmentStatus) {
         params.push(fulfillmentStatus);
