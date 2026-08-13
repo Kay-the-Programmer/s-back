@@ -395,11 +395,18 @@ export const createSale = async (req: express.Request, res: express.Response) =>
                 [transactionId, item.productId, item.quantity, item.price, currentCostPrice, storeId]
             );
 
-            const newStock = parseFloat(product.stock) - item.quantity;
-            await client.query(
-                'UPDATE products SET stock = $1 WHERE id = $2 AND store_id = $3',
-                [newStock, item.productId, storeId]
+            // Decrement RELATIVELY and take the new level from the database.
+            // Computing `stock - qty` in JS from an unlocked SELECT lost a whole
+            // sale's worth of stock whenever two tills sold the same product at
+            // once: both read the same level, both wrote an absolute value, and
+            // the second write silently erased the first — leaving inventory
+            // permanently overstated. `stock = stock - $1` re-reads the row under
+            // the row lock, so concurrent sales compose.
+            const stockResult = await client.query(
+                'UPDATE products SET stock = stock - $1 WHERE id = $2 AND store_id = $3 RETURNING stock',
+                [item.quantity, item.productId, storeId]
             );
+            const newStock = parseFloat(stockResult.rows[0]?.stock ?? '0');
 
             if (product.reorder_point !== null && newStock <= parseFloat(product.reorder_point)) {
                 try {

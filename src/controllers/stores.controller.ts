@@ -340,7 +340,8 @@ export const getMyStoresSummary = async (req: express.Request, res: express.Resp
         `SELECT store_id,
                 COUNT(*) FILTER (WHERE status = 'active')::int AS products_count,
                 COUNT(*) FILTER (WHERE status = 'active' AND stock <= COALESCE(reorder_point, 5))::int AS low_stock_count,
-                COALESCE(SUM(stock * COALESCE(cost_price, 0)) FILTER (WHERE status = 'active'), 0)::float AS inventory_value
+                COALESCE(SUM(stock * COALESCE(cost_price, 0)) FILTER (WHERE status = 'active'), 0)::float AS inventory_value,
+                COALESCE(SUM(stock * COALESCE(price, 0)) FILTER (WHERE status = 'active'), 0)::float AS inventory_retail_value
          FROM products WHERE store_id = ANY($1) GROUP BY store_id`,
         [ids],
       ),
@@ -397,6 +398,7 @@ export const getMyStoresSummary = async (req: express.Request, res: express.Resp
         productsCount: Number(pr.products_count) || 0,
         lowStockCount: Number(pr.low_stock_count) || 0,
         inventoryValue: Number(pr.inventory_value) || 0,
+        inventoryRetailValue: Number(pr.inventory_retail_value) || 0,
         customersCount: Number(cu.customers_count) || 0,
         usersCount: Number(us.users_count) || 0,
         trend: dayKeys.map(day => ({ date: day, revenue: tm?.get(day) || 0 })),
@@ -410,9 +412,10 @@ export const getMyStoresSummary = async (req: express.Request, res: express.Resp
       productsCount: t.productsCount + s.productsCount,
       lowStockCount: t.lowStockCount + s.lowStockCount,
       inventoryValue: t.inventoryValue + s.inventoryValue,
+      inventoryRetailValue: t.inventoryRetailValue + s.inventoryRetailValue,
       customersCount: t.customersCount + s.customersCount,
       usersCount: t.usersCount + s.usersCount,
-    }), { revenue: 0, prevRevenue: 0, transactions: 0, productsCount: 0, lowStockCount: 0, inventoryValue: 0, customersCount: 0, usersCount: 0 });
+    }), { revenue: 0, prevRevenue: 0, transactions: 0, productsCount: 0, lowStockCount: 0, inventoryValue: 0, inventoryRetailValue: 0, customersCount: 0, usersCount: 0 });
 
     return res.json({ days, stores, totals });
   } catch (error: any) {

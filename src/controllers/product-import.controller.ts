@@ -2,6 +2,7 @@ import express from 'express';
 import db from '../db_client';
 import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
+import { accountingService } from '../services/accounting.service';
 import { MODULES, FREE_PRODUCT_LIMIT, isModuleEnabled } from '../services/entitlements.service';
 
 /**
@@ -224,6 +225,14 @@ export const importProducts = async (req: express.Request, res: express.Response
             return id;
         };
 
+        // Imported stock is inventory the store now owns, so it has to hit the
+        // Inventory account like every other stock movement (creation, PO
+        // receipt, adjustment, stock take) already does. Without this the
+        // sub-ledger `SUM(stock * cost_price)` climbed with each import while
+        // the GL stayed put, and the accounting hub's inventoryMatch check
+        // failed permanently for any store that built its catalogue by import.
+        let importValueDelta = 0;
+
         const created: any[] = [];
         for (const [index, value] of toCreate.entries()) {
             const categoryId = await resolveCategory(value.categoryName);
@@ -244,10 +253,16 @@ export const importProducts = async (req: express.Request, res: express.Response
                 ],
             );
             created.push(inserted.rows[0]);
+            importValueDelta += (Number(value.stock) || 0) * (Number(value.costPrice) || 0);
         }
 
         for (const { id, value } of toUpdate) {
             const categoryId = value.categoryName ? await resolveCategory(value.categoryName) : null;
+            const before = await client.query(
+                'SELECT stock, cost_price FROM products WHERE id = $1 AND store_id = $2',
+                [id, storeId],
+            );
+            const oldValue = (Number(before.rows[0]?.stock) || 0) * (Number(before.rows[0]?.cost_price) || 0);
             await client.query(
                 `UPDATE products SET
                     name = $1,
@@ -266,6 +281,23 @@ export const importProducts = async (req: express.Request, res: express.Response
                     value.price, value.costPrice, value.stock, value.brand,
                     value.unitOfMeasure, value.reorderPoint, id, storeId,
                 ],
+            );
+            // cost_price is COALESCEd above, so a row that omits it keeps the
+            // stored cost — read the row back rather than assuming the CSV's.
+            const after = await client.query(
+                'SELECT stock, cost_price FROM products WHERE id = $1 AND store_id = $2',
+                [id, storeId],
+            );
+            const newValue = (Number(after.rows[0]?.stock) || 0) * (Number(after.rows[0]?.cost_price) || 0);
+            importValueDelta += newValue - oldValue;
+        }
+
+        if (Math.abs(importValueDelta) > 0.01) {
+            await accountingService.recordConsolidatedStockAdjustment(
+                importValueDelta,
+                `Product import (${summary.created} created, ${summary.updated} updated)`,
+                client,
+                storeId,
             );
         }
 

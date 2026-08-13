@@ -363,7 +363,8 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         COALESCE(SUM(price * stock), 0) as "totalRetailValue",
             COALESCE(SUM(cost_price * stock), 0) as "totalCostValue",
             COALESCE(SUM(stock), 0) as "totalUnits",
-            (SELECT COUNT(*) FROM products WHERE store_id = $1) as "totalProducts"
+            COUNT(*) as "totalProducts",
+            COUNT(*) FILTER (WHERE cost_price IS NULL OR cost_price = 0) as "productsMissingCost"
             FROM products WHERE status = 'active' AND store_id = $1;
         `;
         const invResult = await db.query(invQuery, [storeId]);
@@ -476,6 +477,9 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
                 potentialProfit: (parseFloat(invData.totalRetailValue || 0) - parseFloat(invData.totalCostValue || 0)),
                 totalUnits: parseInt(invData.totalUnits || 0, 10),
                 totalProducts: parseInt(invData.totalProducts || 0, 10),
+                // Stock with no cost contributes 0 to the cost value, so the
+                // count is what explains a cost total that reads low.
+                productsMissingCost: parseInt(invData.productsMissingCost || 0, 10),
             },
             customers: {
                 totalCustomers: parseInt(String(customerData.totalCustomers || 0), 10),
@@ -550,6 +554,107 @@ export const getDailySalesWithProducts = async (req: express.Request, res: expre
     }
 };
 
+
+/**
+ * Units sold per product over a period.
+ *
+ * Unlike the LIMIT-10 topProducts arrays on /reports/dashboard this covers the
+ * FULL catalogue for the range, sortable and searchable, so an owner can answer
+ * "how many of X did we sell this month". Quantities are net of returns and
+ * grouped by product id (not name), so two products sharing a name stay
+ * distinct — and a renamed product keeps one row.
+ */
+export const getProductSales = async (req: express.Request, res: express.Response) => {
+    const { startDate, endDate, channel } = req.query as { [key: string]: string };
+    if (!startDate || !endDate) {
+        return res.status(400).json({ message: 'startDate and endDate query parameters are required.' });
+    }
+    const adjustedEndDate = new Date(new Date(endDate).getTime() + 24 * 60 * 60 * 1000 - 1).toISOString();
+    const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+
+    // Whitelisted so the sort can be interpolated safely.
+    const SORTS: { [key: string]: string } = {
+        quantity: 'net_quantity',
+        revenue: 'revenue',
+        name: 'p.name',
+        sku: 'p.sku',
+        transactions: 'transaction_count',
+        profit: 'profit',
+    };
+    const sortBy = SORTS[req.query.sortBy as string] || SORTS.quantity;
+    const sortOrder = String(req.query.sortOrder).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+
+    try {
+        const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
+        if (!storeId) {
+            return res.status(400).json({ message: 'Store context required' });
+        }
+
+        const params: any[] = [startDate, adjustedEndDate, storeId];
+        let extra = '';
+        if (channel) {
+            params.push(channel);
+            extra += ` AND s.channel = $${params.length}`;
+        }
+        if (search) {
+            params.push(`%${search}%`);
+            extra += ` AND (p.name ILIKE $${params.length} OR p.sku ILIKE $${params.length} OR p.barcode ILIKE $${params.length})`;
+        }
+
+        const query = `
+            SELECT p.id as product_id,
+                   p.name,
+                   p.sku,
+                   c.name as category_name,
+                   SUM(si.quantity) as gross_quantity,
+                   SUM(si.returned_quantity) as returned_quantity,
+                   SUM(si.quantity - si.returned_quantity) as net_quantity,
+                   SUM(si.price_at_sale * (si.quantity - si.returned_quantity)) as revenue,
+                   SUM(si.cost_at_sale * (si.quantity - si.returned_quantity)) as cost,
+                   SUM(si.price_at_sale * (si.quantity - si.returned_quantity))
+                     - SUM(si.cost_at_sale * (si.quantity - si.returned_quantity)) as profit,
+                   COUNT(DISTINCT s.transaction_id) as transaction_count
+            FROM sale_items si
+            JOIN products p ON si.product_id = p.id AND p.store_id = $3
+            LEFT JOIN categories c ON p.category_id = c.id
+            JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
+            WHERE s.timestamp BETWEEN $1 AND $2
+              AND s.fulfillment_status IS DISTINCT FROM 'cancelled'
+              AND s.store_id = $3 AND si.store_id = $3
+              ${extra}
+            GROUP BY p.id, p.name, p.sku, c.name
+            HAVING SUM(si.quantity - si.returned_quantity) > 0
+            ORDER BY ${sortBy} ${sortOrder}, p.name ASC
+        `;
+
+        const result = await db.query(query, params);
+        const items = result.rows.map((r: any) => ({
+            productId: r.product_id,
+            name: r.name,
+            sku: r.sku,
+            categoryName: r.category_name || 'Uncategorized',
+            grossQuantity: parseInt(r.gross_quantity, 10) || 0,
+            returnedQuantity: parseInt(r.returned_quantity, 10) || 0,
+            quantity: parseInt(r.net_quantity, 10) || 0,
+            revenue: parseFloat(r.revenue) || 0,
+            cost: parseFloat(r.cost) || 0,
+            profit: parseFloat(r.profit) || 0,
+            transactionCount: parseInt(r.transaction_count, 10) || 0,
+        }));
+
+        const totals = items.reduce((a, i) => ({
+            products: a.products + 1,
+            quantity: a.quantity + i.quantity,
+            revenue: a.revenue + i.revenue,
+            profit: a.profit + i.profit,
+        }), { products: 0, quantity: 0, revenue: 0, profit: 0 });
+
+        res.status(200).json({ items, totals, startDate, endDate });
+    } catch (error) {
+        console.error('Error generating product sales report:', error);
+        res.status(500).json({ message: 'Error generating product sales report' });
+    }
+};
 
 export const getPersonalUseAdjustments = async (req: express.Request, res: express.Response) => {
     const { startDate, endDate } = req.query as { startDate: string, endDate: string };

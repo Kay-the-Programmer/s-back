@@ -279,7 +279,11 @@ async function getInventoryContext(storeId: string) {
     const inventorySummary = await db.query(
         `SELECT 
             COUNT(*) as total_products,
-            COALESCE(SUM(stock * COALESCE(cost_price, price * 0.6)), 0) as inventory_value,
+            -- Stock at cost, matching the balance sheet and every other
+            -- inventory total. The old price * 0.6 fallback invented a cost for
+            -- products that have none, so the AI quoted a figure no other
+            -- screen showed.
+            COALESCE(SUM(stock * COALESCE(cost_price, 0)), 0) as inventory_value,
             COALESCE(SUM(stock), 0) as total_units,
             COUNT(CASE WHEN stock <= COALESCE(reorder_point, 10) THEN 1 END) as low_stock_count,
             COUNT(CASE WHEN stock = 0 THEN 1 END) as out_of_stock_count
@@ -485,7 +489,7 @@ async function getBusinessStrategyContext(storeId: string) {
         `SELECT 
             COUNT(CASE WHEN stock <= COALESCE(reorder_point, 10) THEN 1 END) as low_stock_count,
             COUNT(*) as total_products,
-            COALESCE(SUM(stock * COALESCE(cost_price, price * 0.6)), 0) as inventory_value
+            COALESCE(SUM(stock * COALESCE(cost_price, 0)), 0) as inventory_value
          FROM products WHERE store_id = $1 AND status = 'active'`,
         [storeId]
     );
