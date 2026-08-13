@@ -42,22 +42,26 @@ export const createPurchaseOrder = async (req: express.Request, res: express.Res
             return res.status(400).json({ message: 'Store context required' });
         }
 
-        // A purchase order requires a valid supplier (supplier_id is NOT NULL with a
-        // foreign key). Validate up-front so a missing/unknown supplier returns a
-        // clear 400 instead of surfacing as an opaque database error.
-        if (!poData.supplierId) {
-            return res.status(400).json({ message: 'A supplier is required to create a purchase order.' });
+        // The supplier is optional — an order can be raised before the store has
+        // settled on who it is buying from, and named later. When one IS given it
+        // must belong to this store, so a bad id still fails clearly rather than
+        // as an opaque foreign-key error.
+        const supplierId = poData.supplierId || null;
+        if (supplierId) {
+            const supplierCheck = await db.query('SELECT id FROM suppliers WHERE id = $1 AND store_id = $2', [supplierId, storeId]);
+            if (supplierCheck.rowCount === 0) {
+                return res.status(400).json({ message: 'Selected supplier was not found for this store.' });
+            }
         }
-        const supplierCheck = await db.query('SELECT id FROM suppliers WHERE id = $1 AND store_id = $2', [poData.supplierId, storeId]);
-        if (supplierCheck.rowCount === 0) {
-            return res.status(400).json({ message: 'Selected supplier was not found for this store.' });
-        }
+        // supplier_name is NOT NULL and is what every list and print-out shows,
+        // so an unassigned order carries a readable placeholder.
+        const supplierName = supplierId ? (poData.supplierName || '') : (poData.supplierName || 'Unassigned supplier');
 
         await client.query('BEGIN');
 
         const poResult = await client.query(
             'INSERT INTO purchase_orders (id, po_number, supplier_id, supplier_name, status, created_at, ordered_at, expected_at, notes, subtotal, shipping_cost, tax, total, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *',
-            [id, poNumber, poData.supplierId, poData.supplierName, poData.status, createdAt, poData.orderedAt, poData.expectedAt, poData.notes, poData.subtotal, poData.shippingCost, poData.tax, poData.total, storeId]
+            [id, poNumber, supplierId, supplierName, poData.status, createdAt, poData.orderedAt, poData.expectedAt, poData.notes, poData.subtotal, poData.shippingCost, poData.tax, poData.total, storeId]
         );
         const newPO = toCamelCase(poResult.rows[0]);
 
@@ -141,7 +145,12 @@ export const updatePurchaseOrder = async (req: express.Request, res: express.Res
 
         const poResult = await client.query(
             'UPDATE purchase_orders SET supplier_id=$1, supplier_name=$2, status=$3, ordered_at=$4, expected_at=$5, notes=$6, subtotal=$7, shipping_cost=$8, tax=$9, total=$10 WHERE id=$11 AND store_id=$12 RETURNING *',
-            [poData.supplierId, poData.supplierName, poData.status, poData.orderedAt, poData.expectedAt, poData.notes, poData.subtotal, poData.shippingCost, poData.tax, poData.total, id, storeId]
+            [
+                poData.supplierId || null,
+                poData.supplierId ? (poData.supplierName || '') : (poData.supplierName || 'Unassigned supplier'),
+                poData.status, poData.orderedAt, poData.expectedAt, poData.notes,
+                poData.subtotal, poData.shippingCost, poData.tax, poData.total, id, storeId,
+            ]
         );
         const updatedPO = toCamelCase(poResult.rows[0]);
 

@@ -931,7 +931,7 @@ async function initializeDatabase() {
             CREATE TABLE IF NOT EXISTS purchase_orders (
                 id TEXT PRIMARY KEY,
                 po_number TEXT NOT NULL UNIQUE,
-                supplier_id TEXT NOT NULL REFERENCES suppliers(id),
+                supplier_id TEXT REFERENCES suppliers(id),
                 supplier_name TEXT NOT NULL,
                 status TEXT NOT NULL CHECK (status IN ('draft','ordered','partially_received','received','canceled')),
                 created_at TIMESTAMPTZ NOT NULL,
@@ -948,6 +948,10 @@ async function initializeDatabase() {
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_purchase_orders_store_id ON purchase_orders(store_id);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_purchase_orders_store_id_created_at ON purchase_orders(store_id, created_at);`);
+        // Supplier is optional: a store often raises an order before it has
+        // decided (or recorded) who it is buying from. Existing databases were
+        // created with supplier_id NOT NULL, so drop it here too.
+        await client.query(`ALTER TABLE purchase_orders ALTER COLUMN supplier_id DROP NOT NULL;`);
         await client.query(`
             CREATE TABLE IF NOT EXISTS purchase_order_items (
                 id SERIAL PRIMARY KEY,
