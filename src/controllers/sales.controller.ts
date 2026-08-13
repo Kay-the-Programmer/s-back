@@ -631,6 +631,105 @@ export const recordPayment = async (req: express.Request, res: express.Response)
     }
 };
 
+/**
+ * Correct the DATE of an existing sale — nothing else.
+ *
+ * A store typing up paper books gets the day wrong, or rings a sale on the
+ * following morning. Moving the sale means moving everything that reports off
+ * it, or the figures disagree: the sale row itself, the payment rows that were
+ * stamped when it was rung, and the journal entry behind the books. All three
+ * move in one transaction, so a report can never see a half-moved sale.
+ *
+ * Deliberately narrow: totals, lines, payment method and customer are all left
+ * alone. Re-pricing a historical sale is a different (and much riskier) feature.
+ */
+export const updateSaleDate = async (req: express.Request, res: express.Response) => {
+    const { id } = req.params;
+    const { timestamp } = req.body as { timestamp?: string };
+
+    const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
+    if (!storeId) {
+        return res.status(400).json({ message: 'Store context required' });
+    }
+
+    // Same window the create path trusts: up to three years back for book
+    // catch-up, never the future.
+    const nowMs = Date.now();
+    const parsedMs = Date.parse(String(timestamp || ''));
+    if (!Number.isFinite(parsedMs)) {
+        return res.status(400).json({ message: 'A valid date is required.' });
+    }
+    if (parsedMs > nowMs + 5 * 60 * 1000) {
+        return res.status(400).json({ message: 'A sale cannot be dated in the future.' });
+    }
+    if (parsedMs < nowMs - 3 * 365 * 24 * 60 * 60 * 1000) {
+        return res.status(400).json({ message: 'That date is more than three years ago.' });
+    }
+    const nextTimestamp = new Date(parsedMs).toISOString();
+
+    const client = await db._pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const existing = await client.query(
+            'SELECT transaction_id, "timestamp" FROM sales WHERE transaction_id = $1 AND store_id = $2 FOR UPDATE',
+            [id, storeId],
+        );
+        if (existing.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ message: 'Sale not found' });
+        }
+        const previousTimestamp = new Date(existing.rows[0].timestamp).toISOString();
+
+        // Payments FIRST, and matched against the sale's stored timestamp rather
+        // than a round-tripped string: a JS Date carries milliseconds, the column
+        // can hold microseconds, so comparing to `previousTimestamp` would match
+        // nothing for any sale whose time came from the database.
+        // Only the payments taken AT the sale move with it — a part-payment
+        // collected later has its own date and keeps it.
+        await client.query(
+            `UPDATE payments SET date = $1
+             WHERE sale_id = $2 AND store_id = $3
+               AND date = (SELECT "timestamp" FROM sales WHERE transaction_id = $2 AND store_id = $3)`,
+            [nextTimestamp, id, storeId],
+        );
+
+        await client.query(
+            'UPDATE sales SET "timestamp" = $1 WHERE transaction_id = $2 AND store_id = $3',
+            [nextTimestamp, id, storeId],
+        );
+
+        // The books follow the sale, otherwise the P&L and cash-flow reports
+        // (which read journal_entries.date) would still show the old day.
+        await client.query(
+            `UPDATE journal_entries SET date = $1
+             WHERE store_id = $2 AND source_type = 'sale' AND source_id = $3`,
+            [nextTimestamp, storeId, id],
+        );
+
+        const updated = await client.query(
+            'SELECT * FROM sales WHERE transaction_id = $1 AND store_id = $2',
+            [id, storeId],
+        );
+
+        await client.query('COMMIT');
+
+        await auditService.log(
+            req.user!,
+            'Sale Date Changed',
+            `Sale: ${id} | From: ${previousTimestamp} To: ${nextTimestamp}`,
+        );
+
+        return res.status(200).json(toCamelCase(updated.rows[0]));
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error(`Error updating date for sale ${id}:`, error);
+        return res.status(500).json({ message: 'Error updating the sale date' });
+    } finally {
+        client.release();
+    }
+};
+
 export const updateFulfillmentStatus = async (req: express.Request, res: express.Response) => {
     const { id } = req.params;
     const { status } = req.body; // pending, fulfilled, shipped, cancelled

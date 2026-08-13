@@ -1,6 +1,6 @@
 import express from 'express';
-import { getSales, createSale, createQuickSale, recordPayment, updateFulfillmentStatus } from '../controllers/sales.controller';
-import { protect, canPerformSales, requirePermission } from '../middleware/auth.middleware';
+import { getSales, createSale, createQuickSale, recordPayment, updateFulfillmentStatus, updateSaleDate } from '../controllers/sales.controller';
+import { protect, canPerformSales, requirePermission, adminOnly } from '../middleware/auth.middleware';
 
 const router = express.Router();
 
@@ -52,5 +52,36 @@ router.route('/:id/payments')
 
 router.route('/:id/fulfillment')
     .put(protect, canPerformSales, updateFulfillmentStatus);
+
+/**
+ * @openapi
+ * /sales/{id}/date:
+ *   patch:
+ *     tags: [Sales]
+ *     summary: Correct the date of an existing sale (date only)
+ *     description: >
+ *       Moves the sale, its at-sale payments and its journal entry to the new
+ *       date in one transaction, so every report agrees. Admin only — this
+ *       rewrites history and is audit-logged.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               timestamp: { type: string, format: date-time }
+ *     responses:
+ *       200:
+ *         description: The updated sale
+ */
+router.route('/:id/date')
+    .patch(protect, adminOnly, updateSaleDate);
 
 export default router;
