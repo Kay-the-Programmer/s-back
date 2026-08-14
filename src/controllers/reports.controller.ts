@@ -1,6 +1,7 @@
 import express from 'express';
 import db from '../db_client';
 import { toCamelCase } from '../utils/helpers';
+import { LINE_REVENUE, LINE_COST, LINE_QUANTITY, SALE_REVENUE, NOT_CANCELLED } from '../utils/revenue';
 
 export const getDashboardData = async (req: express.Request, res: express.Response) => {
     const { startDate, endDate, channel } = req.query as { startDate: string, endDate: string, channel?: string };
@@ -251,14 +252,14 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
 
         // --- Top Products by Revenue ---
         const topProductsRevenueQuery = `
-            SELECT p.name, SUM(si.quantity - si.returned_quantity) as quantity, SUM(si.price_at_sale * (si.quantity - si.returned_quantity)) as revenue
+            SELECT p.name, SUM(si.quantity) as quantity, SUM(${LINE_REVENUE}) as revenue
             FROM sale_items si
                      JOIN products p ON si.product_id = p.id AND p.store_id = $3
                      JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
             WHERE s.timestamp BETWEEN $1 AND $2 AND ${saleFilter} AND s.store_id = $3 AND si.store_id = $3
                 ${channelClause('s')}
             GROUP BY p.name
-            HAVING SUM(si.quantity - si.returned_quantity) > 0
+            HAVING SUM(si.quantity) > 0
             ORDER BY revenue DESC
             LIMIT 10;
         `;
@@ -266,14 +267,14 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
 
         // --- Top Products by Quantity ---
         const topProductsQuantityQuery = `
-            SELECT p.name, SUM(si.quantity - si.returned_quantity) as quantity
+            SELECT p.name, SUM(si.quantity) as quantity
             FROM sale_items si
                      JOIN products p ON si.product_id = p.id AND p.store_id = $3
                      JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
             WHERE s.timestamp BETWEEN $1 AND $2 AND ${saleFilter} AND s.store_id = $3 AND si.store_id = $3
                 ${channelClause('s')}
             GROUP BY p.name
-            HAVING SUM(si.quantity - si.returned_quantity) > 0
+            HAVING SUM(si.quantity) > 0
             ORDER BY quantity DESC
             LIMIT 10;
         `;
@@ -281,7 +282,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
 
         // --- Sales by Category ---
         const salesByCategoryQuery = `
-            SELECT c.name, SUM(si.price_at_sale * (si.quantity - si.returned_quantity)) as revenue
+            SELECT c.name, SUM(${LINE_REVENUE}) as revenue
             FROM sale_items si
                      JOIN products p ON si.product_id = p.id AND p.store_id = $3
                      JOIN categories c ON p.category_id = c.id AND c.store_id = $3
@@ -289,7 +290,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             WHERE s.timestamp BETWEEN $1 AND $2 AND ${saleFilter} AND s.store_id = $3 AND si.store_id = $3
                 ${channelClause('s')}
             GROUP BY c.name
-            HAVING SUM(si.quantity - si.returned_quantity) > 0
+            HAVING SUM(si.quantity) > 0
             ORDER BY revenue DESC;
         `;
         const salesByCategoryResult = await db.query(salesByCategoryQuery, channelParams);
@@ -520,14 +521,14 @@ export const getDailySalesWithProducts = async (req: express.Request, res: expre
         SELECT
         DATE(s.timestamp):: text as date,
             p.name as product_name,
-            SUM(si.quantity - si.returned_quantity) as quantity,
-            SUM(si.price_at_sale * (si.quantity - si.returned_quantity)) as revenue
+            SUM(si.quantity) as quantity,
+            SUM(${LINE_REVENUE}) as revenue
             FROM sale_items si
             JOIN products p ON si.product_id = p.id AND p.store_id = $3
             JOIN sales s ON si.sale_id = s.transaction_id AND s.store_id = $3
             WHERE s.timestamp BETWEEN $1 AND $2 AND s.fulfillment_status IS DISTINCT FROM 'cancelled' AND s.store_id = $3 AND si.store_id = $3
             GROUP BY DATE(s.timestamp), p.name
-            HAVING SUM(si.quantity - si.returned_quantity) > 0
+            HAVING SUM(si.quantity) > 0
             ORDER BY DATE(s.timestamp) ASC, revenue DESC;
         `;
         const result = await db.query(dailyItemsQuery, [startDate, adjustedEndDate, storeId]);
@@ -608,9 +609,8 @@ export const getProductSales = async (req: express.Request, res: express.Respons
         // the sale's lines in proportion to their value, so the products of one
         // sale still add up to `subtotal - discount` — the platform's single
         // revenue definition (accrual, ex-tax, net of discount, no cancelled).
-        const netFactor = `(1 - COALESCE(s.discount, 0) / NULLIF(s.subtotal, 0))`;
-        const lineRevenue = `si.price_at_sale * (si.quantity - si.returned_quantity) * COALESCE(${netFactor}, 1)`;
-        const lineCost = `si.cost_at_sale * (si.quantity - si.returned_quantity)`;
+        const lineRevenue = LINE_REVENUE;
+        const lineCost = LINE_COST;
 
         const query = `
             SELECT p.id as product_id,
@@ -618,8 +618,7 @@ export const getProductSales = async (req: express.Request, res: express.Respons
                    p.sku,
                    c.name as category_name,
                    SUM(si.quantity) as gross_quantity,
-                   SUM(si.returned_quantity) as returned_quantity,
-                   SUM(si.quantity - si.returned_quantity) as net_quantity,
+                   SUM(si.quantity) as net_quantity,
                    SUM(${lineRevenue}) as revenue,
                    SUM(${lineCost}) as cost,
                    SUM(${lineRevenue}) - SUM(${lineCost}) as profit,
@@ -633,18 +632,52 @@ export const getProductSales = async (req: express.Request, res: express.Respons
               AND s.store_id = $3 AND si.store_id = $3
               ${extra}
             GROUP BY p.id, p.name, p.sku, c.name
-            HAVING SUM(si.quantity - si.returned_quantity) > 0
+            HAVING SUM(si.quantity) > 0
             ORDER BY ${sortBy} ${sortOrder}, p.name ASC
         `;
 
         const result = await db.query(query, params);
+
+        // Returns are counted in the period they HAPPENED, dated by the return —
+        // the same rule the dashboard and COGS follow. Reading
+        // sale_items.returned_quantity here would have dated them by the sale
+        // instead, so a later refund would retroactively change a closed month.
+        const returnsResult = await db.query(
+            `SELECT ri.product_id,
+                    MAX(ri.product_name) as product_name,
+                    MAX(p.sku) as sku,
+                    MAX(c.name) as category_name,
+                    SUM(ri.quantity) as returned_quantity,
+                    SUM(ri.quantity * si.price_at_sale) as returned_value
+             FROM return_items ri
+             JOIN returns r ON ri.return_id = r.id AND r.store_id = $3
+             LEFT JOIN products p ON p.id = ri.product_id AND p.store_id = $3
+             LEFT JOIN categories c ON p.category_id = c.id
+             LEFT JOIN sale_items si ON si.sale_id = r.original_sale_id
+                  AND si.product_id = ri.product_id AND si.store_id = $3
+             WHERE r.timestamp BETWEEN $1 AND $2 AND ri.store_id = $3
+             GROUP BY ri.product_id`,
+            [startDate, adjustedEndDate, storeId],
+        );
+        const returnsByProduct = new Map<string, any>(
+            returnsResult.rows.map((r: any) => [r.product_id, {
+                quantity: parseInt(r.returned_quantity, 10) || 0,
+                value: parseFloat(r.returned_value) || 0,
+                name: r.product_name,
+                sku: r.sku,
+                categoryName: r.category_name,
+            }]),
+        );
+
         const items = result.rows.map((r: any) => ({
             productId: r.product_id,
             name: r.name,
             sku: r.sku,
             categoryName: r.category_name || 'Uncategorized',
             grossQuantity: parseInt(r.gross_quantity, 10) || 0,
-            returnedQuantity: parseInt(r.returned_quantity, 10) || 0,
+            /** Units returned IN this period (may relate to an earlier sale). */
+            returnedQuantity: returnsByProduct.get(r.product_id)?.quantity || 0,
+            returnedValue: returnsByProduct.get(r.product_id)?.value || 0,
             quantity: parseInt(r.net_quantity, 10) || 0,
             revenue: parseFloat(r.revenue) || 0,
             cost: parseFloat(r.cost) || 0,
@@ -652,12 +685,34 @@ export const getProductSales = async (req: express.Request, res: express.Respons
             transactionCount: parseInt(r.transaction_count, 10) || 0,
         }));
 
+        // A product returned in this period but not sold in it still belongs on
+        // the report — otherwise the returns column silently omits them.
+        const sold = new Set(items.map(i => i.productId));
+        for (const [productId, r] of returnsByProduct) {
+            if (sold.has(productId) || r.quantity <= 0) continue;
+            items.push({
+                productId,
+                name: r.name || 'Unknown product',
+                sku: r.sku || null,
+                categoryName: r.categoryName || 'Uncategorized',
+                grossQuantity: 0,
+                returnedQuantity: r.quantity,
+                returnedValue: r.value,
+                quantity: 0,
+                revenue: 0,
+                cost: 0,
+                profit: 0,
+                transactionCount: 0,
+            });
+        }
+
         const totals = items.reduce((a, i) => ({
             products: a.products + 1,
             quantity: a.quantity + i.quantity,
+            returnedQuantity: a.returnedQuantity + i.returnedQuantity,
             revenue: a.revenue + i.revenue,
             profit: a.profit + i.profit,
-        }), { products: 0, quantity: 0, revenue: 0, profit: 0 });
+        }), { products: 0, quantity: 0, returnedQuantity: 0, revenue: 0, profit: 0 });
 
         res.status(200).json({ items, totals, startDate, endDate });
     } catch (error) {

@@ -184,33 +184,33 @@ async function getSalesContext(storeId: string, timeframe: string) {
     // Today's sales
     const todaySales = await db.query(
         `SELECT 
-            COALESCE(SUM(total), 0) as total, 
+            COALESCE(SUM((subtotal - COALESCE(discount, 0))), 0) as total, 
             COUNT(*) as count,
-            COALESCE(AVG(total), 0) as avg_value,
-            SUM(CASE WHEN channel = 'online' THEN total ELSE 0 END) as online_total,
-            SUM(CASE WHEN channel = 'pos' THEN total ELSE 0 END) as pos_total
+            COALESCE(AVG((subtotal - COALESCE(discount, 0))), 0) as avg_value,
+            SUM(CASE WHEN channel = 'online' THEN (subtotal - COALESCE(discount, 0)) ELSE 0 END) as online_total,
+            SUM(CASE WHEN channel = 'pos' THEN (subtotal - COALESCE(discount, 0)) ELSE 0 END) as pos_total
          FROM sales 
-         WHERE store_id = $1 AND DATE("timestamp") = $2`,
+         WHERE store_id = $1 AND DATE("timestamp") = $2 AND fulfillment_status IS DISTINCT FROM 'cancelled'`,
         [storeId, today]
     );
 
     // Week comparison
     const weekSales = await db.query(
         `SELECT 
-            COALESCE(SUM(total), 0) as total,
+            COALESCE(SUM((subtotal - COALESCE(discount, 0))), 0) as total,
             COUNT(*) as count
          FROM sales 
-         WHERE store_id = $1 AND DATE("timestamp") >= $2`,
+         WHERE store_id = $1 AND DATE("timestamp") >= $2 AND fulfillment_status IS DISTINCT FROM 'cancelled'`,
         [storeId, weekAgo]
     );
 
     // Month-to-date sales
     const monthSales = await db.query(
         `SELECT 
-            COALESCE(SUM(total), 0) as total,
+            COALESCE(SUM((subtotal - COALESCE(discount, 0))), 0) as total,
             COUNT(*) as count
          FROM sales 
-         WHERE store_id = $1 AND DATE("timestamp") >= $2`,
+         WHERE store_id = $1 AND DATE("timestamp") >= $2 AND fulfillment_status IS DISTINCT FROM 'cancelled'`,
         [storeId, monthStart]
     );
 
@@ -219,10 +219,10 @@ async function getSalesContext(storeId: string, timeframe: string) {
     const prevMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0).toISOString().split('T')[0];
     const prevMonthSales = await db.query(
         `SELECT 
-            COALESCE(SUM(total), 0) as total,
+            COALESCE(SUM((subtotal - COALESCE(discount, 0))), 0) as total,
             COUNT(*) as count
          FROM sales 
-         WHERE store_id = $1 AND DATE("timestamp") >= $2 AND DATE("timestamp") <= $3`,
+         WHERE store_id = $1 AND DATE("timestamp") >= $2 AND fulfillment_status IS DISTINCT FROM 'cancelled' AND DATE("timestamp") <= $3`,
         [storeId, prevMonthStart, prevMonthEnd]
     );
 
@@ -230,8 +230,8 @@ async function getSalesContext(storeId: string, timeframe: string) {
     const topProducts = await db.query(
         `SELECT 
             p.name,
-            COALESCE(SUM(si.quantity * si.price_at_sale), 0) as revenue,
-            COALESCE(SUM(si.quantity), 0) as units_sold
+            COALESCE(SUM(si.price_at_sale * (si.quantity - si.returned_quantity) * COALESCE(1 - COALESCE(s.discount, 0) / NULLIF(s.subtotal, 0), 1)), 0) as revenue,
+            COALESCE(SUM(si.quantity - si.returned_quantity), 0) as units_sold
          FROM sale_items si
          JOIN products p ON si.product_id = p.id
          JOIN sales s ON si.sale_id = s.transaction_id
@@ -453,22 +453,22 @@ async function getBusinessStrategyContext(storeId: string) {
 
     // Get recent sales trends (Last 30 days)
     const recentSales = await db.query(
-        `SELECT COALESCE(SUM(total), 0) as total, COUNT(*) as count, COALESCE(AVG(total), 0) as aov
-         FROM sales WHERE store_id = $1 AND DATE("timestamp") >= $2`,
+        `SELECT COALESCE(SUM((subtotal - COALESCE(discount, 0))), 0) as total, COUNT(*) as count, COALESCE(AVG((subtotal - COALESCE(discount, 0))), 0) as aov
+         FROM sales WHERE store_id = $1 AND DATE("timestamp") >= $2 AND fulfillment_status IS DISTINCT FROM 'cancelled'`,
         [storeId, monthAgo]
     );
 
     // Previous period for AOV comparison (30-60 days ago)
     const prevMonthSales = await db.query(
-        `SELECT COALESCE(AVG(total), 0) as aov
-         FROM sales WHERE store_id = $1 AND DATE("timestamp") >= $2 AND DATE("timestamp") < $3`,
+        `SELECT COALESCE(AVG((subtotal - COALESCE(discount, 0))), 0) as aov
+         FROM sales WHERE store_id = $1 AND DATE("timestamp") >= $2 AND DATE("timestamp") < $3 AND fulfillment_status IS DISTINCT FROM 'cancelled'`,
         [storeId, threeMonthsAgo, monthAgo] // Using 3 months window roughly for trend or just simplified prev month
     );
 
     // Get three-month sales for larger trend analysis
     const threeMonthSales = await db.query(
-        `SELECT COALESCE(SUM(total), 0) as total FROM sales 
-         WHERE store_id = $1 AND DATE("timestamp") >= $2`,
+        `SELECT COALESCE(SUM((subtotal - COALESCE(discount, 0))), 0) as total FROM sales 
+         WHERE store_id = $1 AND DATE("timestamp") >= $2 AND fulfillment_status IS DISTINCT FROM 'cancelled'`,
         [storeId, threeMonthsAgo]
     );
 
@@ -588,10 +588,10 @@ async function analyzeAnomalies(storeId: string) {
     // Revenue Anomaly
     const revenueQuery = await db.query(
         `WITH current_week AS (
-            SELECT COALESCE(SUM(total), 0) as rev FROM sales WHERE store_id = $1 AND DATE("timestamp") >= $2
+            SELECT COALESCE(SUM((subtotal - COALESCE(discount, 0))), 0) as rev FROM sales WHERE store_id = $1 AND DATE("timestamp") >= $2 AND fulfillment_status IS DISTINCT FROM 'cancelled'
         ),
         previous_week AS (
-            SELECT COALESCE(SUM(total), 0) as rev FROM sales WHERE store_id = $1 AND DATE("timestamp") >= $3 AND DATE("timestamp") < $2
+            SELECT COALESCE(SUM((subtotal - COALESCE(discount, 0))), 0) as rev FROM sales WHERE store_id = $1 AND DATE("timestamp") >= $3 AND DATE("timestamp") < $2 AND fulfillment_status IS DISTINCT FROM 'cancelled'
         )
         SELECT (SELECT rev FROM current_week) as current, (SELECT rev FROM previous_week) as previous`,
         [storeId, weekAgo, prevWeekStart]
@@ -648,30 +648,30 @@ async function getProjectionContext(storeId: string, goalAmount?: number) {
     // Get month-to-date sales
     const monthSales = await db.query(
         `SELECT 
-            COALESCE(SUM(total), 0) as total,
+            COALESCE(SUM((subtotal - COALESCE(discount, 0))), 0) as total,
             COUNT(*) as count
          FROM sales 
-         WHERE store_id = $1 AND DATE("timestamp") >= $2`,
+         WHERE store_id = $1 AND DATE("timestamp") >= $2 AND fulfillment_status IS DISTINCT FROM 'cancelled'`,
         [storeId, monthStart]
     );
 
     // Get last 30 days for comparison
     const last30Days = await db.query(
         `SELECT 
-            COALESCE(SUM(total), 0) as total,
+            COALESCE(SUM((subtotal - COALESCE(discount, 0))), 0) as total,
             COUNT(*) as count
          FROM sales 
-         WHERE store_id = $1 AND DATE("timestamp") >= $2`,
+         WHERE store_id = $1 AND DATE("timestamp") >= $2 AND fulfillment_status IS DISTINCT FROM 'cancelled'`,
         [storeId, monthAgo]
     );
 
     // Get last 7 days
     const last7Days = await db.query(
         `SELECT 
-            COALESCE(SUM(total), 0) as total,
+            COALESCE(SUM((subtotal - COALESCE(discount, 0))), 0) as total,
             COUNT(*) as count
          FROM sales 
-         WHERE store_id = $1 AND DATE("timestamp") >= $2`,
+         WHERE store_id = $1 AND DATE("timestamp") >= $2 AND fulfillment_status IS DISTINCT FROM 'cancelled'`,
         [storeId, weekAgo]
     );
 
@@ -691,9 +691,10 @@ async function getProjectionContext(storeId: string, goalAmount?: number) {
     const prev23DaysStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     const prev23DaysEnd = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     const prev23Days = await db.query(
-        `SELECT COALESCE(SUM(total), 0) as total
-         FROM sales 
-         WHERE store_id = $1 AND DATE("timestamp") >= $2 AND DATE("timestamp") < $3`,
+        `SELECT COALESCE(SUM((subtotal - COALESCE(discount, 0))), 0) as total
+         FROM sales
+         WHERE store_id = $1 AND DATE("timestamp") >= $2 AND DATE("timestamp") < $3
+           AND fulfillment_status IS DISTINCT FROM 'cancelled'`,
         [storeId, prev23DaysStart, prev23DaysEnd]
     );
     const prev23Total = parseFloat(prev23Days.rows[0].total || 0);

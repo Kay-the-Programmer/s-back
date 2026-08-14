@@ -8,6 +8,7 @@ import { sendStoreOTPVerificationEmail } from '../services/email.service';
 import { invalidateUserCache } from '../middleware/auth.middleware';
 import { setEnabledModules } from '../services/entitlements.service';
 import { TRIAL_MODULES, TRIAL_DAYS } from '../services/plan-modules';
+import { NOT_CANCELLED, SALE_REVENUE } from '../utils/revenue';
 
 export const checkStoreName = async (req: express.Request, res: express.Response) => {
   try {
@@ -320,20 +321,49 @@ export const getMyStoresSummary = async (req: express.Request, res: express.Resp
     const prevStart = new Date(windowStart);
     prevStart.setDate(prevStart.getDate() - days);
 
-    const [curSales, prevSales, trendRes, productsRes, customersRes, usersRes] = await Promise.all([
+    const [curSales, prevSales, trendRes, refundsRes, refundTrendRes, productsRes, customersRes, usersRes] = await Promise.all([
       db.query(
-        `SELECT store_id, COALESCE(SUM(total),0)::float AS revenue, COUNT(*)::int AS transactions
-         FROM sales WHERE store_id = ANY($1) AND "timestamp" >= $2 GROUP BY store_id`,
+        // Same revenue definition as every other screen: ex-tax, net of the
+        // order discount, cancelled sales excluded. This used SUM(total) —
+        // tax-inclusive and refund-blind — so the portfolio read higher than
+        // each store's own dashboard. Refunds are subtracted below, dated by
+        // the RETURN, exactly as the dashboard does it.
+        `SELECT s.store_id, COALESCE(SUM(${SALE_REVENUE}),0)::float AS revenue, COUNT(*)::int AS transactions
+         FROM sales s
+         WHERE s.store_id = ANY($1) AND s."timestamp" >= $2 AND ${NOT_CANCELLED}
+         GROUP BY s.store_id`,
         [ids, windowStart],
       ),
       db.query(
-        `SELECT store_id, COALESCE(SUM(total),0)::float AS revenue
-         FROM sales WHERE store_id = ANY($1) AND "timestamp" >= $2 AND "timestamp" < $3 GROUP BY store_id`,
+        `SELECT s.store_id, COALESCE(SUM(${SALE_REVENUE}),0)::float AS revenue
+         FROM sales s
+         WHERE s.store_id = ANY($1) AND s."timestamp" >= $2 AND s."timestamp" < $3 AND ${NOT_CANCELLED}
+         GROUP BY s.store_id`,
         [ids, prevStart, windowStart],
       ),
       db.query(
-        `SELECT store_id, to_char(date_trunc('day', "timestamp"), 'YYYY-MM-DD') AS day, COALESCE(SUM(total),0)::float AS revenue
-         FROM sales WHERE store_id = ANY($1) AND "timestamp" >= $2 GROUP BY 1, 2`,
+        `SELECT s.store_id, to_char(date_trunc('day', s."timestamp"), 'YYYY-MM-DD') AS day,
+                COALESCE(SUM(${SALE_REVENUE}),0)::float AS revenue
+         FROM sales s
+         WHERE s.store_id = ANY($1) AND s."timestamp" >= $2 AND ${NOT_CANCELLED}
+         GROUP BY 1, 2`,
+        [ids, windowStart],
+      ),
+      // Refunds by store, dated by the return — subtracted from the windows
+      // above so a refund reduces the period it happened in.
+      db.query(
+        `SELECT store_id,
+                COALESCE(SUM(subtotal_amount) FILTER (WHERE "timestamp" >= $2), 0)::float AS refunds,
+                COALESCE(SUM(subtotal_amount) FILTER (WHERE "timestamp" >= $3 AND "timestamp" < $2), 0)::float AS prev_refunds
+         FROM returns WHERE store_id = ANY($1) AND "timestamp" >= $3
+         GROUP BY store_id`,
+        [ids, windowStart, prevStart],
+      ),
+      db.query(
+        `SELECT store_id, to_char(date_trunc('day', "timestamp"), 'YYYY-MM-DD') AS day,
+                COALESCE(SUM(subtotal_amount),0)::float AS refunds
+         FROM returns WHERE store_id = ANY($1) AND "timestamp" >= $2
+         GROUP BY 1, 2`,
         [ids, windowStart],
       ),
       db.query(
@@ -358,6 +388,7 @@ export const getMyStoresSummary = async (req: express.Request, res: express.Resp
     const byStore = <T extends { store_id: string }>(rows: T[]) => new Map(rows.map(r => [r.store_id, r]));
     const cur = byStore(curSales.rows);
     const prev = byStore(prevSales.rows);
+    const refunds = byStore(refundsRes.rows);
     const prod = byStore(productsRes.rows);
     const cust = byStore(customersRes.rows);
     const usrs = byStore(usersRes.rows);
@@ -373,6 +404,12 @@ export const getMyStoresSummary = async (req: express.Request, res: express.Resp
     for (const row of trendRes.rows as any[]) {
       if (!trendMap.has(row.store_id)) trendMap.set(row.store_id, new Map());
       trendMap.get(row.store_id)!.set(row.day, Number(row.revenue) || 0);
+    }
+    // A refund reduces the day it was given, not the day of the original sale.
+    for (const row of refundTrendRes.rows as any[]) {
+      if (!trendMap.has(row.store_id)) trendMap.set(row.store_id, new Map());
+      const day = trendMap.get(row.store_id)!;
+      day.set(row.day, (day.get(row.day) || 0) - (Number(row.refunds) || 0));
     }
 
     const stores = storesRes.rows.map((s: any) => {
@@ -392,8 +429,8 @@ export const getMyStoresSummary = async (req: express.Request, res: express.Resp
         isVerified: s.is_verified,
         createdAt: s.created_at,
         isCurrent: s.id === currentStoreId,
-        revenue: Number(c.revenue) || 0,
-        prevRevenue: Number(p.revenue) || 0,
+        revenue: (Number(c.revenue) || 0) - (Number((refunds.get(s.id) as any)?.refunds) || 0),
+        prevRevenue: (Number(p.revenue) || 0) - (Number((refunds.get(s.id) as any)?.prev_refunds) || 0),
         transactions: Number(c.transactions) || 0,
         productsCount: Number(pr.products_count) || 0,
         lowStockCount: Number(pr.low_stock_count) || 0,
