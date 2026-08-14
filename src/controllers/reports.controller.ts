@@ -601,6 +601,17 @@ export const getProductSales = async (req: express.Request, res: express.Respons
             extra += ` AND (p.name ILIKE $${params.length} OR p.sku ILIKE $${params.length} OR p.barcode ILIKE $${params.length})`;
         }
 
+        // Revenue must be NET OF THE ORDER-LEVEL DISCOUNT, which lives on the
+        // sale, not the line. Summing raw line prices reported more than the
+        // dashboard and the sales history for any discounted sale (a K400 basket
+        // sold for K360 was reported as K400). The discount is apportioned across
+        // the sale's lines in proportion to their value, so the products of one
+        // sale still add up to `subtotal - discount` — the platform's single
+        // revenue definition (accrual, ex-tax, net of discount, no cancelled).
+        const netFactor = `(1 - COALESCE(s.discount, 0) / NULLIF(s.subtotal, 0))`;
+        const lineRevenue = `si.price_at_sale * (si.quantity - si.returned_quantity) * COALESCE(${netFactor}, 1)`;
+        const lineCost = `si.cost_at_sale * (si.quantity - si.returned_quantity)`;
+
         const query = `
             SELECT p.id as product_id,
                    p.name,
@@ -609,10 +620,9 @@ export const getProductSales = async (req: express.Request, res: express.Respons
                    SUM(si.quantity) as gross_quantity,
                    SUM(si.returned_quantity) as returned_quantity,
                    SUM(si.quantity - si.returned_quantity) as net_quantity,
-                   SUM(si.price_at_sale * (si.quantity - si.returned_quantity)) as revenue,
-                   SUM(si.cost_at_sale * (si.quantity - si.returned_quantity)) as cost,
-                   SUM(si.price_at_sale * (si.quantity - si.returned_quantity))
-                     - SUM(si.cost_at_sale * (si.quantity - si.returned_quantity)) as profit,
+                   SUM(${lineRevenue}) as revenue,
+                   SUM(${lineCost}) as cost,
+                   SUM(${lineRevenue}) - SUM(${lineCost}) as profit,
                    COUNT(DISTINCT s.transaction_id) as transaction_count
             FROM sale_items si
             JOIN products p ON si.product_id = p.id AND p.store_id = $3
