@@ -8,6 +8,7 @@ import { notifyStoreOwner, sendTemplatedEmail } from '../services/email-template
 import LencoService from '../services/lenco.service';
 
 import SocketService from '../services/socket.service';
+import { periodBounds } from '../utils/revenue';
 
 export const getSales = async (req: express.Request, res: express.Response) => {
     const { startDate, endDate, customerId, paymentStatus } = req.query as { [key: string]: string };
@@ -40,13 +41,19 @@ export const getSales = async (req: express.Request, res: express.Response) => {
     params.push(storeId);
     whereClauses.push(`s.store_id = $${params.length}`);
 
-    if (startDate) {
-        params.push(startDate);
-        whereClauses.push(`s.timestamp >= $${params.length}`);
-    }
-    if (endDate) {
-        params.push(new Date(new Date(endDate).getTime() + 24 * 60 * 60 * 1000 - 1).toISOString());
-        whereClauses.push(`s.timestamp <= $${params.length}`);
+    // Same period→bounds conversion the report endpoints use, so a list and a
+    // report asked for the same period cover the same instants. Full ISO
+    // timestamps are honoured exactly; plain dates keep their old meaning.
+    if (startDate || endDate) {
+        const [from, to] = periodBounds(startDate || '2000-01-01', endDate || new Date().toISOString());
+        if (startDate) {
+            params.push(from);
+            whereClauses.push(`s.timestamp >= $${params.length}`);
+        }
+        if (endDate) {
+            params.push(to);
+            whereClauses.push(`s.timestamp <= $${params.length}`);
+        }
     }
     if (customerId) {
         params.push(customerId);
