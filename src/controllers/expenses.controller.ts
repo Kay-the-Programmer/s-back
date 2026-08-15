@@ -187,6 +187,12 @@ export const getExpenseAccountOptions = async (req: express.Request, res: expres
 
 export const createExpense = async (req: express.Request, res: express.Response) => {
     const { date, description, amount, expenseAccountId, expenseAccountName, paymentAccountId, paymentAccountName, category, reference } = req.body;
+    // The store's own tender name (CASH / AIRTEL / MTN …), recorded alongside
+    // the GL account the money is posted against. Optional: older clients and
+    // the recurring-expense job don't send it.
+    const paymentMethod = typeof req.body?.paymentMethod === 'string' && req.body.paymentMethod.trim()
+        ? req.body.paymentMethod.trim()
+        : null;
 
     if (!date || !description || !amount || !expenseAccountId || !paymentAccountId) {
         return res.status(400).json({ message: 'Missing required fields' });
@@ -233,9 +239,9 @@ export const createExpense = async (req: express.Request, res: express.Response)
 
         // Insert expense record
         const result = await client.query(
-            `INSERT INTO expenses (id, store_id, date, description, amount, expense_account_id, expense_account_name, payment_account_id, payment_account_name, category, reference, created_by)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
-            [id, storeId, date, description, numericAmount, expenseAccountId, chargedTo, paymentAccountId, paidFrom, category, reference, userId]
+            `INSERT INTO expenses (id, store_id, date, description, amount, expense_account_id, expense_account_name, payment_account_id, payment_account_name, category, reference, created_by, payment_method)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
+            [id, storeId, date, description, numericAmount, expenseAccountId, chargedTo, paymentAccountId, paidFrom, category, reference, userId, paymentMethod]
         );
 
         // Record the expense in the accounting system via journal entry

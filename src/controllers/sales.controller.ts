@@ -562,6 +562,17 @@ export const recordPayment = async (req: express.Request, res: express.Response)
     const { id } = req.params;
     const paymentData: Omit<Payment, 'id'> = req.body;
 
+    // `payments.date` is NOT NULL, and a caller settling an invoice has no
+    // reason to send one — the payment is happening now. Without this default
+    // the insert failed with a raw constraint violation and the money was never
+    // recorded, leaving the customer still owing the full amount.
+    if (!paymentData.date) {
+        paymentData.date = new Date().toISOString();
+    }
+    if (!(Number(paymentData.amount) > 0)) {
+        return res.status(400).json({ message: 'A payment amount greater than zero is required.' });
+    }
+
     // Enforce tenant context
     const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
     if (!storeId) {

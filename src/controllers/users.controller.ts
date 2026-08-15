@@ -62,11 +62,38 @@ export const getUserById = async (req: express.Request, res: express.Response) =
     }
 };
 
+/**
+ * Roles a STORE admin may hand out. Deliberately excludes `superadmin`: these
+ * routes are admin-gated, and without this list any store owner could POST
+ * `role: 'superadmin'` and mint themselves a platform operator with access to
+ * every store on the system. `customer` and `supplier` are self-service account
+ * types created by their own sign-up flows, not by team management.
+ */
+const STORE_ASSIGNABLE_ROLES = ['admin', 'staff', 'inventory_manager'] as const;
+
+/** Null when the requester may assign this role, else the reason they can't. */
+const roleAssignmentError = (req: express.Request, role: unknown): string | null => {
+    const value = String(role || '');
+    if (isSuperAdmin(req)) {
+        // The platform operator may set any role the schema allows.
+        return ['superadmin', ...STORE_ASSIGNABLE_ROLES, 'customer', 'supplier'].includes(value)
+            ? null
+            : `Unknown role: ${value}`;
+    }
+    return (STORE_ASSIGNABLE_ROLES as readonly string[]).includes(value)
+        ? null
+        : `Role must be one of: ${STORE_ASSIGNABLE_ROLES.join(', ')}`;
+};
+
 export const createUser = async (req: express.Request, res: express.Response) => {
     const requester = req.user!;
     const { name, email, role, password, currentStoreId } = req.body || {};
     if (!name || !email || !role || !password) {
         return res.status(400).json({ message: 'Name, email, role, and password are required' });
+    }
+    const roleError = roleAssignmentError(req, role);
+    if (roleError) {
+        return res.status(403).json({ message: roleError });
     }
 
     try {
@@ -127,6 +154,16 @@ export const updateUser = async (req: express.Request, res: express.Response) =>
     const { id } = req.params;
     const { name, email, role } = req.body || {};
 
+    // Promoting a team member (e.g. staff → inventory manager) goes through
+    // here, so the same whitelist applies: a store admin cannot escalate anyone
+    // — themselves included — to superadmin.
+    if (role !== undefined) {
+        const roleError = roleAssignmentError(req, role);
+        if (roleError) {
+            return res.status(403).json({ message: roleError });
+        }
+    }
+
     try {
         // Enforce store isolation: ensure target belongs to same store for non-superadmin
         if (!isSuperAdmin(req)) {
@@ -146,9 +183,18 @@ export const updateUser = async (req: express.Request, res: express.Response) =>
             }
         }
 
+        // COALESCE so a partial update (say, role only) keeps the other fields.
+        // Passing them straight through sent NULL for anything omitted, and
+        // these columns are NOT NULL — the update failed with a 500 instead of
+        // just changing the field the caller sent.
         const result = await db.query(
-            'UPDATE users SET name=$1, email=$2, role=$3 WHERE id=$4 RETURNING id, name, email, role, is_verified',
-            [name, String(email).toLowerCase(), role, id]
+            `UPDATE users
+                SET name = COALESCE($1, name),
+                    email = COALESCE($2, email),
+                    role = COALESCE($3, role)
+              WHERE id = $4
+              RETURNING id, name, email, role, is_verified`,
+            [name ?? null, email ? String(email).toLowerCase() : null, role ?? null, id]
         );
 
         if ((result.rowCount ?? 0) === 0) {

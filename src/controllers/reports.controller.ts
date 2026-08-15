@@ -1,7 +1,7 @@
 import express from 'express';
 import db from '../db_client';
 import { toCamelCase } from '../utils/helpers';
-import { LINE_REVENUE, LINE_COST, LINE_QUANTITY, SALE_REVENUE, NOT_CANCELLED } from '../utils/revenue';
+import { LINE_REVENUE, LINE_COST, LINE_QUANTITY, SALE_REVENUE, NOT_CANCELLED, periodBounds } from '../utils/revenue';
 
 export const getDashboardData = async (req: express.Request, res: express.Response) => {
     const { startDate, endDate, channel } = req.query as { startDate: string, endDate: string, channel?: string };
@@ -9,8 +9,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         return res.status(400).json({ message: 'startDate and endDate query parameters are required.' });
     }
 
-    const adjustedEndDate = new Date(new Date(endDate).getTime() + 24 * 60 * 60 * 1000 - 1).toISOString();
-
+    const [periodStart, adjustedEndDate] = periodBounds(startDate, endDate);
 
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
@@ -25,7 +24,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
         const saleFilter = `s.fulfillment_status IS DISTINCT FROM 'cancelled'`;
         // Base params for period queries; the optional channel filter is appended
         // as a bound parameter ($4) — never interpolated (SQL injection).
-        const periodParams: any[] = [startDate, adjustedEndDate, storeId];
+        const periodParams: any[] = [periodStart, adjustedEndDate, storeId];
         const channelParams = channel ? [...periodParams, channel] : periodParams;
         const channelClause = (alias: string) => channel ? `AND ${alias}.channel = $4 ` : '';
 
@@ -95,7 +94,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             FROM expenses
             WHERE date BETWEEN $1 AND $2 AND store_id = $3;
         `;
-        const expensesResult = await db.query(expensesQuery, [startDate, adjustedEndDate, storeId]);
+        const expensesResult = await db.query(expensesQuery, [periodStart, adjustedEndDate, storeId]);
         const totalOperatingExpenses = parseFloat(expensesResult.rows[0]?.totalExpenses || 0);
 
         // 4b. Expenses Breakdown by Account
@@ -106,7 +105,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             GROUP BY expense_account_name
             ORDER BY amount DESC;
         `;
-        const expenseBreakdownResult = await db.query(expenseBreakdownQuery, [startDate, adjustedEndDate, storeId]);
+        const expenseBreakdownResult = await db.query(expenseBreakdownQuery, [periodStart, adjustedEndDate, storeId]);
 
         const netIncome = grossProfit - totalOperatingExpenses;
 
@@ -191,7 +190,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             GROUP BY DATE(date)
             ORDER BY date ASC;
         `;
-        const trendExpensesResult = await db.query(trendExpensesQuery, [startDate, adjustedEndDate, storeId]);
+        const trendExpensesResult = await db.query(trendExpensesQuery, [periodStart, adjustedEndDate, storeId]);
 
         // Merge Data
         const trendMap: Record<string, { revenue: number, grossProfit: number, netIncome: number, expenses: number }> = {};
@@ -312,7 +311,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             GROUP BY DATE(je.date)
             ORDER BY date ASC;
         `;
-        const cashflowResult = await db.query(cashflowQuery, [startDate, adjustedEndDate, storeId]);
+        const cashflowResult = await db.query(cashflowQuery, [periodStart, adjustedEndDate, storeId]);
 
         // New query to see "where is the money going"
         const outflowBreakdownQuery = `
@@ -333,7 +332,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             GROUP BY a_dest.name
             ORDER BY amount DESC;
         `;
-        const outflowBreakdownResult = await db.query(outflowBreakdownQuery, [startDate, adjustedEndDate, storeId]);
+        const outflowBreakdownResult = await db.query(outflowBreakdownQuery, [periodStart, adjustedEndDate, storeId]);
 
         const cashflowTrend = cashflowResult.rows.reduce((acc, row) => {
             acc[row.date] = {
@@ -395,7 +394,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             FROM sales
             WHERE timestamp BETWEEN $1 AND $2 AND customer_id IS NOT NULL AND store_id = $3
             `;
-        const activeCustomersResult = await db.query(activeCustomersQuery, [startDate, adjustedEndDate, storeId]);
+        const activeCustomersResult = await db.query(activeCustomersQuery, [periodStart, adjustedEndDate, storeId]);
         const activeCustomers = activeCustomersResult.rows[0] ? parseInt(activeCustomersResult.rows[0].activeCustomers, 10) : 0;
 
         // --- New Customers in Period ---
@@ -404,7 +403,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             FROM customers
             WHERE created_at BETWEEN $1 AND $2 AND store_id = $3
             `;
-        const newCustomersResult = await db.query(newCustomersQuery, [startDate, adjustedEndDate, storeId]);
+        const newCustomersResult = await db.query(newCustomersQuery, [periodStart, adjustedEndDate, storeId]);
         const newCustomers = newCustomersResult.rows[0] ? parseInt(newCustomersResult.rows[0].newCustomers, 10) : 0;
 
         // --- Sales by Channel ---
@@ -416,7 +415,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
             WHERE s.timestamp BETWEEN $1 AND $2 AND ${saleFilter} AND s.store_id = $3
             GROUP BY s.channel;
         `;
-        const salesByChannelResult = await db.query(salesByChannelQuery, [startDate, adjustedEndDate, storeId]);
+        const salesByChannelResult = await db.query(salesByChannelQuery, [periodStart, adjustedEndDate, storeId]);
 
         // --- Recent Orders ---
 
@@ -570,7 +569,7 @@ export const getProductSales = async (req: express.Request, res: express.Respons
     if (!startDate || !endDate) {
         return res.status(400).json({ message: 'startDate and endDate query parameters are required.' });
     }
-    const adjustedEndDate = new Date(new Date(endDate).getTime() + 24 * 60 * 60 * 1000 - 1).toISOString();
+    const [periodStart, adjustedEndDate] = periodBounds(startDate, endDate);
     const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
 
     // Whitelisted so the sort can be interpolated safely.
@@ -591,7 +590,7 @@ export const getProductSales = async (req: express.Request, res: express.Respons
             return res.status(400).json({ message: 'Store context required' });
         }
 
-        const params: any[] = [startDate, adjustedEndDate, storeId];
+        const params: any[] = [periodStart, adjustedEndDate, storeId];
         let extra = '';
         if (channel) {
             params.push(channel);
@@ -657,7 +656,7 @@ export const getProductSales = async (req: express.Request, res: express.Respons
                   AND si.product_id = ri.product_id AND si.store_id = $3
              WHERE r.timestamp BETWEEN $1 AND $2 AND ri.store_id = $3
              GROUP BY ri.product_id`,
-            [startDate, adjustedEndDate, storeId],
+            [periodStart, adjustedEndDate, storeId],
         );
         const returnsByProduct = new Map<string, any>(
             returnsResult.rows.map((r: any) => [r.product_id, {

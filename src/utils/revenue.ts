@@ -88,3 +88,31 @@ export const LINE_QUANTITY = `si.quantity`;
  * Expects `return_items ri` joined to `returns r`.
  */
 export const RETURNED_QUANTITY = `ri.quantity`;
+
+/**
+ * ONE conversion from a requested reporting period to the SQL bounds used with
+ * `s.timestamp BETWEEN $1 AND $2`.
+ *
+ * `sales.timestamp` is TIMESTAMPTZ, but a bare 'YYYY-MM-DD' is cast using the
+ * DATABASE session timezone (UTC in our containers) — not the merchant's. For
+ * a UTC+2 store that shifted every period boundary two hours: the first two
+ * hours of trading on the start day fell outside the report and two hours of
+ * the following day fell inside it, so the same day read differently on the
+ * dashboard cards (computed in browser-local time) and in the product table.
+ *
+ * Callers that know the exact instants — the dashboard, which derives both
+ * bounds from the period picker — send full ISO-8601 timestamps WITH offset,
+ * and those are used verbatim. Plain dates keep the previous behaviour so
+ * existing callers and hand-built API requests are unaffected.
+ */
+export const periodBounds = (startDate: string, endDate: string): [string, string] => {
+    const exact = (v: string) => typeof v === 'string' && v.includes('T');
+    const start = exact(startDate) ? new Date(startDate).toISOString() : startDate;
+    // An exact upper bound is EXCLUSIVE (it is the start of the next period),
+    // so step back a millisecond for the inclusive BETWEEN. A plain date is an
+    // inclusive calendar day, so it runs to that day's last millisecond.
+    const end = exact(endDate)
+        ? new Date(new Date(endDate).getTime() - 1).toISOString()
+        : new Date(new Date(endDate).getTime() + 24 * 60 * 60 * 1000 - 1).toISOString();
+    return [start, end];
+};

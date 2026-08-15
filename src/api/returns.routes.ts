@@ -1,5 +1,5 @@
 import express from 'express';
-import { getReturns, createReturn } from '../controllers/returns.controller';
+import { getReturns, createReturn, setExchangeCreditApplied } from '../controllers/returns.controller';
 import { protect, canPerformSales } from '../middleware/auth.middleware';
 
 const router = express.Router();
@@ -44,5 +44,19 @@ router.use(protect, canPerformSales);
 router.route('/')
     .get(getReturns)
     .post(createReturn);
+
+/**
+ * @openapi
+ * /returns/{id}/exchange-credit:
+ *   patch:
+ *     tags: [Returns]
+ *     summary: Record how much of a refund was taken in replacement goods
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: The updated return
+ */
+router.patch('/:id/exchange-credit', setExchangeCreditApplied);
 
 export default router;

@@ -620,9 +620,19 @@ async function initializeDatabase() {
                 tax_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
                 subtotal_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
                 refund_method TEXT NOT NULL,
+                -- How much of this refund was settled in REPLACEMENT GOODS
+                -- rather than money. An exchange refunds the full value of what
+                -- came back, but only the part not spent on replacements
+                -- actually leaves the drawer; cash paid out is therefore
+                -- refund_amount minus exchange_credit_applied. Without this the
+                -- two are indistinguishable and a till count can't be checked.
+                exchange_credit_applied DECIMAL(10,2) NOT NULL DEFAULT 0,
                 store_id TEXT
             );
         `);
+        await client.query(
+            `ALTER TABLE returns ADD COLUMN IF NOT EXISTS exchange_credit_applied DECIMAL(10,2) NOT NULL DEFAULT 0;`,
+        );
 
         // Migration for returns table
         await client.query(`
@@ -1223,6 +1233,12 @@ async function initializeDatabase() {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
+        // How the money went out, in the store's OWN words — the same payment
+        // methods Settings offers and the till records on a sale. The GL still
+        // posts to payment_account_id (Cash or Accounts Payable); this keeps the
+        // detail that a ledger account can't carry, so "paid by MTN" survives
+        // and expense reporting can be read next to sales reporting.
+        await client.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS payment_method TEXT;`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_expenses_store_date ON expenses(store_id, date DESC);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_expenses_store_account ON expenses(store_id, expense_account_id);`);
 

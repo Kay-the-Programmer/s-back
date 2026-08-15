@@ -30,6 +30,10 @@ export const getReturns = async (req: express.Request, res: express.Response) =>
 export const createReturn = async (req: express.Request, res: express.Response) => {
     const returnData: Omit<Return, 'id' | 'timestamp'> = req.body;
     const { originalSaleId, returnedItems, refundAmount, refundMethod } = returnData;
+    // On an exchange, part of the refund is settled in replacement goods rather
+    // than money. Recording how much keeps 'cash paid out' derivable
+    // (refund_amount - exchange_credit_applied) instead of guessed.
+    const exchangeCreditApplied = Math.max(0, Number((returnData as any).exchangeCreditApplied) || 0);
     const id = generateId('ret');
     const timestamp = new Date().toISOString();
 
@@ -85,8 +89,8 @@ export const createReturn = async (req: express.Request, res: express.Response) 
         const refundSubtotal = refundAmount - refundTax;
 
         const returnResult = await client.query(
-            'INSERT INTO returns (id, original_sale_id, "timestamp", refund_amount, tax_amount, subtotal_amount, refund_method, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
-            [id, originalSaleId, timestamp, refundAmount, refundTax, refundSubtotal, refundMethod, storeId]
+            'INSERT INTO returns (id, original_sale_id, "timestamp", refund_amount, tax_amount, subtotal_amount, refund_method, exchange_credit_applied, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
+            [id, originalSaleId, timestamp, refundAmount, refundTax, refundSubtotal, refundMethod, Math.min(exchangeCreditApplied, Number(refundAmount) || 0), storeId]
         );
         const newReturn = toCamelCase(returnResult.rows[0]);
 
@@ -169,5 +173,46 @@ export const createReturn = async (req: express.Request, res: express.Response) 
         res.status(500).json({ message: 'Error processing return' });
     } finally {
         client.release();
+    }
+};
+/**
+ * Record how much of a refund was settled in replacement goods.
+ *
+ * The till only learns this once the replacement items have been rung up,
+ * which is after the return itself is recorded — recording the return first is
+ * deliberate, so goods handed back are never lost if the sale is abandoned.
+ * This closes the loop: `refund_amount - exchange_credit_applied` is the cash
+ * that actually left the drawer, so an end-of-shift count can be checked.
+ *
+ * Money is not moved here. The ledger already balances through the return and
+ * the replacement sale; this only labels what the refund was settled with.
+ */
+export const setExchangeCreditApplied = async (req: express.Request, res: express.Response) => {
+    const { id } = req.params;
+    const applied = Number(req.body?.exchangeCreditApplied);
+
+    const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
+    if (!storeId) {
+        return res.status(400).json({ message: 'Store context required' });
+    }
+    if (!Number.isFinite(applied) || applied < 0) {
+        return res.status(400).json({ message: 'exchangeCreditApplied must be zero or more.' });
+    }
+
+    try {
+        const result = await db.query(
+            `UPDATE returns
+                SET exchange_credit_applied = LEAST($1, refund_amount)
+              WHERE id = $2 AND store_id = $3
+              RETURNING *`,
+            [applied, id, storeId],
+        );
+        if (result.rowCount === 0) {
+            return res.status(404).json({ message: 'Return not found' });
+        }
+        return res.status(200).json(toCamelCase(result.rows[0]));
+    } catch (error) {
+        console.error(`Error setting exchange credit for return ${id}:`, error);
+        return res.status(500).json({ message: 'Error updating the return' });
     }
 };
