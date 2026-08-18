@@ -32,6 +32,7 @@ export const getSales = async (req: express.Request, res: express.Response) => {
                  LEFT JOIN sale_items si ON s.transaction_id = si.sale_id AND si.store_id = s.store_id
                  LEFT JOIN products p ON si.product_id = p.id AND p.store_id = s.store_id
                  LEFT JOIN payments pay ON s.transaction_id = pay.sale_id AND pay.store_id = s.store_id
+                 LEFT JOIN customers cust ON cust.id = s.customer_id AND cust.store_id = s.store_id
     `;
 
     const params: any[] = [];
@@ -103,6 +104,11 @@ export const getSales = async (req: express.Request, res: express.Response) => {
 
     let selectQuery = `
         SELECT s.*,
+               -- Who the sale is billed to. A POS sale stores only customer_id
+               -- (the customer_details snapshot is written by the online shop),
+               -- so without this join every till-made invoice came back with no
+               -- name at all and read as "Walk-in" on every client.
+               COALESCE(s.customer_details->>'name', cust.name) as "customerName",
                s.total as "originalTotal",
                COALESCE(ret.total_refunded, 0) as "totalRefunded",
                (s.total - COALESCE(ret.total_refunded, 0)) as total,
@@ -110,7 +116,7 @@ export const getSales = async (req: express.Request, res: express.Response) => {
                COALESCE(json_agg(DISTINCT jsonb_build_object('productId', si.product_id, 'name', p.name, 'price', si.price_at_sale, 'quantity', si.quantity, 'stock', p.stock, 'costPrice', si.cost_at_sale, 'returnedQuantity', si.returned_quantity)) FILTER (WHERE si.id IS NOT NULL), '[]') as cart,
                COALESCE(json_agg(DISTINCT pay.*) FILTER (WHERE pay.id IS NOT NULL), '[]') as payments
         ${baseQuery}
-        GROUP BY s.transaction_id, ret.total_refunded
+        GROUP BY s.transaction_id, ret.total_refunded, cust.name
         ORDER BY s.timestamp DESC
     `;
 
