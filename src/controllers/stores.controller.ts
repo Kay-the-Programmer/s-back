@@ -40,6 +40,7 @@ export const requestStoreSetupOtp = async (req: express.Request, res: express.Re
     if (!name || String(name).trim().length < 2) {
       return res.status(400).json({ message: 'Store name is required' });
     }
+
     if (!user.email) {
       return res.status(400).json({ message: 'Your account has no email on file to send a verification code to.' });
     }
@@ -89,6 +90,24 @@ export const registerStore = async (req: express.Request, res: express.Response)
     }
     if (!name || String(name).trim().length < 2) {
       return res.status(400).json({ message: 'Store name is required' });
+    }
+
+    // The phone number is optional, but when given it has to be digits. The
+    // registration form enforces that as you type; a request that skips the form
+    // must not become the way a store's only callback number ends up as prose.
+    // A single leading '+' is allowed for the country code, and separators are
+    // stripped so the stored value is canonical whatever typed it.
+    let normalizedPhone: string | null = null;
+    if (phone !== undefined && phone !== null && String(phone).trim() !== '') {
+      const raw = String(phone).trim();
+      if (!/^\+?[0-9\s()-]+$/.test(raw)) {
+        return res.status(400).json({ message: 'Phone number may only contain digits.' });
+      }
+      const digits = raw.replace(/\D/g, '');
+      if (digits.length < 7 || digits.length > 15) {
+        return res.status(400).json({ message: 'Phone number must be between 7 and 15 digits.' });
+      }
+      normalizedPhone = (raw.startsWith('+') ? '+' : '') + digits;
     }
 
     // If an OTP is supplied, this is the deferred-creation setup flow: the email is verified
@@ -167,7 +186,7 @@ export const registerStore = async (req: express.Request, res: express.Response)
       // app toggle, so it can be turned off later).
       const businessTypes = req.body.businessTypes || [];
       const isWholesaleSupplier = req.body.isWholesaleSupplier === true;
-      await storeInitService.initializeNewStore(storeId, String(name).trim(), businessTypes, phone, address, isWholesaleSupplier);
+      await storeInitService.initializeNewStore(storeId, String(name).trim(), businessTypes, normalizedPhone ?? undefined, address, isWholesaleSupplier);
 
       // Grant the premium add-ons for the duration of the intro trial so the user
       // experiences the paid features. The lifecycle job revokes these at trial end
@@ -187,9 +206,9 @@ export const registerStore = async (req: express.Request, res: express.Response)
       // initiating unconditionally used to create a dangling 'pending'
       // subscription_payments row for every self-service registration.
       let paymentInfo = null;
-      if (plan.price > 0 && paymentMethod === 'mobile-money' && phone) {
+      if (plan.price > 0 && paymentMethod === 'mobile-money' && normalizedPhone) {
         try {
-          paymentInfo = await subscriptionService.initiatePayment(storeId, planId, paymentMethod, phone);
+          paymentInfo = await subscriptionService.initiatePayment(storeId, planId, paymentMethod, normalizedPhone);
         } catch (payErr) {
           console.error('Error initiating initial payment:', payErr);
           // We don't fail registration, but we tell the user they need to pay
