@@ -1,4 +1,5 @@
 import express from 'express';
+import { toTaxClass } from '../services/tax';
 import db from '../db_client';
 import { Product } from '../types';
 import { generateId, toCamelCase } from '../utils/helpers';
@@ -208,8 +209,8 @@ export const createProduct = async (req: express.Request, res: express.Response)
         }
 
         const queryText = `
-            INSERT INTO products(id, name, description, sku, barcode, category_id, supplier_id, price, cost_price, stock, unit_of_measure, image_urls, brand, status, reorder_point, weight, dimensions, safety_stock, variants, custom_attributes, store_id, carton_price, units_per_carton, cartons_received, wholesale_price, min_order_quantity, price_tiers)
-            VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
+            INSERT INTO products(id, name, description, sku, barcode, category_id, supplier_id, price, cost_price, stock, unit_of_measure, image_urls, brand, status, reorder_point, weight, dimensions, safety_stock, variants, custom_attributes, store_id, carton_price, units_per_carton, cartons_received, wholesale_price, min_order_quantity, price_tiers, tax_class)
+            VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
             RETURNING *;
         `;
         const values = [
@@ -240,6 +241,9 @@ export const createProduct = async (req: express.Request, res: express.Response)
             processedValues.wholesalePrice,
             processedValues.minOrderQuantity,
             processedValues.priceTiers,
+            // Unset means standard-rated. Charging tax and being corrected is
+            // recoverable; silently under-declaring a sale is not.
+            toTaxClass((req.body as any)?.taxClass ?? (req.body as any)?.tax_class),
         ];
 
         console.log('Executing query with values:', values);
@@ -381,6 +385,7 @@ export const updateProduct = async (req: express.Request, res: express.Response)
     const wholesale_price = body.wholesale_price ?? body.wholesalePrice;
     const min_order_quantity = body.min_order_quantity ?? body.minOrderQuantity;
     const price_tiers = body.price_tiers ?? body.priceTiers;
+    const tax_class = body.tax_class ?? body.taxClass;
 
     const files = (req.files as Express.Multer.File[]) || [];
 
@@ -457,8 +462,9 @@ export const updateProduct = async (req: express.Request, res: express.Response)
                 cost_price = $8, stock = $9, unit_of_measure = $10, image_urls = $11, brand = $12, status = $13, reorder_point = $14,
                 custom_attributes = $15, weight = $16, dimensions = $17, safety_stock = $18, variants = $19,
                 carton_price = $20, units_per_carton = $21, cartons_received = $22,
-                wholesale_price = $23, min_order_quantity = $24, price_tiers = $25
-            WHERE id = $26 AND store_id = $27
+                wholesale_price = $23, min_order_quantity = $24, price_tiers = $25,
+                tax_class = $26
+            WHERE id = $27 AND store_id = $28
             RETURNING *;
         `;
 
@@ -537,6 +543,10 @@ export const updateProduct = async (req: express.Request, res: express.Response)
             price_tiers === undefined
                 ? (currentRow.price_tiers == null ? null : JSON.stringify(currentRow.price_tiers))
                 : normalizePriceTiers(price_tiers),
+            // Omitted leaves the product classified as it already is.
+            tax_class === undefined || tax_class === null || tax_class === ""
+                ? currentRow.tax_class
+                : toTaxClass(tax_class),
             id,
             storeId,
         ];

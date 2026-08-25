@@ -414,7 +414,12 @@ async function initializeDatabase() {
                 store_id TEXT,
                 carton_price NUMERIC(12,4),
                 units_per_carton INT,
-                cartons_received INT
+                cartons_received INT,
+                -- Standard-rated, zero-rated, or exempt. Zero and exempt both
+                -- attract no tax but are reported differently on a VAT return,
+                -- so they are not collapsed into one.
+                tax_class TEXT NOT NULL DEFAULT 'standard'
+                    CHECK (tax_class IN ('standard','zero','exempt'))
             );
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_products_store_id ON products(store_id);`);
@@ -634,6 +639,121 @@ async function initializeDatabase() {
             `ALTER TABLE returns ADD COLUMN IF NOT EXISTS exchange_credit_applied DECIMAL(10,2) NOT NULL DEFAULT 0;`,
         );
 
+        // --- Per-product tax classes and tax-inclusive pricing ---
+        //
+        // One flat store rate charged tax on everything, which is wrong for any
+        // shop selling both zero-rated staples and standard-rated goods. Both
+        // defaults below reproduce the previous behaviour exactly, so upgrading
+        // changes no price until someone reclassifies a product.
+        await client.query(
+            `ALTER TABLE products ADD COLUMN IF NOT EXISTS tax_class TEXT NOT NULL DEFAULT 'standard';`,
+        );
+        await client.query(`
+            DO $$ BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.constraint_column_usage
+                     WHERE table_name = 'products' AND constraint_name = 'products_tax_class_check'
+                ) THEN
+                    ALTER TABLE products ADD CONSTRAINT products_tax_class_check
+                        CHECK (tax_class IN ('standard','zero','exempt'));
+                END IF;
+            END $$;
+        `);
+        await client.query(
+            `ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS prices_include_tax BOOLEAN NOT NULL DEFAULT FALSE;`,
+        );
+
+        // The tax charged, broken down by class, frozen at the moment of sale.
+        //
+        // Stored rather than recomputed because a receipt is a record of what
+        // was charged: recomputing it later against today's rate, or against a
+        // product since reclassified, would reprint a different document from
+        // the one the customer holds. Also the only way a receipt reprinted
+        // months on can still show a valid tax breakdown.
+        await client.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS tax_breakdown JSONB;`);
+
+        // A document freezes the tax mode it was issued under alongside its rate,
+        // so editing an old invoice cannot reprice it against a setting the store
+        // has changed since.
+        await client.query(`ALTER TABLE sales_documents ADD COLUMN IF NOT EXISTS prices_include_tax BOOLEAN NOT NULL DEFAULT FALSE;`);
+
+        // The class each line was sold under, for tax reporting that needs to
+        // go deeper than the sale total.
+        await client.query(
+            `ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS tax_class TEXT;`,
+        );
+
+        // --- Cash drawer sessions (the till) ---
+        //
+        // A shift at one till: opened with a counted float, closed with a
+        // counted drawer. Everything between is attributed to it, which turns
+        // "the cash is short" into "the cash is short on Mary's Tuesday till".
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS cash_sessions (
+                id TEXT PRIMARY KEY,
+                store_id TEXT NOT NULL,
+                opened_by TEXT NOT NULL,
+                opened_by_id TEXT,
+                opened_at TIMESTAMPTZ NOT NULL,
+                opening_float DECIMAL(12,2) NOT NULL DEFAULT 0,
+                closed_by TEXT,
+                closed_by_id TEXT,
+                closed_at TIMESTAMPTZ,
+                -- What the cashier counted, what the books say, and the gap.
+                -- All three are stored rather than recomputed: a Z report
+                -- records what was found at the time, and recomputing it later
+                -- from sales since edited or refunded would quietly rewrite it.
+                counted_cash DECIMAL(12,2),
+                expected_cash DECIMAL(12,2),
+                variance DECIMAL(12,2),
+                status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
+                notes TEXT
+            );
+        `);
+
+        // One open till per person per store. Enforced by the database because
+        // a double-tap on "Open till" would otherwise create two sessions and
+        // split a shift's takings across both.
+        await client.query(`
+            CREATE UNIQUE INDEX IF NOT EXISTS cash_sessions_one_open_per_user
+                ON cash_sessions (store_id, opened_by_id)
+                WHERE status = 'open';
+        `);
+
+        // Money crossing the drawer that is not a sale: a float top-up, paying
+        // a delivery driver, taking the takings to the bank. Without these
+        // every such movement reads as a shortage at closing time.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS cash_movements (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES cash_sessions(id) ON DELETE CASCADE,
+                store_id TEXT NOT NULL,
+                type TEXT NOT NULL CHECK (type IN ('pay_in','pay_out')),
+                amount DECIMAL(12,2) NOT NULL CHECK (amount > 0),
+                reason TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL,
+                created_by TEXT,
+                created_by_id TEXT
+            );
+        `);
+        await client.query(
+            `CREATE INDEX IF NOT EXISTS cash_movements_session_idx ON cash_movements (session_id);`,
+        );
+
+        // Which till a sale or refund passed through. Stamped by the server
+        // from the cashier's open session, so an offline till and the desktop
+        // app land in the right session without either knowing sessions exist.
+        // Null for anything rung up with no till open, which keeps every sale
+        // that predates this feature valid.
+        await client.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS cash_session_id TEXT;`);
+        await client.query(`ALTER TABLE returns ADD COLUMN IF NOT EXISTS cash_session_id TEXT;`);
+        await client.query(
+            `CREATE INDEX IF NOT EXISTS sales_cash_session_idx ON sales (cash_session_id);`,
+        );
+        await client.query(
+            `CREATE INDEX IF NOT EXISTS returns_cash_session_idx ON returns (cash_session_id);`,
+        );
+
         // Migration for returns table
         await client.query(`
             DO $$
@@ -793,7 +913,12 @@ async function initializeDatabase() {
                 supplier_payment_methods JSONB,
                 is_online_store_enabled BOOLEAN NOT NULL DEFAULT TRUE,
                 lenco_public_key TEXT,
-                lenco_secret_key TEXT
+                lenco_secret_key TEXT,
+                -- Shelf prices already contain tax, so it is extracted from the
+                -- price rather than added to it. Most retail here quotes
+                -- tax-inclusive prices; the default is off so no existing
+                -- store changes what it charges on upgrade.
+                prices_include_tax BOOLEAN NOT NULL DEFAULT FALSE
             );
         `);
         // Premium add-on entitlements (modular packaging). Empty by default, so

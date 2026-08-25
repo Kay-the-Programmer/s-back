@@ -3,6 +3,7 @@ import db from '../db_client';
 import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { roleHasPermission, Role } from '../auth/rbac';
+import { computeTax, toTaxClass } from '../services/tax';
 
 /**
  * Customer quotations and invoices.
@@ -83,7 +84,12 @@ interface IncomingItem {
 const buildTotals = (
     items: IncomingItem[],
     discountInput: unknown,
-    taxRatePct: number,
+    tax: {
+        standardRatePct: number;
+        pricesIncludeTax: boolean;
+        /** Tax class per catalogue product. A free-text line is standard rated. */
+        classes: Map<string, string>;
+    },
     /** Delivery notes list goods, not money — a zero unit price is expected. */
     allowZeroPrice = false,
 ) => {
@@ -111,16 +117,66 @@ const buildTotals = (
         };
     });
 
-    const subtotal = round2(clean.reduce((a, i) => a + i.lineTotal, 0));
-    const discount = round2(Math.min(Math.max(Number(discountInput) || 0, 0), subtotal));
-    const tax = round2((subtotal - discount) * (taxRatePct / 100));
-    const total = round2(subtotal - discount + tax);
-    return { items: clean, subtotal, discount, tax, total };
+    // Taxed through the same engine as the till, so an invoice cannot
+    // disagree with the sale it becomes. A line with no catalogue product
+    // behind it — a free-text charge — is standard rated.
+    const result = computeTax(
+        clean.map(i => ({
+            price: i.unitPrice,
+            quantity: i.quantity,
+            taxClass: toTaxClass(i.productId ? tax.classes.get(String(i.productId)) : undefined),
+        })),
+        Number(discountInput) || 0,
+        { standardRatePct: tax.standardRatePct, pricesIncludeTax: tax.pricesIncludeTax },
+    );
+    return {
+        items: clean,
+        subtotal: result.subtotal,
+        discount: result.discount,
+        tax: result.tax,
+        total: result.total,
+    };
 };
 
 const storeTaxRate = async (storeId: string): Promise<number> => {
     const res = await db.query('SELECT tax_rate FROM store_settings WHERE store_id = $1', [storeId]);
     return res.rowCount ? Number(res.rows[0].tax_rate) || 0 : 0;
+};
+
+/** The store's standard rate and whether its prices already contain tax. */
+const storeTaxConfig = async (
+    storeId: string,
+): Promise<{ standardRatePct: number; pricesIncludeTax: boolean }> => {
+    const res = await db.query(
+        'SELECT tax_rate, prices_include_tax FROM store_settings WHERE store_id = $1',
+        [storeId],
+    );
+    return {
+        standardRatePct: res.rowCount ? Number(res.rows[0].tax_rate) || 0 : 0,
+        pricesIncludeTax: !!res.rows[0]?.prices_include_tax,
+    };
+};
+
+/**
+ * Tax class per product for the catalogue lines on a document.
+ *
+ * Read from the catalogue rather than taken from the request, for the same
+ * reason the till does: a caller that could declare its own class could
+ * under-declare the tax on every invoice it raised.
+ */
+const documentTaxClasses = async (
+    items: IncomingItem[],
+    storeId: string,
+): Promise<Map<string, string>> => {
+    const ids = Array.from(new Set((items ?? [])
+        .map(i => (i?.productId ? String(i.productId) : ""))
+        .filter(Boolean)));
+    if (!ids.length) return new Map();
+    const { rows } = await db.query(
+        `SELECT id, tax_class FROM products WHERE store_id = $1 AND id = ANY($2::text[])`,
+        [storeId, ids],
+    );
+    return new Map(rows.map((r: any) => [String(r.id), String(r.tax_class)]));
 };
 
 /**
@@ -245,11 +301,16 @@ export const createDocument = async (req: express.Request, res: express.Response
         totals = { items: [], subtotal: round2(received), discount: 0, tax: 0, total: round2(received) };
     } else {
         try {
+            const config = await storeTaxConfig(storeId);
             totals = buildTotals(
                 items as IncomingItem[],
                 discount,
-                // A delivery note carries no money, so no tax is applied to it.
-                docType === 'delivery_note' ? 0 : await storeTaxRate(storeId),
+                {
+                    // A delivery note carries no money, so no tax applies to it.
+                    standardRatePct: docType === 'delivery_note' ? 0 : config.standardRatePct,
+                    pricesIncludeTax: docType !== 'delivery_note' && config.pricesIncludeTax,
+                    classes: await documentTaxClasses(items as IncomingItem[], storeId),
+                },
                 docType === 'delivery_note',
             );
         } catch (e: any) {
@@ -283,8 +344,9 @@ export const createDocument = async (req: express.Request, res: express.Response
                          customer_phone, customer_email, customer_address, issue_date, valid_until,
                          subtotal, discount, tax, tax_rate, total, notes, terms,
                          source_document_id, created_by, created_by_name,
-                         payment_method, payment_reference, delivered_by, received_by)
-                     VALUES ($1,$2,$3,$4,'draft',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+                         payment_method, payment_reference, delivered_by, received_by,
+                         prices_include_tax)
+                     VALUES ($1,$2,$3,$4,'draft',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
                      RETURNING *`,
                     [
                         id, storeId, docType, number, customerId || null, String(customerName).trim(),
@@ -296,6 +358,7 @@ export const createDocument = async (req: express.Request, res: express.Response
                         req.user?.id || 'unknown', req.user?.name || null,
                         paymentMethod || null, paymentReference || null,
                         deliveredBy || null, receivedBy || null,
+                        docType !== 'delivery_note' && (await storeTaxConfig(storeId)).pricesIncludeTax,
                     ],
                 );
 
@@ -374,7 +437,14 @@ export const updateDocument = async (req: express.Request, res: express.Response
             totals = buildTotals(
                 items as IncomingItem[],
                 discount,
-                Number(row.tax_rate) || 0,
+                {
+                    // The rate and mode the document was issued under, not
+                    // today's: editing an invoice must not silently reprice it
+                    // because the store changed its tax settings since.
+                    standardRatePct: Number(row.tax_rate) || 0,
+                    pricesIncludeTax: !!row.prices_include_tax,
+                    classes: await documentTaxClasses(items as IncomingItem[], storeId),
+                },
                 docType === 'delivery_note',
             );
         } catch (e: any) {

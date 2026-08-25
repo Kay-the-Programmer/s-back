@@ -189,8 +189,8 @@ export const updateSettings = async (req: express.Request, res: express.Response
         );
 
         const query = `
-            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled, lenco_public_key, lenco_secret_key, is_wholesale_supplier, delivery_fee, free_delivery_above, store_description, tpin, business_tagline, bank_accounts)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, COALESCE($18, FALSE), COALESCE($19, 0), $20, $21, $24, $25, COALESCE($26::jsonb, '[]'::jsonb))
+            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled, lenco_public_key, lenco_secret_key, is_wholesale_supplier, delivery_fee, free_delivery_above, store_description, tpin, business_tagline, bank_accounts, prices_include_tax)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, COALESCE($18, FALSE), COALESCE($19, 0), $20, $21, $24, $25, COALESCE($26::jsonb, '[]'::jsonb), COALESCE($27, FALSE))
             ON CONFLICT (store_id) DO UPDATE SET
                                            name = EXCLUDED.name,
                                            address = EXCLUDED.address,
@@ -216,7 +216,11 @@ export const updateSettings = async (req: express.Request, res: express.Response
                                            -- must leave the stored value alone, not blank it.
                                            tpin = COALESCE($24, store_settings.tpin),
                                            business_tagline = COALESCE($25, store_settings.business_tagline),
-                                           bank_accounts = COALESCE($26::jsonb, store_settings.bank_accounts)
+                                           bank_accounts = COALESCE($26::jsonb, store_settings.bank_accounts),
+                                           -- Whether shelf prices already contain tax. Undefined
+                                           -- leaves it alone: a settings screen that predates the
+                                           -- field must not silently change what a store charges.
+                                           prices_include_tax = COALESCE($27, store_settings.prices_include_tax)
             RETURNING *;
         `;
         const values = [
@@ -244,6 +248,9 @@ export const updateSettings = async (req: express.Request, res: express.Response
             (newSettings as any).businessTagline === undefined ? null : String((newSettings as any).businessTagline).trim().slice(0, 120),
             // Bank details for invoices; null = caller didn't send the field.
             bankAccounts,
+            (newSettings as any).pricesIncludeTax === undefined
+                ? null
+                : (newSettings as any).pricesIncludeTax === true,
         ];
 
         const result = await db.query(query, values);

@@ -1,5 +1,6 @@
 import express from 'express';
 import db from '../db_client';
+import { computeTax, toTaxClass } from '../services/tax';
 import { toCamelCase, generateId } from '../utils/helpers';
 import { accountingService } from '../services/accounting.service';
 import SocketService from '../services/socket.service';
@@ -70,7 +71,7 @@ export const getShopInfo = async (req: express.Request, res: express.Response) =
 
         // Also fetch public store settings (currency, contact info, etc.)
         const settingsResult = await db.query(
-            'SELECT name, address, phone, email, website, currency, tax_rate, delivery_fee, free_delivery_above, store_description, logo_url, is_online_store_enabled, is_wholesale_supplier, receipt_message FROM store_settings WHERE store_id = $1',
+            'SELECT name, address, phone, email, website, currency, tax_rate, prices_include_tax, delivery_fee, free_delivery_above, store_description, logo_url, is_online_store_enabled, is_wholesale_supplier, receipt_message FROM store_settings WHERE store_id = $1',
             [storeId]
         );
 
@@ -339,7 +340,7 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
             // FOR UPDATE: lock the row so two concurrent checkouts can't both
             // pass the stock check and oversell the same units.
             const prodRes = await client.query(
-                'SELECT id, price, cost_price, name, stock, wholesale_price, min_order_quantity, price_tiers FROM products WHERE id = $1 AND store_id = $2 AND status = \'active\' FOR UPDATE',
+                'SELECT id, price, cost_price, name, stock, wholesale_price, min_order_quantity, price_tiers, tax_class FROM products WHERE id = $1 AND store_id = $2 AND status = \'active\' FOR UPDATE',
                 [productId, storeId]
             );
 
@@ -405,7 +406,8 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
                 id: productId,
                 quantity: quantity, // Use parsed quantity
                 costPrice: parseFloat(product.cost_price || 0),
-                price: price
+                price: price,
+                taxClass: toTaxClass(product.tax_class),
             });
         }
 
@@ -414,17 +416,37 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
             return res.status(400).json({ message: 'No valid items in cart to checkout.' });
         }
 
-        // Tax at the store's configured rate (was a hardcoded 10% placeholder).
-        const settingsRes = await client.query('SELECT tax_rate, delivery_fee, free_delivery_above FROM store_settings WHERE store_id = $1', [storeId]);
+        // Taxed line by line through the same engine as the till, so an
+        // online order and a counter sale of the same goods agree. A basket
+        // mixing zero-rated staples with standard-rated goods used to be
+        // charged the store's single rate on the whole of it.
+        const settingsRes = await client.query('SELECT tax_rate, prices_include_tax, delivery_fee, free_delivery_above FROM store_settings WHERE store_id = $1', [storeId]);
         const taxRatePct = settingsRes.rowCount ? Number(settingsRes.rows[0].tax_rate) || 0 : 0;
         const round2 = (n: number) => Math.round(n * 100) / 100;
-        subtotal = round2(subtotal);
-        const tax = round2(subtotal * (taxRatePct / 100));
+        const taxResult = computeTax(
+            validItems.map((i: any) => ({
+                price: Number(i.price) || 0,
+                quantity: Number(i.quantity) || 0,
+                taxClass: i.taxClass,
+            })),
+            0, // the storefront has no discount field
+            {
+                standardRatePct: taxRatePct,
+                pricesIncludeTax: !!settingsRes.rows[0]?.prices_include_tax,
+            },
+        );
+        // Ex-tax, so an online order stores the same shape of figures as a
+        // counter sale and one revenue definition still covers both.
+        subtotal = taxResult.subtotal;
+        const tax = taxResult.tax;
         // Flat store-configured delivery fee, charged only on delivery orders
         // and waived at/above the store's free-delivery threshold.
         const freeAbove = settingsRes.rowCount && settingsRes.rows[0].free_delivery_above != null
             ? Number(settingsRes.rows[0].free_delivery_above) : null;
-        const deliveryFee = fulfillment === 'delivery' && !(freeAbove != null && subtotal >= freeAbove)
+        // Measured against what the customer is paying for the goods, which
+        // with tax-inclusive prices is the subtotal plus the tax taken out of it.
+        const goodsValue = round2(subtotal + tax);
+        const deliveryFee = fulfillment === 'delivery' && !(freeAbove != null && goodsValue >= freeAbove)
             ? round2(Math.max(0, settingsRes.rowCount ? Number(settingsRes.rows[0].delivery_fee) || 0 : 0))
             : 0;
         const total = round2(subtotal + tax + deliveryFee);
@@ -462,12 +484,15 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
             `INSERT INTO sales (
                 transaction_id, "timestamp", customer_id, total, subtotal, tax, discount,
                 payment_status, fulfillment_status, channel, customer_details,
-                amount_paid, refund_status, store_id, delivery_fee
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+                amount_paid, refund_status, store_id, delivery_fee, tax_breakdown
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb)`,
             [
                 transactionId, timestamp, customerId, total, subtotal, tax, 0,
                 'unpaid', 'pending', 'online', JSON.stringify(customerDetails),
-                0, 'none', storeId, deliveryFee
+                0, 'none', storeId, deliveryFee,
+                // Same breakdown a counter sale carries, so an online invoice
+                // can show its tax split the same way.
+                JSON.stringify(taxResult.byClass)
             ]
         );
 
