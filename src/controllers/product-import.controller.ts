@@ -51,6 +51,22 @@ const num = (v: unknown): number | null => {
     return Number.isFinite(n) ? n : null;
 };
 
+/**
+ * A number out of a spreadsheet cell, with three outcomes rather than two.
+ *
+ * Blank and unreadable are not the same thing. Blank means "no figure given",
+ * which several columns legitimately allow. Unreadable means someone typed
+ * something that is not a number, and folding that into the blank case
+ * imports a figure nobody entered.
+ */
+const numberCell = (v: unknown): { ok: true; value: number | null } | { ok: false } => {
+    if (v === undefined || v === null) return { ok: true, value: null };
+    const s = String(v).trim().replace(/,/g, '');
+    if (s === '') return { ok: true, value: null };
+    const n = Number(s);
+    return Number.isFinite(n) ? { ok: true, value: n } : { ok: false };
+};
+
 const text = (v: unknown): string => (v === undefined || v === null ? '' : String(v).trim());
 
 /**
@@ -64,16 +80,29 @@ const parseRow = (raw: ImportRow): { ok: true; value: any } | { ok: false; reaso
     // A price-less row is legitimate: supplier catalogues and "stock this later"
     // lists arrive without one. The product is recorded unpriced (0) and stays
     // off the POS until someone prices it.
-    const price = num(raw.price) ?? 0;
+    //
+    // A cell holding something that is not a number is a different matter, and
+    // used to be read as blank — so a price column with a stray character in it
+    // imported that row at zero, and the shopkeeper found out when the till
+    // rang up free goods. An unreadable figure is now a rejected line.
+    const priceCell = numberCell(raw.price);
+    if (!priceCell.ok) return { ok: false, reason: 'Price is not a number.' };
+    const price = priceCell.value ?? 0;
     if (price < 0) return { ok: false, reason: 'Price cannot be negative.' };
 
-    const costPrice = num(raw.costPrice);
+    const costCell = numberCell(raw.costPrice);
+    if (!costCell.ok) return { ok: false, reason: 'Cost price is not a number.' };
+    const costPrice = costCell.value;
     if (costPrice !== null && costPrice < 0) return { ok: false, reason: 'Cost price cannot be negative.' };
 
-    const stock = num(raw.stock) ?? 0;
+    const stockCell = numberCell(raw.stock);
+    if (!stockCell.ok) return { ok: false, reason: 'Stock is not a number.' };
+    const stock = stockCell.value ?? 0;
     if (stock < 0) return { ok: false, reason: 'Stock cannot be negative.' };
 
-    const reorderPoint = num(raw.reorderPoint);
+    const reorderCell = numberCell(raw.reorderPoint);
+    if (!reorderCell.ok) return { ok: false, reason: 'Reorder point is not a number.' };
+    const reorderPoint = reorderCell.value;
     if (reorderPoint !== null && reorderPoint < 0) return { ok: false, reason: 'Reorder point cannot be negative.' };
 
     const unit = text(raw.unitOfMeasure).toLowerCase();

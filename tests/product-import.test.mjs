@@ -111,18 +111,27 @@ const run = async () => {
     check('dry run writes nothing', (await countProducts()) === before, `count ${before} -> ${await countProducts()}`);
 
     // 2 + 3. Real import, mixing good rows with bad ones.
+    //
+    // Note what is NOT here: a row with no price, or a price of zero. Those
+    // are deliberately importable — a supplier catalogue arrives unpriced and
+    // the product is recorded to be priced later, staying off the till until
+    // it is. That behaviour is asserted separately below.
     const mixed = [
         ...goodRows,
         { name: '', price: '10' },                                   // no name
-        { name: 'No Price Item', category: 'Groceries' },            // no price
-        { name: 'Negative Stock', price: '10', stock: '-5' },        // bad stock
-        { name: 'Zero Price', price: '0' },                          // non-positive price
-        { name: 'Not A Number', price: 'abc' },                      // unparseable
+        { name: 'Negative Stock', price: '10', stock: '-5' },        // negative stock
+        { name: 'Negative Price', price: '-4' },                     // negative price
+        { name: 'Not A Number', price: 'abc' },                      // price unreadable
+        { name: 'Bad Cost', price: '10', costPrice: 'xyz' },         // cost unreadable
     ];
     const imported = await req('POST', '/products/import', { rows: mixed }, admin);
     check('import succeeds with a mix of good and bad rows', imported.status === 200, `status ${imported.status}`);
     check('the three good rows were created', imported.data?.created === 3, `created=${imported.data?.created}`);
     check('the five bad rows were rejected, not imported', imported.data?.errors === 5, `errors=${imported.data?.errors}`);
+    check('an unreadable figure is rejected rather than read as blank',
+        (imported.data?.outcomes || []).some(o =>
+            o.action === 'error' && /price is not a number/i.test(o.message || '')),
+        JSON.stringify((imported.data?.outcomes || []).filter(o => o.action === 'error').map(o => o.message)));
     check('every rejection names its line and reason',
         (imported.data?.outcomes || []).filter(o => o.action === 'error').every(o => o.row > 0 && !!o.message),
         JSON.stringify((imported.data?.outcomes || []).find(o => o.action === 'error')));
@@ -139,6 +148,20 @@ const run = async () => {
         cats.rows.map(c => c.name).join(',') === 'Groceries,Toiletries',
         cats.rows.map(c => c.name).join(','));
 
+    // A supplier catalogue arrives without prices. The row is kept and the
+    // product stays off the till until someone prices it — the same promise
+    // the product form makes ("price it later").
+    const unpriced = await req('POST', '/products/import', {
+        rows: [{ name: 'Unpriced Catalogue Item', sku: `IMP-UNPRICED-${RUN}`, category: 'Groceries' }],
+    }, admin);
+    check('a row with no price is recorded, not rejected',
+        unpriced.data?.created === 1 && unpriced.data?.errors === 0,
+        `created=${unpriced.data?.created} errors=${unpriced.data?.errors}`);
+    const unpricedRow = await db.query('SELECT price FROM products WHERE store_id = $1 AND sku = $2',
+        [STORE_ID, `IMP-UNPRICED-${RUN}`]);
+    check('an unpriced import lands at zero, ready to be priced',
+        Number(unpricedRow.rows[0]?.price) === 0, `price=${unpricedRow.rows[0]?.price}`);
+
     const soap = await db.query("SELECT sku FROM products WHERE store_id = $1 AND name = 'Imported Soap'", [STORE_ID]);
     check('a row with no SKU gets one generated', !!soap.rows[0].sku && soap.rows[0].sku.startsWith('IMP-'), soap.rows[0].sku);
 
@@ -146,7 +169,8 @@ const run = async () => {
     const again = await req('POST', '/products/import', { rows: goodRows }, admin);
     check('re-importing the same file creates nothing', again.data?.created === 0 && again.data?.skipped === 3,
         `created=${again.data?.created} skipped=${again.data?.skipped}`);
-    check('re-import does not duplicate rows', (await countProducts()) === 3, `count=${await countProducts()}`);
+    // 3 good rows plus the unpriced catalogue item imported above.
+    check('re-import does not duplicate rows', (await countProducts()) === 4, `count=${await countProducts()}`);
 
     const updated = await req('POST', '/products/import', {
         rows: [{ name: 'Imported Rice 5kg', sku: `IMP-RICE-${RUN}`, category: 'Groceries', price: '135', stock: '40' }],
@@ -184,13 +208,13 @@ const run = async () => {
     check('an unauthenticated import is refused', noAuth.status === 401, `status ${noAuth.status}`);
 
     // The freemium cap: drop the unlimited add-on and import past FREE_PRODUCT_LIMIT
-    // (100 by default), which 4 existing + 120 new comfortably exceeds.
+    // (100 by default), which 5 existing + 120 new comfortably exceeds.
     await db.query(`UPDATE store_settings SET enabled_modules = '{}' WHERE store_id = $1`, [STORE_ID]);
     const capped = await req('POST', '/products/import', {
         rows: Array.from({ length: 120 }, (_, i) => ({ name: `Capped ${RUN} ${i}`, price: '5' })),
     }, admin);
     check('the free product cap applies to the whole batch', capped.status === 402, `status ${capped.status}`);
-    check('nothing was imported when the cap blocked it', (await countProducts()) === 4, `count=${await countProducts()}`);
+    check('nothing was imported when the cap blocked it', (await countProducts()) === 5, `count=${await countProducts()}`);
 };
 
 run()
