@@ -672,6 +672,52 @@ async function initializeDatabase() {
         // months on can still show a valid tax breakdown.
         await client.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS tax_breakdown JSONB;`);
 
+        // --- Manager overrides ---
+        //
+        // Roles say what someone may always do. An override says what someone
+        // may do once, now, because a supervisor stood at the till and allowed
+        // it. Without this a cashier either permanently can discount a sale to
+        // nothing or permanently cannot, and shops resolve that by sharing the
+        // manager login — which ends the audit trail entirely.
+        //
+        // A PIN rather than a password because this is typed at a counter with
+        // a customer waiting. It is a weaker factor, so it is bcrypt-hashed,
+        // rate-limited, minimum six digits, and every use is recorded.
+        await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS manager_pin_hash TEXT;`);
+
+        // One authorisation, for one action, once. Single-use and short-lived
+        // so a code cannot be reused for a second discount after the manager
+        // has walked away.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS override_authorizations (
+                id TEXT PRIMARY KEY,
+                store_id TEXT NOT NULL,
+                action TEXT NOT NULL
+                    CHECK (action IN ('discount','refund','pay_out','no_sale')),
+                -- The ceiling this authorisation covers. A manager approving a
+                -- 20% discount has not approved a 90% one, so the amount is
+                -- bound into the authorisation and rechecked when it is spent.
+                max_amount DECIMAL(12,2),
+                authorized_by TEXT NOT NULL,
+                authorized_by_id TEXT,
+                requested_by TEXT,
+                requested_by_id TEXT,
+                reason TEXT,
+                created_at TIMESTAMPTZ NOT NULL,
+                expires_at TIMESTAMPTZ NOT NULL,
+                used_at TIMESTAMPTZ
+            );
+        `);
+        await client.query(
+            `CREATE INDEX IF NOT EXISTS override_auth_store_idx ON override_authorizations (store_id, used_at);`,
+        );
+
+        // When a manager must be asked, per store. Null means never — which is
+        // exactly how every store behaved before this existed.
+        await client.query(
+            `ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS override_thresholds JSONB;`,
+        );
+
         // A document freezes the tax mode it was issued under alongside its rate,
         // so editing an old invoice cannot reprice it against a setting the store
         // has changed since.

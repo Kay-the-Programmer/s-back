@@ -5,6 +5,13 @@ import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { findOpenSessionId } from '../services/cash-session.service';
 import { computeTax, toTaxClass } from '../services/tax';
+import { discountPercentOf, requiresOverride } from '../services/override-rules';
+import {
+    OverrideError,
+    canSelfAuthorize,
+    consumeOverride,
+    loadThresholds,
+} from '../services/override.service';
 import { accountingService } from '../services/accounting.service';
 import { notifyStoreOwner, sendTemplatedEmail } from '../services/email-template.service';
 import LencoService from '../services/lenco.service';
@@ -329,6 +336,42 @@ export const createSale = async (req: express.Request, res: express.Response) =>
                 const custRes = await db.query('SELECT store_credit FROM customers WHERE id = $1 AND store_id = $2', [saleData.customerId, storeId]);
                 const available = custRes.rowCount ? Math.max(0, Number(custRes.rows[0].store_credit) || 0) : 0;
                 storeCreditUsed = round2(Math.min(storeCreditUsed, available));
+            }
+        }
+
+        // A discount past the store's limit is a manager's decision, not the
+        // cashier's. Enforced here rather than in the till, because a client
+        // that policed its own limits would be policing nothing.
+        //
+        // Spent before the sale is written. If the sale then fails the code is
+        // gone and a manager must be asked again — the safer direction, since
+        // the alternative is a code that survives to be tried once more.
+        const discountPct = discountPercentOf(discount, cartSubtotal);
+        if (!canSelfAuthorize(req.user?.role)) {
+            const thresholds = await loadThresholds(storeId);
+            if (requiresOverride('discount', discountPct, thresholds)) {
+                try {
+                    const { authorizedBy } = await consumeOverride({
+                        overrideId: (saleData as any).overrideId,
+                        storeId,
+                        action: 'discount',
+                        amount: discountPct,
+                    });
+                    await auditService.log(
+                        req.user!,
+                        'Discount Override Used',
+                        `${discountPct}% discount on ${transactionId}, approved by ${authorizedBy}`,
+                    );
+                } catch (e) {
+                    if (e instanceof OverrideError) {
+                        return res.status(403).json({
+                            message: e.message,
+                            requiresOverride: 'discount',
+                            amount: discountPct,
+                        });
+                    }
+                    throw e;
+                }
             }
         }
 

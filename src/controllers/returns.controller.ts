@@ -5,6 +5,13 @@ import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { accountingService } from '../services/accounting.service';
 import { findOpenSessionId } from '../services/cash-session.service';
+import { requiresOverride } from '../services/override-rules';
+import {
+    OverrideError,
+    canSelfAuthorize,
+    consumeOverride,
+    loadThresholds,
+} from '../services/override.service';
 
 export const getReturns = async (req: express.Request, res: express.Response) => {
     try {
@@ -41,6 +48,37 @@ export const createReturn = async (req: express.Request, res: express.Response) 
     const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
     if (!storeId) {
         return res.status(400).json({ message: 'Store context required' });
+    }
+
+    // A large refund is where a till leaks money: goods that never came back,
+    // signed off by nobody. Past the store's limit it takes a manager, and the
+    // approval names them in the audit log.
+    if (!canSelfAuthorize(req.user?.role)) {
+        const thresholds = await loadThresholds(storeId);
+        if (requiresOverride('refund', Number(refundAmount) || 0, thresholds)) {
+            try {
+                const { authorizedBy } = await consumeOverride({
+                    overrideId: (returnData as any).overrideId,
+                    storeId,
+                    action: 'refund',
+                    amount: Number(refundAmount) || 0,
+                });
+                await auditService.log(
+                    req.user!,
+                    'Refund Override Used',
+                    `Refund of ${Number(refundAmount).toFixed(2)} on ${originalSaleId}, approved by ${authorizedBy}`,
+                );
+            } catch (e) {
+                if (e instanceof OverrideError) {
+                    return res.status(403).json({
+                        message: e.message,
+                        requiresOverride: 'refund',
+                        amount: Number(refundAmount) || 0,
+                    });
+                }
+                throw e;
+            }
+        }
     }
 
     const client = await db._pool.connect();

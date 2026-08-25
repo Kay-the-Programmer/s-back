@@ -63,6 +63,11 @@ export type Permission =
     // one thing a till count exists to prevent.
     | 'cash:operate'
     | 'cash:manage'
+    // Stand at the till and allow one thing a cashier may not do alone: a
+    // discount past the store limit, a large refund, a big pay-out. Held by
+    // whoever is trusted to answer for it, and every use is recorded against
+    // them by name.
+    | 'override:authorize'
     // Customer quotations & invoices. `create` covers drafting, issuing and
     // converting a document; `manage` adds editing an issued one and deleting.
     | 'sales_docs:create'
@@ -107,6 +112,7 @@ const STORE_PERMISSIONS: Permission[] = [
     'returns:perform',
     'cash:operate',
     'cash:manage',
+    'override:authorize',
     'sales_docs:create',
     'sales_docs:manage',
     'customers:read',

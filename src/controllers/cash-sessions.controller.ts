@@ -3,6 +3,13 @@ import db from '../db_client';
 import { generateId } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { roleHasPermission, Role } from '../auth/rbac';
+import { requiresOverride } from '../services/override-rules';
+import {
+    OverrideError,
+    canSelfAuthorize,
+    consumeOverride,
+    loadThresholds,
+} from '../services/override.service';
 import {
     computeExpectedCash,
     computeVariance,
@@ -186,6 +193,38 @@ export const addMovement = async (req: express.Request, res: express.Response) =
 
         const session = await openSessionFor(req, storeId);
         if (!session) return res.status(404).json({ message: 'That till is not open.' });
+
+        // Taking money out of the drawer is the one movement that can hide a
+        // theft behind a plausible reason, so past the store's limit it takes a
+        // manager. Paying money in needs nobody: it can only make the drawer
+        // count right.
+        if (type === 'pay_out' && !canSelfAuthorize(req.user?.role)) {
+            const thresholds = await loadThresholds(storeId);
+            if (requiresOverride('pay_out', amount, thresholds)) {
+                try {
+                    const { authorizedBy } = await consumeOverride({
+                        overrideId: req.body?.overrideId,
+                        storeId,
+                        action: 'pay_out',
+                        amount,
+                    });
+                    await auditService.log(
+                        req.user!,
+                        'Pay Out Override Used',
+                        `${amount.toFixed(2)} out of ${session.id}, approved by ${authorizedBy}`,
+                    );
+                } catch (e) {
+                    if (e instanceof OverrideError) {
+                        return res.status(403).json({
+                            message: e.message,
+                            requiresOverride: 'pay_out',
+                            amount,
+                        });
+                    }
+                    throw e;
+                }
+            }
+        }
 
         await db.query(
             `INSERT INTO cash_movements

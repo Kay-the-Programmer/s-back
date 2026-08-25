@@ -14,6 +14,7 @@
     "test:cash": "npm run build && node tests/cash-math.test.mjs",
     "test:tax": "npm run build && node tests/tax.test.mjs",
     "test:till": "node tests/till-and-tax.test.mjs",
+    "test:override": "node tests/manager-override.test.mjs",
     "test:financial": "node tests/financial-invariants.test.mjs",
     "test:contract": "node tests/desktop-contract.test.mjs",
     "test:expenses": "node tests/staff-expenses.test.mjs",

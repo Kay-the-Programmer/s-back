@@ -189,8 +189,8 @@ export const updateSettings = async (req: express.Request, res: express.Response
         );
 
         const query = `
-            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled, lenco_public_key, lenco_secret_key, is_wholesale_supplier, delivery_fee, free_delivery_above, store_description, tpin, business_tagline, bank_accounts, prices_include_tax)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, COALESCE($18, FALSE), COALESCE($19, 0), $20, $21, $24, $25, COALESCE($26::jsonb, '[]'::jsonb), COALESCE($27, FALSE))
+            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled, lenco_public_key, lenco_secret_key, is_wholesale_supplier, delivery_fee, free_delivery_above, store_description, tpin, business_tagline, bank_accounts, prices_include_tax, override_thresholds)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, COALESCE($18, FALSE), COALESCE($19, 0), $20, $21, $24, $25, COALESCE($26::jsonb, '[]'::jsonb), COALESCE($27, FALSE), $28::jsonb)
             ON CONFLICT (store_id) DO UPDATE SET
                                            name = EXCLUDED.name,
                                            address = EXCLUDED.address,
@@ -220,7 +220,11 @@ export const updateSettings = async (req: express.Request, res: express.Response
                                            -- Whether shelf prices already contain tax. Undefined
                                            -- leaves it alone: a settings screen that predates the
                                            -- field must not silently change what a store charges.
-                                           prices_include_tax = COALESCE($27, store_settings.prices_include_tax)
+                                           prices_include_tax = COALESCE($27, store_settings.prices_include_tax),
+                                           -- When a manager must be asked. Undefined leaves the
+                                           -- stored limits alone; a settings screen that does not
+                                           -- know the field must not quietly switch the control off.
+                                           override_thresholds = COALESCE($28::jsonb, store_settings.override_thresholds)
             RETURNING *;
         `;
         const values = [
@@ -251,6 +255,9 @@ export const updateSettings = async (req: express.Request, res: express.Response
             (newSettings as any).pricesIncludeTax === undefined
                 ? null
                 : (newSettings as any).pricesIncludeTax === true,
+            (newSettings as any).overrideThresholds === undefined
+                ? null
+                : JSON.stringify((newSettings as any).overrideThresholds ?? {}),
         ];
 
         const result = await db.query(query, values);
