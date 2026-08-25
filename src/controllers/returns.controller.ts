@@ -4,6 +4,7 @@ import { Return, Sale, Product, StoreSettings } from '../types';
 import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { accountingService } from '../services/accounting.service';
+import { findOpenSessionId } from '../services/cash-session.service';
 
 export const getReturns = async (req: express.Request, res: express.Response) => {
     try {
@@ -88,9 +89,14 @@ export const createReturn = async (req: express.Request, res: express.Response) 
         const refundTax = refundAmount * taxRatio;
         const refundSubtotal = refundAmount - refundTax;
 
+        // Attribute the refund to the till it was paid out of, so a cash
+        // refund shows up as money that left the drawer rather than as a
+        // shortage at closing time.
+        const cashSessionId = await findOpenSessionId(storeId, req.user?.id);
+
         const returnResult = await client.query(
-            'INSERT INTO returns (id, original_sale_id, "timestamp", refund_amount, tax_amount, subtotal_amount, refund_method, exchange_credit_applied, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
-            [id, originalSaleId, timestamp, refundAmount, refundTax, refundSubtotal, refundMethod, Math.min(exchangeCreditApplied, Number(refundAmount) || 0), storeId]
+            'INSERT INTO returns (id, original_sale_id, "timestamp", refund_amount, tax_amount, subtotal_amount, refund_method, exchange_credit_applied, store_id, cash_session_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *',
+            [id, originalSaleId, timestamp, refundAmount, refundTax, refundSubtotal, refundMethod, Math.min(exchangeCreditApplied, Number(refundAmount) || 0), storeId, cashSessionId]
         );
         const newReturn = toCamelCase(returnResult.rows[0]);
 

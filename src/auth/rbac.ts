@@ -55,6 +55,14 @@ export type Permission =
     | 'sales:perform'
     // Returns
     | 'returns:perform'
+    // Cash drawer. `operate` is the cashier's own till: open it with a float,
+    // record money in and out, close it with a count. `manage` is the owner's
+    // view — every session in the store, and the expected-cash figure a count
+    // is checked against. They are deliberately separate: a cashier who can see
+    // what the drawer *should* hold can make the count match it, which is the
+    // one thing a till count exists to prevent.
+    | 'cash:operate'
+    | 'cash:manage'
     // Customer quotations & invoices. `create` covers drafting, issuing and
     // converting a document; `manage` adds editing an issued one and deleting.
     | 'sales_docs:create'
@@ -97,6 +105,8 @@ const STORE_PERMISSIONS: Permission[] = [
     'sales:read',
     'sales:perform',
     'returns:perform',
+    'cash:operate',
+    'cash:manage',
     'sales_docs:create',
     'sales_docs:manage',
     'customers:read',
@@ -146,6 +156,9 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
         'sales:read',
         'sales:perform',
         'returns:perform',
+        // Runs their own till, but cannot see the expected figure or anyone
+        // else's session — see 'cash:manage'.
+        'cash:operate',
         'expenses:record',
         'sales_docs:create',
         'customers:read',

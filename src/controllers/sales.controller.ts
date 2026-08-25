@@ -3,6 +3,8 @@ import db from '../db_client';
 import { Sale, Payment } from '../types';
 import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
+import { findOpenSessionId } from '../services/cash-session.service';
+import { computeTax, toTaxClass } from '../services/tax';
 import { accountingService } from '../services/accounting.service';
 import { notifyStoreOwner, sendTemplatedEmail } from '../services/email-template.service';
 import LencoService from '../services/lenco.service';
@@ -113,7 +115,7 @@ export const getSales = async (req: express.Request, res: express.Response) => {
                COALESCE(ret.total_refunded, 0) as "totalRefunded",
                (s.total - COALESCE(ret.total_refunded, 0)) as total,
                (s.amount_paid - COALESCE(ret.total_refunded, 0)) as amount_paid,
-               COALESCE(json_agg(DISTINCT jsonb_build_object('productId', si.product_id, 'name', p.name, 'price', si.price_at_sale, 'quantity', si.quantity, 'stock', p.stock, 'costPrice', si.cost_at_sale, 'returnedQuantity', si.returned_quantity)) FILTER (WHERE si.id IS NOT NULL), '[]') as cart,
+               COALESCE(json_agg(DISTINCT jsonb_build_object('productId', si.product_id, 'name', p.name, 'price', si.price_at_sale, 'quantity', si.quantity, 'stock', p.stock, 'costPrice', si.cost_at_sale, 'returnedQuantity', si.returned_quantity, 'taxClass', si.tax_class)) FILTER (WHERE si.id IS NOT NULL), '[]') as cart,
                COALESCE(json_agg(DISTINCT pay.*) FILTER (WHERE pay.id IS NOT NULL), '[]') as payments
         ${baseQuery}
         GROUP BY s.transaction_id, ret.total_refunded, cust.name
@@ -253,6 +255,23 @@ export const createQuickSale = async (req: express.Request, res: express.Respons
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+/**
+ * The tax class of every product in a cart, read from the catalogue.
+ *
+ * Never taken from what the client sent: a till that could declare an item
+ * zero-rated could under-declare every sale it makes. A product that has since
+ * been deleted falls back to standard-rated.
+ */
+const taxClassesFor = async (cart: any[], storeId: string): Promise<Map<string, string>> => {
+    const ids = Array.from(new Set((cart ?? []).map(i => String(i?.productId)).filter(Boolean)));
+    if (!ids.length) return new Map();
+    const { rows } = await db.query(
+        `SELECT id, tax_class FROM products WHERE store_id = $1 AND id = ANY($2::text[])`,
+        [storeId, ids],
+    );
+    return new Map(rows.map((r: any) => [String(r.id), String(r.tax_class)]));
+};
+
 export const createSale = async (req: express.Request, res: express.Response) => {
     const client = await db._pool.connect();
     const { payments, ...saleData } = req.body as Sale;
@@ -313,20 +332,66 @@ export const createSale = async (req: express.Request, res: express.Response) =>
             }
         }
 
-        // Tax: accept the client's figure when the claimed total adds up exactly
-        // (allows tax-exempt sales and offline sales made under an older rate);
-        // otherwise recompute from the store's configured rate.
+        // Tax is always computed from the catalogue, whether or not the
+        // client's own figure is accepted: the per-line classes are needed for
+        // the sale items, and the breakdown for the receipt.
+        const settingsRes = await db.query(
+            'SELECT tax_rate, prices_include_tax FROM store_settings WHERE store_id = $1',
+            [storeId],
+        );
+        const standardRatePct = settingsRes.rowCount ? Number(settingsRes.rows[0].tax_rate) || 0 : 0;
+        const pricesIncludeTax = !!settingsRes.rows[0]?.prices_include_tax;
+
+        // Classes come from the catalogue, never from the cart: a client that
+        // could declare its own class could mark a taxable item zero-rated and
+        // under-declare every sale it made.
+        const classes = await taxClassesFor(saleData.cart, storeId);
+        const computed = computeTax(
+            saleData.cart.map((i: any) => ({
+                price: Number(i.price) || 0,
+                quantity: Number(i.quantity) || 0,
+                taxClass: toTaxClass(classes.get(String(i.productId))),
+            })),
+            discount,
+            { standardRatePct, pricesIncludeTax },
+        );
+
+        // The server decides the tax. A client figure is kept only when it
+        // agrees with what the catalogue says, which is the normal case now
+        // that the till runs the same engine.
+        //
+        // It used to be enough for the client's own arithmetic to be
+        // self-consistent. That let an out-of-date till charge 16% on
+        // zero-rated goods and have the figure accepted, because 300 + 48 does
+        // equal 348 — the sum was right and the tax was wrong. It also left
+        // those sales with no tax breakdown, so they could not produce a valid
+        // tax invoice either.
+        //
+        // The cost of this is a sale rung up offline and synced after the store
+        // changed its rate: it is now repriced to today's rate rather than
+        // keeping the one the customer paid under. Rates change rarely, a
+        // mispriced basket does not, and only versioned rates would fix both.
         const clientTax = round2(Math.max(Number(saleData.tax) || 0, 0));
         const claimedTotal = round2(Number(saleData.total) || 0);
-        let tax: number;
-        if (Math.abs(claimedTotal - round2(cartSubtotal - discount + clientTax - storeCreditUsed)) <= 0.02) {
-            tax = clientTax;
-        } else {
-            const settingsRes = await db.query('SELECT tax_rate FROM store_settings WHERE store_id = $1', [storeId]);
-            const taxRatePct = settingsRes.rowCount ? Number(settingsRes.rows[0].tax_rate) || 0 : 0;
-            tax = round2((cartSubtotal - discount) * (taxRatePct / 100));
-        }
-        const total = round2(cartSubtotal - discount + tax - storeCreditUsed);
+        const selfConsistent =
+            Math.abs(claimedTotal - round2(cartSubtotal - discount + clientTax - storeCreditUsed)) <= 0.02;
+        const trustClient = selfConsistent && Math.abs(clientTax - computed.tax) <= 0.02;
+
+        // With tax-inclusive prices the goods are worth less than the shelf
+        // price, so the stored subtotal and discount are the ex-tax figures the
+        // engine derived. Revenue stays ex-tax either way, which is what every
+        // report downstream assumes.
+        const tax = trustClient ? clientTax : computed.tax;
+        const netSubtotal = trustClient ? cartSubtotal : computed.subtotal;
+        const netDiscount = trustClient ? discount : computed.discount;
+
+        // The breakdown always accounts for the tax charged now, because the
+        // charged figure is the computed one whenever the two disagree. Kept as
+        // a guard rather than an assumption: a breakdown that does not sum to
+        // the tax printed on the receipt is worse than no breakdown at all.
+        const taxBreakdown = Math.abs(computed.tax - tax) <= 0.01 ? computed.byClass : null;
+
+        const total = round2(netSubtotal - netDiscount + tax - storeCreditUsed);
 
         const paymentStatus: Sale['paymentStatus'] = saleData.paymentStatus || 'paid';
         const amountPaid = paymentStatus === 'paid'
@@ -335,8 +400,8 @@ export const createSale = async (req: express.Request, res: express.Response) =>
 
         // Overwrite the client-sent figures with the authoritative ones so every
         // downstream consumer (accounting, customer balance, response) agrees.
-        saleData.subtotal = cartSubtotal;
-        saleData.discount = discount;
+        saleData.subtotal = netSubtotal;
+        saleData.discount = netDiscount;
         saleData.tax = tax;
         saleData.total = total;
         saleData.storeCreditUsed = storeCreditUsed;
@@ -387,14 +452,21 @@ export const createSale = async (req: express.Request, res: express.Response) =>
         const attendedBy = req.user?.name || null;
         const attendedById = req.user?.id || null;
 
+        // Which till this went through, resolved here rather than sent by the
+        // client. An offline web till and the desktop app both post sales that
+        // know nothing about cash sessions; stamping server-side means they
+        // land in the cashier's open session without either having to change.
+        const cashSessionId = await findOpenSessionId(storeId, attendedById ?? undefined);
+
         const saleQuery = `
-            INSERT INTO sales(transaction_id, "timestamp", customer_id, total, subtotal, tax, discount, store_credit_used, payment_status, amount_paid, due_date, refund_status, store_id, attended_by, attended_by_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *;
+            INSERT INTO sales(transaction_id, "timestamp", customer_id, total, subtotal, tax, discount, store_credit_used, payment_status, amount_paid, due_date, refund_status, store_id, attended_by, attended_by_id, cash_session_id, tax_breakdown)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb) RETURNING *;
         `;
         const saleResult = await client.query(saleQuery, [
-            transactionId, timestamp, saleData.customerId, total, cartSubtotal, tax,
+            transactionId, timestamp, saleData.customerId, total, netSubtotal, tax,
             discount, storeCreditUsed, paymentStatus, amountPaid, saleData.dueDate, 'none', storeId,
-            attendedBy, attendedById
+            attendedBy, attendedById, cashSessionId,
+            taxBreakdown === null ? null : JSON.stringify(taxBreakdown)
         ]);
         const newSale = saleResult.rows[0];
 
@@ -407,8 +479,8 @@ export const createSale = async (req: express.Request, res: express.Response) =>
             const currentCostPrice = parseFloat(product?.cost_price || 0);
 
             await client.query(
-                'INSERT INTO sale_items(sale_id, product_id, quantity, price_at_sale, cost_at_sale, store_id) VALUES ($1, $2, $3, $4, $5, $6)',
-                [transactionId, item.productId, item.quantity, item.price, currentCostPrice, storeId]
+                'INSERT INTO sale_items(sale_id, product_id, quantity, price_at_sale, cost_at_sale, store_id, tax_class) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+                [transactionId, item.productId, item.quantity, item.price, currentCostPrice, storeId, toTaxClass(classes.get(String(item.productId)))]
             );
 
             // Decrement RELATIVELY and take the new level from the database.
@@ -776,7 +848,7 @@ export const updateFulfillmentStatus = async (req: express.Request, res: express
 
             const saleResult = await client.query(
                 `SELECT s.*, 
-                 COALESCE(json_agg(DISTINCT jsonb_build_object('productId', si.product_id, 'name', p.name, 'price', si.price_at_sale, 'quantity', si.quantity, 'costPrice', si.cost_at_sale)) FILTER (WHERE si.id IS NOT NULL), '[]') as cart
+                 COALESCE(json_agg(DISTINCT jsonb_build_object('productId', si.product_id, 'name', p.name, 'price', si.price_at_sale, 'quantity', si.quantity, 'costPrice', si.cost_at_sale, 'taxClass', si.tax_class)) FILTER (WHERE si.id IS NOT NULL), '[]') as cart
                  FROM sales s
                  LEFT JOIN sale_items si ON s.transaction_id = si.sale_id AND si.store_id = s.store_id
                  LEFT JOIN products p ON si.product_id = p.id AND p.store_id = s.store_id
