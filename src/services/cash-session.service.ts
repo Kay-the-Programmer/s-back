@@ -107,8 +107,8 @@ export const loadTenderBreakdown = async (
 export const loadSaleCounts = async (
     sessionId: string,
     storeId: string,
-): Promise<{ sales: number; returns: number; grossSales: number }> => {
-    const [sales, returns] = await Promise.all([
+): Promise<{ sales: number; returns: number; grossSales: number; noSaleOpens: number }> => {
+    const [sales, returns, noSales] = await Promise.all([
         db.query(
             `SELECT COUNT(*) AS count, COALESCE(SUM(total), 0) AS gross
                FROM sales WHERE cash_session_id = $1 AND store_id = $2`,
@@ -118,11 +118,19 @@ export const loadSaleCounts = async (
             'SELECT COUNT(*) AS count FROM returns WHERE cash_session_id = $1 AND store_id = $2',
             [sessionId, storeId],
         ),
+        // Worth a line on the Z report: a drawer opened repeatedly without a
+        // sale is the pattern this whole record exists to make visible.
+        db.query(
+            `SELECT COUNT(*) AS count FROM cash_movements
+               WHERE session_id = $1 AND store_id = $2 AND type = 'no_sale'`,
+            [sessionId, storeId],
+        ),
     ]);
     return {
         sales: Number(sales.rows[0]?.count) || 0,
         returns: Number(returns.rows[0]?.count) || 0,
         grossSales: num(sales.rows[0]?.gross),
+        noSaleOpens: Number(noSales.rows[0]?.count) || 0,
     };
 };
 

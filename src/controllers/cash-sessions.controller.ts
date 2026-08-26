@@ -151,7 +151,7 @@ export const openSession = async (req: express.Request, res: express.Response) =
                 `Session ${id} opened with a float of ${openingFloat.toFixed(2)}`,
             );
             return res.status(201).json({
-                ...shape(rows[0]), movements: [], sales: 0, returns: 0, grossSales: 0,
+                ...shape(rows[0]), movements: [], sales: 0, returns: 0, grossSales: 0, noSaleOpens: 0,
             });
         } catch (e: any) {
             // The partial unique index is the authority here, not a prior
@@ -242,6 +242,72 @@ export const addMovement = async (req: express.Request, res: express.Response) =
     } catch (e: any) {
         console.error('addMovement failed:', e?.message);
         return res.status(500).json({ message: 'Could not record the movement.' });
+    }
+};
+
+/**
+ * Open the drawer without a sale.
+ *
+ * The pulse itself is a printer command the till sends directly, so nothing
+ * server-side could stop a drawer opening. What this does is make it leave a
+ * mark: the till asks first, and only opens the drawer if the answer is yes.
+ * An unexplained drawer opening is how cash walks out of a shop, and until
+ * now it was the one thing at the counter that left no trace at all.
+ */
+export const recordNoSale = async (req: express.Request, res: express.Response) => {
+    try {
+        const storeId = storeOf(req);
+        if (!storeId) return res.status(400).json({ message: 'No active store selected.' });
+
+        const session = await openSessionFor(req, storeId);
+        if (!session) return res.status(404).json({ message: 'Open a till before using the drawer.' });
+
+        const reason = String(req.body?.reason ?? '').trim();
+
+        if (!canSelfAuthorize(req.user?.role)) {
+            const thresholds = await loadThresholds(storeId);
+            if (requiresOverride('no_sale', 0, thresholds)) {
+                try {
+                    const { authorizedBy } = await consumeOverride({
+                        overrideId: req.body?.overrideId,
+                        storeId,
+                        action: 'no_sale',
+                        amount: 0,
+                    });
+                    await auditService.log(
+                        req.user!,
+                        'No Sale Override Used',
+                        `Drawer opened on ${session.id}, approved by ${authorizedBy}`,
+                    );
+                } catch (e) {
+                    if (e instanceof OverrideError) {
+                        return res.status(403).json({
+                            message: e.message,
+                            requiresOverride: 'no_sale',
+                            amount: 0,
+                        });
+                    }
+                    throw e;
+                }
+            }
+        }
+
+        await db.query(
+            `INSERT INTO cash_movements
+                (id, session_id, store_id, type, amount, reason, created_at, created_by, created_by_id)
+             VALUES ($1, $2, $3, 'no_sale', 0, $4, NOW(), $5, $6)`,
+            [generateId('NOSALE'), session.id, storeId, reason.slice(0, 300) || 'No sale',
+             req.user?.name || 'Unknown', req.user?.id ?? null],
+        );
+        await auditService.log(
+            req.user!,
+            'Drawer Opened (No Sale)',
+            `${session.id}${reason ? ` — ${reason.slice(0, 120)}` : ''}`,
+        );
+        return res.status(201).json({ ok: true });
+    } catch (e: any) {
+        console.error('recordNoSale failed:', e?.message);
+        return res.status(500).json({ message: 'Could not record that.' });
     }
 };
 

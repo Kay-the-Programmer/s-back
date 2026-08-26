@@ -6,6 +6,7 @@ import {
     getSessionReport,
     listSessions,
     openSession,
+    recordNoSale,
 } from '../controllers/cash-sessions.controller';
 import { protect } from '../middleware/auth.middleware';
 import { requirePermission } from '../auth/rbac';
@@ -69,6 +70,23 @@ router.route('/')
  *           type: string
  */
 router.post('/:id/movements', addMovement);
+
+/**
+ * @openapi
+ * /cash-sessions/{id}/no-sale:
+ *   post:
+ *     tags: [Cash Sessions]
+ *     summary: Record the drawer being opened without a sale
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ */
+router.post('/:id/no-sale', recordNoSale);
 
 /**
  * @openapi

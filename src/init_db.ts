@@ -774,8 +774,12 @@ async function initializeDatabase() {
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL REFERENCES cash_sessions(id) ON DELETE CASCADE,
                 store_id TEXT NOT NULL,
-                type TEXT NOT NULL CHECK (type IN ('pay_in','pay_out')),
-                amount DECIMAL(12,2) NOT NULL CHECK (amount > 0),
+                -- no_sale is not a movement of money; it is the drawer being
+                -- opened without one, which is worth counting precisely because
+                -- nothing else records it. The cash sums filter by type, so it
+                -- cannot affect what the drawer is expected to hold.
+                type TEXT NOT NULL CHECK (type IN ('pay_in','pay_out','no_sale')),
+                amount DECIMAL(12,2) NOT NULL CHECK (amount >= 0),
                 reason TEXT NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL,
                 created_by TEXT,
@@ -784,6 +788,19 @@ async function initializeDatabase() {
         `);
         await client.query(
             `CREATE INDEX IF NOT EXISTS cash_movements_session_idx ON cash_movements (session_id);`,
+        );
+        // Widen the two constraints for stores created before no_sale existed.
+        await client.query(
+            `ALTER TABLE cash_movements DROP CONSTRAINT IF EXISTS cash_movements_type_check;`,
+        );
+        await client.query(
+            `ALTER TABLE cash_movements ADD CONSTRAINT cash_movements_type_check CHECK (type IN ('pay_in','pay_out','no_sale'));`,
+        );
+        await client.query(
+            `ALTER TABLE cash_movements DROP CONSTRAINT IF EXISTS cash_movements_amount_check;`,
+        );
+        await client.query(
+            `ALTER TABLE cash_movements ADD CONSTRAINT cash_movements_amount_check CHECK (amount >= 0);`,
         );
 
         // Which till a sale or refund passed through. Stamped by the server

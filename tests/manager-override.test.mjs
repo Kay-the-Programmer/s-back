@@ -121,7 +121,7 @@ const main = async () => {
     await req('PUT', '/settings', {
         name: 'Override Test Store', taxRate: 0, lowStockThreshold: 5, enableStoreCredit: true,
         currency: { symbol: 'K', code: 'ZMW', position: 'before' },
-        overrideThresholds: { discountPercent: 10, refundAmount: 500, payOutAmount: 200 },
+        overrideThresholds: { discountPercent: 10, refundAmount: 500, payOutAmount: 200, noSale: true },
     }, BOSS);
     const settings = await req('GET', '/overrides', null, TILL);
     check('the till can see what needs approving',
@@ -213,6 +213,33 @@ const main = async () => {
         { type: 'pay_out', amount: 300, reason: 'Supplier', overrideId: payOutGrant.data?.id }, TILL);
     check('an approved pay-out goes through', allowedPayOut.status === 201,
         `status=${allowedPayOut.status}`);
+
+    // ---- opening the drawer with no sale ----
+    const bareDrawer = await req('POST', `/cash-sessions/${openTill.data?.id}/no-sale`,
+        { reason: 'Customer wanted change' }, TILL);
+    check('opening the drawer with no sale is refused without approval',
+        bareDrawer.status === 403, `status=${bareDrawer.status}`);
+
+    const drawerGrant = await req('POST', '/overrides', { action: 'no_sale', pin: PIN }, TILL);
+    const allowedDrawer = await req('POST', `/cash-sessions/${openTill.data?.id}/no-sale`,
+        { reason: 'Customer wanted change', overrideId: drawerGrant.data?.id }, TILL);
+    check('an approved drawer opening is allowed', allowedDrawer.status === 201,
+        `status=${allowedDrawer.status}`);
+
+    // The whole point: it leaves a mark that a Z report can count.
+    const opens = await db.query(
+        `SELECT COUNT(*)::int AS n FROM cash_movements
+          WHERE session_id = $1 AND type = 'no_sale'`,
+        [openTill.data?.id],
+    );
+    check('the drawer opening is recorded against the till',
+        opens.rows[0]?.n === 1, `count=${opens.rows[0]?.n}`);
+
+    const report = await req('GET', `/cash-sessions/${openTill.data?.id}/report`, null, BOSS);
+    check('the report counts drawer openings separately from cash',
+        report.data?.noSaleOpens === 1
+        && Math.abs(Number(report.data?.expectedCash) - (1000 - 50 - 300 + 5000)) < 0.011,
+        `noSaleOpens=${report.data?.noSaleOpens} expected=${report.data?.expectedCash}`);
 
     // ---- it is all written down ----
     const trail = await db.query(
