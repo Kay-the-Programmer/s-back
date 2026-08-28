@@ -268,6 +268,30 @@ const main = async () => {
         moved.rows[0]?.current_store_id === SPARED,
         `current_store_id=${moved.rows[0]?.current_store_id}`);
 
+    // ---- what is being held afterwards ----
+    const held = await req('GET', '/superadmin/store-archives', null, SU);
+    check('the archives being held can be listed', held.status === 200
+        && Array.isArray(held.data?.archives), `status=${held.status}`);
+    check('the listing states how long they are kept',
+        Number(held.data?.retentionDays) > 0, `days=${held.data?.retentionDays}`);
+    check('the archive just written is among them',
+        (held.data?.archives || []).some(a => reported.endsWith(a.name)),
+        `looking for ${reported.split(/[\/]/).pop()}`);
+
+    // Somebody asking to be erased after the fact should not have to wait out
+    // a ninety-day window.
+    const name = reported.split(/[\/]/).pop();
+    const removed = await req('DELETE', '/superadmin/store-archives', { name }, SU);
+    check('an archive can be deleted on request', removed.status === 200,
+        `status=${removed.status}`);
+    check('and is really gone from disk', !existsSync(join('archives', name || 'x')),
+        `name=${name}`);
+
+    const bogus = await req('DELETE', '/superadmin/store-archives',
+        { name: '../../package.json' }, SU);
+    check('a name that climbs out of the archive directory is refused',
+        bogus.status === 404, `status=${bogus.status}`);
+
     // ---- it is written down ----
     const trail = await db.query(
         `SELECT details FROM audit_logs WHERE action = 'Store Deleted' AND details LIKE $1`,

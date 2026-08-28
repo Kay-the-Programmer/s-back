@@ -383,3 +383,92 @@ export const archiveStore = async (storeId: string): Promise<StoreArchive> => {
     await fs.writeFile(file, body);
     return { path: file, bytes: body.length };
 };
+
+/**
+ * How long a store archive is kept, in days. Zero keeps them forever.
+ *
+ * Ninety days by default: long enough that a deletion nobody noticed at the
+ * time can still be undone, short enough that the shop is not holding other
+ * people's customer records indefinitely for no stated reason. A file here is
+ * a complete business — names, phone numbers, what everybody bought — so
+ * keeping it needs a reason with an end date, not merely no reason to delete.
+ */
+export const archiveRetentionDays = (): number => {
+    const raw = Number(process.env.STORE_ARCHIVE_RETENTION_DAYS);
+    if (!Number.isFinite(raw) || raw < 0) return 90;
+    return Math.floor(raw);
+};
+
+export interface ArchiveFile {
+    name: string;
+    bytes: number;
+    createdAt: Date;
+    ageDays: number;
+}
+
+/** Archives currently held, newest first. */
+export const listArchives = async (): Promise<ArchiveFile[]> => {
+    let names: string[];
+    try {
+        names = await fs.readdir(ARCHIVE_ROOT);
+    } catch {
+        // No directory means nothing has ever been archived, which is not a
+        // problem to report — it is the state every fresh install is in.
+        return [];
+    }
+    const now = Date.now();
+    const files: ArchiveFile[] = [];
+    for (const name of names) {
+        if (!name.endsWith('.json.gz')) continue;
+        try {
+            const stat = await fs.stat(path.join(ARCHIVE_ROOT, name));
+            files.push({
+                name,
+                bytes: stat.size,
+                createdAt: stat.mtime,
+                ageDays: Math.floor((now - stat.mtime.getTime()) / 86400000),
+            });
+        } catch {
+            // Vanished between listing and stat. Nothing to report.
+        }
+    }
+    return files.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+};
+
+/**
+ * Delete archives past their retention.
+ *
+ * Runs on a timer rather than waiting for someone to remember, because the
+ * failure mode of forgetting is not an error anyone sees — it is a directory
+ * quietly accumulating every customer of every store ever deleted.
+ */
+export const pruneArchives = async (): Promise<{ deleted: string[]; keptDays: number }> => {
+    const keptDays = archiveRetentionDays();
+    if (keptDays === 0) return { deleted: [], keptDays };
+
+    const deleted: string[] = [];
+    for (const file of await listArchives()) {
+        if (file.ageDays < keptDays) continue;
+        try {
+            await fs.unlink(path.join(ARCHIVE_ROOT, file.name));
+            deleted.push(file.name);
+        } catch {
+            // Left for the next run rather than failing the sweep: one
+            // undeletable file must not stop the rest being cleared.
+        }
+    }
+    return { deleted, keptDays };
+};
+
+/** Remove one archive by name, for a request that arrives after the fact. */
+export const deleteArchive = async (name: string): Promise<boolean> => {
+    // Name only — anything with a path separator is refused, so a crafted name
+    // cannot reach out of the archive directory.
+    if (!/^[A-Za-z0-9._-]+\.json\.gz$/.test(name)) return false;
+    try {
+        await fs.unlink(path.join(ARCHIVE_ROOT, name));
+        return true;
+    } catch {
+        return false;
+    }
+};

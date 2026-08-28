@@ -1,5 +1,5 @@
 import express from 'express';
-import { listStores, updateStore, createNotification, listSystemNotifications, getNotificationStatus, listRevenueSummary, listSubscriptionPayments, recordSubscriptionPayment, getStoreDetails, sendStoreNotification, setStoreModules, getStoreModules, previewStoreDeletion, deleteStore } from '../controllers/superadmin.controller';
+import { listStores, updateStore, createNotification, listSystemNotifications, getNotificationStatus, listRevenueSummary, listSubscriptionPayments, recordSubscriptionPayment, getStoreDetails, sendStoreNotification, setStoreModules, getStoreModules, previewStoreDeletion, deleteStore, listStoreArchives, removeStoreArchive } from '../controllers/superadmin.controller';
 import { handleSuperAdminChat } from '../controllers/ai.controller';
 import {
     listCatalogModules, saveCatalogModule, removeCatalogModule,
@@ -81,6 +81,23 @@ router.get('/stores/:id/deletion-preview', protect, superAdminOnly, previewStore
  *         description: The typed name did not match
  */
 router.delete('/stores/:id', protect, superAdminOnly, deleteStore);
+
+/**
+ * @openapi
+ * /superadmin/store-archives:
+ *   get:
+ *     tags: [Super Admin]
+ *     summary: Archives held from deleted stores, and how long they are kept
+ *     security:
+ *       - bearerAuth: []
+ *   delete:
+ *     tags: [Super Admin]
+ *     summary: Delete one archive now, ahead of its retention
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/store-archives', protect, superAdminOnly, listStoreArchives);
+router.delete('/store-archives', protect, superAdminOnly, removeStoreArchive);
 
 /**
  * @openapi

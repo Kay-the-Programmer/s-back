@@ -4,7 +4,7 @@ import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { getEnabledModules, setEnabledModules } from '../services/entitlements.service';
 import { SUBSCRIPTION_PLANS, getPlans } from '../services/subscription.service';
-import { planStoreDeletion, executeStoreDeletion } from '../services/store-deletion.service';
+import { planStoreDeletion, executeStoreDeletion, listArchives, deleteArchive, archiveRetentionDays } from '../services/store-deletion.service';
 import { storageService } from '../services/storage.service';
 
 // Monthly price per plan id (all current plans bill monthly), for MRR.
@@ -678,5 +678,45 @@ export const deleteStore = async (req: express.Request, res: express.Response) =
     } catch (e: any) {
         console.error('deleteStore failed:', e?.message);
         return res.status(500).json({ message: 'Could not delete the store. Nothing was removed.' });
+    }
+};
+
+/**
+ * What archives are being held.
+ *
+ * A data-protection necessity rather than a convenience: this directory holds
+ * complete businesses, and nobody can answer "what are you still keeping about
+ * my customers" without being able to see it.
+ */
+export const listStoreArchives = async (_req: express.Request, res: express.Response) => {
+    try {
+        const files = await listArchives();
+        return res.json({
+            retentionDays: archiveRetentionDays(),
+            totalBytes: files.reduce((a, f) => a + f.bytes, 0),
+            archives: files,
+        });
+    } catch (e: any) {
+        console.error('listStoreArchives failed:', e?.message);
+        return res.status(500).json({ message: 'Could not list the archives.' });
+    }
+};
+
+/**
+ * Delete one archive now.
+ *
+ * For the erasure request that arrives after the store was already deleted and
+ * archived — waiting out the retention window is not an answer someone is owed.
+ */
+export const removeStoreArchive = async (req: express.Request, res: express.Response) => {
+    try {
+        const name = String(req.body?.name ?? '');
+        const gone = await deleteArchive(name);
+        if (!gone) return res.status(404).json({ message: 'No such archive.' });
+        await auditService.log(req.user!, 'Store Archive Deleted', name);
+        return res.json({ ok: true });
+    } catch (e: any) {
+        console.error('removeStoreArchive failed:', e?.message);
+        return res.status(500).json({ message: 'Could not delete that archive.' });
     }
 };

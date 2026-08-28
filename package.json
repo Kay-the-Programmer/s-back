@@ -16,6 +16,7 @@
     "test:till": "node tests/till-and-tax.test.mjs",
     "test:override": "node tests/manager-override.test.mjs",
     "test:store-deletion": "node tests/store-deletion.test.mjs",
+    "test:archives": "npm run build && node tests/archive-retention.test.mjs",
     "test:financial": "node tests/financial-invariants.test.mjs",
     "test:contract": "node tests/desktop-contract.test.mjs",
     "test:expenses": "node tests/staff-expenses.test.mjs",

@@ -234,6 +234,25 @@ const startServer = async () => {
       runStaleOrderCleanup().catch(err => console.error('[stale-orders] Error in interval run:', err));
     }, 6 * 60 * 60 * 1000);
 
+    // Delete store archives past their retention. Each one is a whole business
+    // — customers, phone numbers, what everybody bought — so the directory is
+    // swept rather than left to accumulate. Daily is often enough for a
+    // ninety-day window, and the startup run means a long-stopped server
+    // clears its backlog as soon as it is back.
+    const { pruneArchives } = await import('./services/store-deletion.service');
+    const sweepArchives = async () => {
+      try {
+        const { deleted, keptDays } = await pruneArchives();
+        if (deleted.length) {
+          console.log(`[archives] Removed ${deleted.length} archive(s) older than ${keptDays} days.`);
+        }
+      } catch (err) {
+        console.error('[archives] Sweep failed:', err);
+      }
+    };
+    sweepArchives();
+    setInterval(sweepArchives, 24 * 60 * 60 * 1000);
+
     // WhatsApp marketing automation: send due scheduled/recurring campaigns and
     // evaluate triggers (win-back, welcome, post-purchase) every 5 minutes.
     const { runDueCampaigns } = await import('./services/whatsapp-campaign.service');
