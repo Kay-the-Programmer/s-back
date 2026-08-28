@@ -4,6 +4,8 @@ import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { getEnabledModules, setEnabledModules } from '../services/entitlements.service';
 import { SUBSCRIPTION_PLANS, getPlans } from '../services/subscription.service';
+import { planStoreDeletion, executeStoreDeletion } from '../services/store-deletion.service';
+import { storageService } from '../services/storage.service';
 
 // Monthly price per plan id (all current plans bill monthly), for MRR.
 const PLAN_MONTHLY_PRICE: Record<string, number> = Object.fromEntries(
@@ -602,4 +604,65 @@ export const sendStoreNotification = async (req: express.Request, res: express.R
     console.error('Error sending store notification', e);
     return res.status(500).json({ message: 'Error sending notification' });
   }
+};
+
+/**
+ * What deleting a store would destroy.
+ *
+ * Answered before anything is touched, because the consequence is not obvious
+ * even to the person asking for it: somebody clearing out a defunct branch does
+ * not necessarily realise its staff logins go with it, and there is no undo to
+ * discover that through.
+ */
+export const previewStoreDeletion = async (req: express.Request, res: express.Response) => {
+    try {
+        const plan = await planStoreDeletion(req.params.id);
+        if (!plan) return res.status(404).json({ message: 'Store not found.' });
+        return res.json(plan);
+    } catch (e: any) {
+        console.error('previewStoreDeletion failed:', e?.message);
+        return res.status(500).json({ message: 'Could not work out what would be deleted.' });
+    }
+};
+
+/**
+ * Erase a store and everything belonging to it. There is no undo.
+ *
+ * The caller has to type the store's name back. It is the standard rail for an
+ * irreversible act and it is here for the ordinary reason: the id in a URL is
+ * easy to get wrong by one character, and the difference between deleting a
+ * test store and a live one is otherwise invisible at the moment of clicking.
+ */
+export const deleteStore = async (req: express.Request, res: express.Response) => {
+    try {
+        const storeId = req.params.id;
+        const plan = await planStoreDeletion(storeId);
+        if (!plan) return res.status(404).json({ message: 'Store not found.' });
+
+        const typed = String(req.body?.confirmName ?? '').trim();
+        if (typed !== plan.storeName.trim()) {
+            return res.status(400).json({
+                message: `Type the store's name exactly to confirm: "${plan.storeName}".`,
+            });
+        }
+
+        // Written down before the rows disappear. Afterwards there is nothing
+        // left to describe what was destroyed, and the audit log is the only
+        // record that the store ever existed.
+        await auditService.log(
+            req.user!,
+            'Store Deleted',
+            `"${plan.storeName}" (${storeId}) — ${plan.totalRows} rows across ` +
+                `${plan.tables.length} tables, ${plan.usersOrphaned.length} accounts left without a store, ` +
+                `${plan.usersRepointed.length} moved to another store`,
+        );
+
+        const result = await executeStoreDeletion(storeId, storageService.deleteFile);
+        if (!result) return res.status(404).json({ message: 'Store not found.' });
+
+        return res.json(result);
+    } catch (e: any) {
+        console.error('deleteStore failed:', e?.message);
+        return res.status(500).json({ message: 'Could not delete the store. Nothing was removed.' });
+    }
 };

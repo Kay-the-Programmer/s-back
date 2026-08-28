@@ -1,5 +1,5 @@
 import express from 'express';
-import { listStores, updateStore, createNotification, listSystemNotifications, getNotificationStatus, listRevenueSummary, listSubscriptionPayments, recordSubscriptionPayment, getStoreDetails, sendStoreNotification, setStoreModules, getStoreModules } from '../controllers/superadmin.controller';
+import { listStores, updateStore, createNotification, listSystemNotifications, getNotificationStatus, listRevenueSummary, listSubscriptionPayments, recordSubscriptionPayment, getStoreDetails, sendStoreNotification, setStoreModules, getStoreModules, previewStoreDeletion, deleteStore } from '../controllers/superadmin.controller';
 import { handleSuperAdminChat } from '../controllers/ai.controller';
 import {
     listCatalogModules, saveCatalogModule, removeCatalogModule,
@@ -54,6 +54,33 @@ router.get('/stores', protect, superAdminOnly, listStores);
  */
 router.get('/stores/:id', protect, superAdminOnly, getStoreDetails);
 router.patch('/stores/:id', protect, superAdminOnly, updateStore);
+
+/**
+ * @openapi
+ * /superadmin/stores/{id}/deletion-preview:
+ *   get:
+ *     tags: [Super Admin]
+ *     summary: What deleting this store would destroy. Changes nothing.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/stores/:id/deletion-preview', protect, superAdminOnly, previewStoreDeletion);
+
+/**
+ * @openapi
+ * /superadmin/stores/{id}:
+ *   delete:
+ *     tags: [Super Admin]
+ *     summary: Erase a store and all its data. Irreversible; the store's name must be typed back.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: What was destroyed
+ *       400:
+ *         description: The typed name did not match
+ */
+router.delete('/stores/:id', protect, superAdminOnly, deleteStore);
 
 /**
  * @openapi
