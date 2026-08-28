@@ -13,6 +13,9 @@
  *   node tests/store-deletion.test.mjs
  */
 import bcrypt from 'bcryptjs';
+import { gunzipSync } from 'node:zlib';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import pg from 'pg';
 
 const API = (process.env.API_URL || 'http://localhost:5000/api').replace(/\/+$/, '');
@@ -202,6 +205,32 @@ const main = async () => {
     const done = await req('DELETE', `/superadmin/stores/${DOOMED}`,
         { confirmName: `Doomed Store ${RUN}` }, SU);
     check('the store is deleted', done.status === 200, `status=${done.status}`);
+    // The archive is the only way back from a mistake, so it has to exist and
+    // it has to actually contain the shop.
+    check('the store was archived before it was destroyed',
+        !!done.data?.archivePath && done.data?.archiveBytes > 0,
+        `path=${done.data?.archivePath} bytes=${done.data?.archiveBytes}`);
+
+    // The server reports its own path. When it is in a container that is not
+    // a path this process can open, so fall back to the mounted directory.
+    const reported = String(done.data?.archivePath || '');
+    const localPath = existsSync(reported)
+        ? reported
+        : join('archives', reported.split(/[\/]/).pop() || '');
+    if (localPath && existsSync(localPath)) {
+        const dump = JSON.parse(gunzipSync(readFileSync(localPath)).toString());
+        check('the archive holds the store row', (dump.stores || []).length === 1);
+        check('the archive holds the trade, not just the stub tables',
+            (dump.sales || []).length > 0 && (dump.sale_items || []).length > 0,
+            `sales=${(dump.sales || []).length} items=${(dump.sale_items || []).length}`);
+        check('the archive does not reach into the neighbouring store',
+            Object.values(dump).every(v =>
+                !Array.isArray(v) || v.every(row => row.store_id === undefined || row.store_id === DOOMED)),
+            'no foreign store_id present');
+    } else {
+        check('the archive file exists on disk', false, `reported=${reported} local=${localPath}`);
+    }
+
     check('the result says what was destroyed',
         done.data?.totalRows > 0 && Array.isArray(done.data?.tables),
         `rows=${done.data?.totalRows} tables=${(done.data?.tables || []).length}`);

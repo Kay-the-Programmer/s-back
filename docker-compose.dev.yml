@@ -33,6 +33,9 @@ services:
       - "5000:5000"
     volumes:
       - ./uploads:/usr/src/app/uploads
+      # Store archives written before a deletion. Never served over HTTP;
+      # they hold a whole shop, customers included.
+      - ./archives:/usr/src/app/archives
       - ./public/images:/usr/src/app/public/images
     env_file:
       - .env

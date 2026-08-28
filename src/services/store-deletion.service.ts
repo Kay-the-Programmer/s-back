@@ -1,4 +1,10 @@
 import db from '../db_client';
+import path from 'path';
+import { promises as fs } from 'fs';
+import { gzip as gzipCb } from 'zlib';
+import { promisify } from 'util';
+
+const gzip = promisify(gzipCb);
 
 /**
  * Erasing a store and everything belonging to it.
@@ -219,6 +225,9 @@ export interface StoreDeletionResult {
     usersRepointed: number;
     filesDeleted: number;
     filesFailed: number;
+    /** Where the data was written before it was destroyed, if it was. */
+    archivePath: string | null;
+    archiveBytes: number;
 }
 
 /**
@@ -236,9 +245,19 @@ export interface StoreDeletionResult {
 export const executeStoreDeletion = async (
     storeId: string,
     deleteFile: (url: string) => Promise<void>,
+    options: { archive?: boolean } = {},
 ): Promise<StoreDeletionResult | null> => {
     const plan = await planStoreDeletion(storeId);
     if (!plan) return null;
+
+    // Fails closed on purpose. If the archive was asked for and could not be
+    // written, the store is not deleted — an operator who ticked the box is
+    // relying on it, and quietly proceeding without one would take away the
+    // safety net at the exact moment they thought they had it.
+    let archive: StoreArchive | null = null;
+    if (options.archive !== false) {
+        archive = await archiveStore(storeId);
+    }
 
     const tables = await storeScopedTables();
     const order = deletionOrder(tables, await foreignKeyEdges(tables));
@@ -309,5 +328,58 @@ export const executeStoreDeletion = async (
         usersRepointed: plan.usersRepointed.length,
         filesDeleted,
         filesFailed,
+        archivePath: archive?.path ?? null,
+        archiveBytes: archive?.bytes ?? 0,
     };
+};
+
+/**
+ * Where store archives are written.
+ *
+ * Deliberately not under `uploads/`, which is served statically at /uploads —
+ * an archive there would publish a shop's entire customer list at a guessable
+ * URL. This directory is never served.
+ */
+const ARCHIVE_ROOT = path.join(__dirname, '../../archives');
+
+export interface StoreArchive {
+    path: string;
+    bytes: number;
+}
+
+/**
+ * Write everything belonging to a store to a file, before deleting it.
+ *
+ * Not a substitute for the nightly database backup — it is the thing that makes
+ * one particular irreversible click survivable, on the day it is made rather
+ * than at 2am the night before.
+ *
+ * There is a real tension here and the caller is given the choice because of
+ * it: an archive is exactly what you want when the deletion was a mistake, and
+ * exactly what you must not keep when the deletion was somebody exercising a
+ * right to be forgotten.
+ */
+export const archiveStore = async (storeId: string): Promise<StoreArchive> => {
+    const tables = await storeScopedTables();
+    const dump: Record<string, unknown> = {
+        archivedAt: new Date().toISOString(),
+        storeId,
+    };
+
+    const store = await db.query('SELECT * FROM stores WHERE id = $1', [storeId]);
+    dump.stores = store.rows;
+
+    for (const table of tables) {
+        const { rows } = await db.query(`SELECT * FROM "${table}" WHERE store_id = $1`, [storeId]);
+        if (rows.length) dump[table] = rows;
+    }
+
+    await fs.mkdir(ARCHIVE_ROOT, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const safeId = storeId.replace(/[^A-Za-z0-9_-]/g, '_');
+    const file = path.join(ARCHIVE_ROOT, `store-${safeId}-${stamp}.json.gz`);
+
+    const body = await gzip(Buffer.from(JSON.stringify(dump), 'utf8'));
+    await fs.writeFile(file, body);
+    return { path: file, bytes: body.length };
 };

@@ -654,12 +654,26 @@ export const deleteStore = async (req: express.Request, res: express.Response) =
             'Store Deleted',
             `"${plan.storeName}" (${storeId}) — ${plan.totalRows} rows across ` +
                 `${plan.tables.length} tables, ${plan.usersOrphaned.length} accounts left without a store, ` +
-                `${plan.usersRepointed.length} moved to another store`,
+                `${plan.usersRepointed.length} moved to another store` +
+                `${req.body?.archive === false ? ', NOT archived' : ', archived first'}`,
         );
 
-        const result = await executeStoreDeletion(storeId, storageService.deleteFile);
+        // Archived by default. Turning it off is for the one case where an
+        // archive would be wrong rather than careless — somebody exercising a
+        // right to be erased, where keeping a copy defeats the request.
+        const result = await executeStoreDeletion(
+            storeId, storageService.deleteFile, { archive: req.body?.archive !== false },
+        );
         if (!result) return res.status(404).json({ message: 'Store not found.' });
 
+        // The path is the only way back, and nothing else records it.
+        if (result.archivePath) {
+            await auditService.log(
+                req.user!,
+                'Store Archived',
+                `"${plan.storeName}" written to ${result.archivePath} (${result.archiveBytes} bytes)`,
+            );
+        }
         return res.json(result);
     } catch (e: any) {
         console.error('deleteStore failed:', e?.message);

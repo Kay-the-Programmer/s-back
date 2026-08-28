@@ -50,3 +50,5 @@ available_models.txt
 !render.yaml
 !package-lock.json
 !public/.well-known/assetLinks.json
+# Store archives written before a deletion. Whole shops, customers included.
+archives/
