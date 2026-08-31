@@ -32,42 +32,37 @@ export const toDateInputString = (date: Date): string => {
     return `${year}-${month}-${day}`;
 };
 
+/** A plain calendar day, `YYYY-MM-DD`, with no time and no zone. */
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+
 /**
- * Formats a timestamp string or Date object to a more readable format.
- * @param timestamp - The timestamp to format (string or Date).
- * @returns The formatted timestamp string.
+ * Normalise a temporal value for the wire: ISO 8601 UTC.
+ *
+ * This used to render a human string — `"Aug 11, 2026, 11:24:50 AM"` — in the
+ * server's locale, and it was the source of every wrong clock in the product.
+ * That format carries no timezone, so a client reading it treated a UTC instant
+ * as local time and showed a sale rung up seconds ago as two hours old in
+ * Zambia (UTC+2). Dart could not parse it at all, so the desktop till saw no
+ * date whatsoever. It also sorts wrong as text and loses milliseconds.
+ *
+ * An API's job is to state the instant unambiguously; how it reads is the
+ * client's business, and every client already has a formatter that expects ISO.
+ *
+ * Date-only values are passed through untouched: a due date is the same day
+ * everywhere, and giving it a time would invite exactly the shifting this fixes.
  */
-export const formatTimestamp = (timestamp: string | Date): string => {
+export const toIsoInstant = (value: string | Date): string => {
     try {
-        let date: Date;
+        if (typeof value === 'string' && DATE_ONLY.test(value)) return value;
 
-        if (timestamp instanceof Date) {
-            date = timestamp;
-        } else if (typeof timestamp === 'string') {
-            date = new Date(timestamp);
-        } else {
-            console.warn('Invalid timestamp type:', typeof timestamp, timestamp);
-            return String(timestamp);
-        }
-
-        // Check if the date is valid
+        const date = value instanceof Date ? value : new Date(value);
         if (isNaN(date.getTime())) {
-            console.warn('Invalid date:', timestamp);
-            return String(timestamp);
+            // Not a date at all — hand back what came in rather than inventing one.
+            return String(value);
         }
-
-        return date.toLocaleString('en-US', {
-            year: 'numeric',
-            month: 'short',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit',
-            hour12: true
-        });
-    } catch (error) {
-        console.warn('Error formatting timestamp:', timestamp, error);
-        return String(timestamp);
+        return date.toISOString();
+    } catch {
+        return String(value);
     }
 };
 
@@ -103,15 +98,11 @@ export const toCamelCase = (obj: any): any => {
                 key === 'due_date' || key === 'received_at' || key === 'start_time' ||
                 key === 'end_time') && value && (key as any) !== 'lenco_public_key' && (key as any) !== 'lenco_secret_key') {
 
-                // Handle both string and Date object timestamps
-                if (value instanceof Date) {
-                    value = formatTimestamp(value);
-                } else if (typeof value === 'string') {
-                    // Only format if it's not a simple date string (YYYY-MM-DD)
-                    // This prevents shifting date-only fields when they are already correct
-                    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-                        value = formatTimestamp(value);
-                    }
+                // DATE columns arrive as `YYYY-MM-DD` (see the 1082 parser in
+                // db_client) and are left alone; everything else becomes an
+                // unambiguous UTC instant.
+                if (value instanceof Date || typeof value === 'string') {
+                    value = toIsoInstant(value);
                 } else {
                     console.warn(`Unexpected timestamp format for key ${key}:`, typeof value, value);
                 }
