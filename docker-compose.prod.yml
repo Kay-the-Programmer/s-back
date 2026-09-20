@@ -66,12 +66,22 @@ services:
       - "443:443"
     environment:
       - API_DOMAIN=${API_DOMAIN:?set API_DOMAIN in .env}
+      # This Caddy is the only thing on the box publishing 80/443, so it also
+      # fronts the CampusMarket API, which lives in its own Compose project.
+      - CAMPUSMARKET_DOMAIN=${CAMPUSMARKET_DOMAIN:?set CAMPUSMARKET_DOMAIN in .env}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
       - s-back
+    # `default` reaches s-back; `edge` is the shared, hand-created network that
+    # reaches containers in other Compose projects on this box. Listing default
+    # explicitly is required - naming any network at all replaces the implicit
+    # one, and dropping it would cut this proxy off from its own backend.
+    networks:
+      - default
+      - edge
     restart: unless-stopped
     logging: *default-logging
 
@@ -79,3 +89,13 @@ volumes:
   postgres_data:
   caddy_data:
   caddy_config:
+
+networks:
+  # Created by hand on the box, not by Compose:
+  #
+  #   docker network create edge
+  #
+  # External so both projects attach to the same network instead of each
+  # creating its own project-namespaced copy - which is the whole point.
+  edge:
+    external: true

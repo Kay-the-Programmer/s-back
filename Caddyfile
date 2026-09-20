@@ -1,8 +1,48 @@
-# Automatic HTTPS reverse proxy for the SalePilot API.
-# API_DOMAIN comes from .env (e.g. api.salepilot.space). Caddy obtains and
-# renews the Let's Encrypt certificate automatically; websockets (socket.io)
-# are proxied transparently.
+# The single edge for this VM.
+#
+# This container is the only one on the box that publishes ports 80 and 443,
+# so every site served from here belongs in this file. Caddy obtains and
+# renews each Let's Encrypt certificate automatically, given a domain that
+# resolves to this machine.
+
+# --- SalePilot API -------------------------------------------------------
+# API_DOMAIN comes from .env (e.g. api.salepilot.space). Websockets
+# (socket.io) are proxied transparently.
 {$API_DOMAIN} {
 	encode gzip
 	reverse_proxy s-back:5000
+}
+
+# --- CampusMarket API ----------------------------------------------------
+# CAMPUSMARKET_DOMAIN comes from .env (e.g. campusmarket.salepilot.space).
+#
+# The container lives in the campusmarket Compose project, so it is reachable
+# only because both it and this Caddy join the hand-created `edge` network:
+#
+#   docker network create edge
+#
+# Without that, this block resolves nothing and every request 502s - which is
+# exactly how it behaved before the network existed.
+#
+# No CORS headers are set here on purpose. The CampusMarket frontend is served
+# by Vercel and therefore cross-origin, but Spring already answers preflights
+# from an explicit allowlist (CAMPUSMARKET_CORS_ORIGINS). Adding a second set
+# of headers at this layer would either duplicate them or, worse, reflect the
+# caller's own Origin back - which grants every website on the internet access
+# to the API. One owner for CORS, and it is the application.
+{$CAMPUSMARKET_DOMAIN} {
+	encode gzip zstd
+
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	reverse_proxy campusmarket-api:8080 {
+		# The app rate-limits per IP, so it needs the caller's address rather
+		# than this proxy's.
+		header_up X-Real-IP {remote_host}
+	}
 }
