@@ -12,7 +12,8 @@ import {
     verifyEmail,
     verifyRegistration,
     resendVerificationEmail,
-    resetPassword
+    resetPassword,
+    signOutEverywhere
 } from '../controllers/auth.controller';
 import { protect } from '../middleware/auth.middleware';
 
@@ -97,6 +98,7 @@ router.post('/resend-verification', resendVerificationEmail);
  *               $ref: '#/components/schemas/User'
  */
 router.get('/me', protect, getCurrentUser);
+router.post('/sign-out-everywhere', protect, signOutEverywhere);
 router.post('/change-password', protect, changePassword);
 
 export default router;

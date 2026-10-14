@@ -4,6 +4,7 @@ import { User } from '../types';
 import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { invalidateUserCache } from '../middleware/auth.middleware';
+import { revokeUserSessions } from '../services/session.service';
 import { MODULES, FREE_SEATS, isModuleEnabled } from '../services/entitlements.service';
 import bcrypt from 'bcryptjs';
 
@@ -176,6 +177,14 @@ export const updateUser = async (req: express.Request, res: express.Response) =>
             }
         }
 
+        // Read the role before the write so we can tell a real change from a
+        // no-op save; only the former should end the target's sessions.
+        let previousRole: string | null = null;
+        if (role !== undefined && role !== null) {
+            const before = await db.query('SELECT role FROM users WHERE id = $1', [id]);
+            previousRole = before.rows[0]?.role ?? null;
+        }
+
         if (email) {
             const emailCheck = await db.query('SELECT id FROM users WHERE email = $1 AND id != $2', [String(email).toLowerCase(), id]);
             if ((emailCheck.rowCount ?? 0) > 0) {
@@ -202,6 +211,21 @@ export const updateUser = async (req: express.Request, res: express.Response) =>
         }
 
         const updatedUser = result.rows[0];
+
+        // A role change has to reach the target's live session. Two things were
+        // keeping it from doing so: `protect` caches the user row (role and
+        // all) for AUTH_USER_CACHE_TTL_MS, and their existing token is good for
+        // 30 days regardless. So a demoted user kept the permissions they had
+        // just lost — briefly from the cache, then indefinitely from the token.
+        // Revoking does both: it strands the old tokens and evicts the row.
+        // Only an actual change revokes: re-saving the form with the same role
+        // should not sign a working cashier out of their till.
+        if (previousRole !== null && updatedUser.role !== previousRole) {
+            await revokeUserSessions(id);
+        } else {
+            invalidateUserCache(id);
+        }
+
         auditService.log(requester, 'User Updated', `User: "${updatedUser.name}" (${updatedUser.email})`);
         res.status(200).json(toCamelCase(updatedUser));
     } catch (error) {
@@ -254,6 +278,11 @@ export const deleteUser = async (req: express.Request, res: express.Response) =>
         }
 
         await db.query('DELETE FROM users WHERE id = $1', [id]);
+        // Without this the row lives on in the auth cache, and `protect` keeps
+        // admitting the deleted account — with its old role — for the rest of
+        // the TTL. There is no token_version left to bump, so eviction is the
+        // whole fix: the next lookup finds no user and returns 401.
+        invalidateUserCache(id);
         auditService.log(requester, 'User Deleted', `User: "${userToDelete.name}" (${userToDelete.email})`);
         res.status(200).json({ message: 'User deleted' });
 

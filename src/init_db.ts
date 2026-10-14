@@ -20,7 +20,8 @@ async function initializeDatabase() {
                 password_hash TEXT NOT NULL,
                 role TEXT NOT NULL CHECK (role IN ('superadmin','admin','staff','inventory_manager','customer','supplier')),
                 phone TEXT,
-                profile_picture TEXT
+                profile_picture TEXT,
+                token_version INTEGER NOT NULL DEFAULT 0
             );
         `);
         // Ensure role check allows superadmin on existing DBs
@@ -79,6 +80,21 @@ async function initializeDatabase() {
                 END IF;
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='reset_password_expires') THEN
                     ALTER TABLE users ADD COLUMN reset_password_expires TIMESTAMPTZ;
+                END IF;
+
+                -- Session revocation counter. Every issued JWT carries the value
+                -- this column held when it was signed; the protect middleware rejects a token
+                -- whose copy is behind. Bumping it therefore invalidates every
+                -- token already out in the world for that user, which is what
+                -- makes a password change, a demotion and "sign out everywhere"
+                -- actually take effect before the 30-day expiry.
+                --
+                -- DEFAULT 0 is deliberate: tokens signed before this column
+                -- existed carry no version at all, and a missing claim is read
+                -- as 0, so they keep working rather than logging out every user
+                -- in production the moment this deploys.
+                IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='token_version') THEN
+                    ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0;
                 END IF;
 
                 -- Add referral columns

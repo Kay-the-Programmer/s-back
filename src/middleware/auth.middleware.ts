@@ -40,7 +40,7 @@ export const protect = async (req: express.Request, res: express.Response, next:
         try {
             token = authHeader.split(' ')[1];
             if (AUTH_DEBUG) console.log(`[auth] Token found: ${token.substring(0, 10)}...`);
-            const decoded = jwt.verify(token, JWT_SECRET) as { id: string };
+            const decoded = jwt.verify(token, JWT_SECRET) as { id: string; tv?: number };
 
             // Try cache first unless this is an explicit freshness-critical endpoint (e.g., /api/auth/me)
             let dbUser: any | undefined;
@@ -53,6 +53,7 @@ export const protect = async (req: express.Request, res: express.Response, next:
             } else {
                 const result = await db.query(`
                     SELECT u.id, u.name, u.email, u.role, u.phone, u.current_store_id, u.is_verified,
+                           u.token_version,
                            s.status AS store_status,
                            s.subscription_status, s.subscription_ends_at, s.subscription_plan
                     FROM users u
@@ -71,6 +72,28 @@ export const protect = async (req: express.Request, res: express.Response, next:
             }
             if (!dbUser) {
                 return res.status(401).json({ message: 'Not authorized, user not found' });
+            }
+
+            // ── Session revocation ──────────────────────────────────────────────
+            // A token is only as current as the token_version it was signed with.
+            // If the column has moved on, this token belongs to a session that
+            // was deliberately ended — a password change, a role change, or an
+            // explicit sign-out-everywhere — and it stops working here, decades
+            // before its 30-day expiry would have retired it.
+            //
+            // A token signed before this check existed carries no `tv` claim at
+            // all; it reads as 0 and matches the column default, so deploying
+            // this does not sign everyone out. Only an actual bump does.
+            const tokenVersion = typeof decoded.tv === 'number' ? decoded.tv : 0;
+            const currentVersion = typeof dbUser.token_version === 'number' ? dbUser.token_version : 0;
+            if (tokenVersion !== currentVersion) {
+                // Evict the cached row too: this request proved the token is
+                // stale, and holding the row would keep answering with it.
+                userCache.delete(decoded.id);
+                return res.status(401).json({
+                    message: 'Session ended, please sign in again',
+                    code: 'SESSION_REVOKED',
+                });
             }
             if (dbUser.current_store_id) {
                 // Attach tenant context for convenience
@@ -184,16 +207,28 @@ export const optionalProtect = async (req: express.Request, res: express.Respons
             if (!token || token === 'null' || token === 'undefined') {
                 return next();
             }
-            const decoded = jwt.verify(token, JWT_SECRET) as { id: string };
+            const decoded = jwt.verify(token, JWT_SECRET) as { id: string; tv?: number };
 
             const result = await db.query(`
                 SELECT u.id, u.name, u.email, u.role, u.phone, u.current_store_id, u.is_verified,
+                       u.token_version,
                        s.subscription_status, s.subscription_ends_at, s.subscription_plan
                 FROM users u
                 LEFT JOIN stores s ON u.current_store_id = s.id
                 WHERE u.id = $1
             `, [decoded.id]);
             const dbUser = result.rows[0];
+
+            // Same revocation rule as `protect`, so a signed-out token cannot
+            // still be used to identify its owner on the public storefront
+            // routes (where identity drives things like trade pricing). The
+            // contract here is "optional", so a revoked token simply means no
+            // user rather than an error: the request continues anonymously.
+            const tv = typeof decoded.tv === 'number' ? decoded.tv : 0;
+            const current = typeof dbUser?.token_version === 'number' ? dbUser.token_version : 0;
+            if (dbUser && tv !== current) {
+                return next();
+            }
 
             if (dbUser) {
                 req.user = {

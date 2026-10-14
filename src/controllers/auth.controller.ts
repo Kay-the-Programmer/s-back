@@ -5,6 +5,7 @@ import { User } from '../types';
 import { generateId, toCamelCase } from '../utils/helpers';
 import express from 'express';
 import { invalidateUserCache } from '../middleware/auth.middleware';
+import { revokeUserSessions } from '../services/session.service';
 import { signInWithEmailAndPassword, signInWithPhoneNumber } from "firebase/auth";
 import { authentication } from "../firebase";
 
@@ -12,8 +13,17 @@ import { authentication } from "../firebase";
 // In production, set JWT_SECRET in your hosting provider (Render) dashboard.
 const JWT_SECRET = process.env.JWT_SECRET || 'CHANGE_ME_DEV_ONLY';
 
-const generateToken = (id: string) => {
-    return jwt.sign({ id }, JWT_SECRET, {
+/**
+ * `tv` is the user's token_version at signing time. `protect` compares it with
+ * the column and rejects the token if the column has moved on, which is how a
+ * password change, a demotion or a sign-out-everywhere reaches tokens that are
+ * already out there (see services/session.service.ts).
+ *
+ * Callers must pass the CURRENT value. Signing a token right after revoking
+ * sessions needs the post-bump number, or the new token is dead on arrival.
+ */
+const generateToken = (id: string, tokenVersion: number = 0) => {
+    return jwt.sign({ id, tv: tokenVersion }, JWT_SECRET, {
         expiresIn: '30d',
     });
 };
@@ -93,7 +103,7 @@ export const loginUser = async (req: express.Request, res: express.Response) => 
                 subscription_status: user.subscription_status,
                 subscription_ends_at: user.subscription_ends_at,
                 subscription_plan: user.subscription_plan,
-                token: generateToken(user.id),
+                token: generateToken(user.id, user.token_version),
             });
             return res.json(userResponse);
         }
@@ -451,11 +461,24 @@ export const resetPassword = async (req: express.Request, res: express.Response)
         const salt = await bcrypt.genSalt(10);
         const password_hash = await bcrypt.hash(newPassword, salt);
 
+        // A reset is the recovery path for an account the owner may have lost
+        // control of, so every session already out there has to die with the
+        // old password — otherwise whoever prompted the reset keeps their
+        // 30-day token. Bumped in the same statement so a password can never
+        // land without its revocation.
         await db.query(
-            'UPDATE users SET password_hash = $1, reset_password_token = NULL, reset_password_expires = NULL WHERE id = $2',
+            `UPDATE users
+                SET password_hash = $1,
+                    reset_password_token = NULL,
+                    reset_password_expires = NULL,
+                    token_version = token_version + 1
+              WHERE id = $2`,
             [password_hash, user.id]
         );
+        invalidateUserCache(user.id);
 
+        // No token is issued here: this flow is unauthenticated (it runs from
+        // an emailed link), so the user signs in again with the new password.
         res.json({ message: 'Password has been reset successfully' });
     } catch (error) {
         console.error('Reset password error:', error);
@@ -482,9 +505,28 @@ export const changePassword = async (req: express.Request, res: express.Response
         const salt = await bcrypt.genSalt(10);
         const new_password_hash = await bcrypt.hash(newPassword, salt);
 
-        await db.query('UPDATE users SET password_hash = $1 WHERE id = $2', [new_password_hash, userId]);
+        // Changing a password signs out everywhere else — the point of the
+        // change is usually that somebody else may have had it. The caller is
+        // the exception: they are standing right here and proved the old
+        // password, so they get a token carrying the new version and stay
+        // signed in on this device while every other session is stranded.
+        const result2 = await db.query(
+            `UPDATE users
+                SET password_hash = $1,
+                    token_version = token_version + 1
+              WHERE id = $2
+              RETURNING token_version`,
+            [new_password_hash, userId]
+        );
+        invalidateUserCache(userId);
 
-        res.status(200).json({ message: 'Password changed successfully.' });
+        res.status(200).json({
+            message: 'Password changed successfully.',
+            // Clients that persist this keep their session; a client that
+            // ignores it simply lands on a 401 and signs in again.
+            token: generateToken(userId, result2.rows[0]?.token_version ?? 0),
+            otherSessionsEnded: true,
+        });
     } catch (error) {
         console.error('Change password error:', error);
         res.status(500).json({ message: 'Server error changing password' });
@@ -586,8 +628,10 @@ export const googleLogin = async (req: express.Request, res: express.Response) =
             }
         }
 
-        // Generate App Token using EXISTING logic
-        const token = generateToken(user.id);
+        // Generate App Token using EXISTING logic. A just-inserted row has no
+        // token_version in its RETURNING list, which falls through to the
+        // parameter default of 0 — the same value the column defaults to.
+        const token = generateToken(user.id, user.token_version);
 
         const userResponse = toCamelCase({
             id: user.id,
@@ -606,5 +650,31 @@ export const googleLogin = async (req: express.Request, res: express.Response) =
     } catch (error) {
         console.error('Google login error:', error);
         return res.status(500).json({ message: 'Server error during Google login' });
+    }
+};
+
+/**
+ * POST /auth/sign-out-everywhere
+ *
+ * Ends every session for the calling account, including this one. This is the
+ * control a user needs after losing a phone or a till: before token_version
+ * existed there was no way to take a 30-day token back, and "logging out" only
+ * dropped the copy held by the browser doing it.
+ *
+ * The caller is signed out too, deliberately — an attacker who has a token
+ * could otherwise use this to strand the real owner while keeping their own
+ * access. Everyone signs in again.
+ */
+export const signOutEverywhere = async (req: express.Request, res: express.Response) => {
+    try {
+        const userId = req.user!.id;
+        await revokeUserSessions(userId);
+        return res.status(200).json({
+            message: 'Signed out on all devices. Please sign in again.',
+            signedOutEverywhere: true,
+        });
+    } catch (error) {
+        console.error('Sign-out-everywhere error:', error);
+        return res.status(500).json({ message: 'Could not sign out other sessions' });
     }
 };
