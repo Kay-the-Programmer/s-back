@@ -27,8 +27,16 @@ const saveToLocalDisk = async (file: Express.Multer.File, folder: string): Promi
     const dir = path.join(UPLOAD_ROOT, safeFolder);
     await fs.promises.mkdir(dir, { recursive: true });
 
+    // The stored extension decides the Content-Type express.static serves this
+    // file with, so it must come from an allowlist and not from the uploader.
+    // The old rule accepted any 2-5 character extension, which meant a file
+    // named evil.html (or .svg) and merely *claimed* to be image/* by the
+    // client's own Content-Type header was saved as .html and then served as a
+    // document from the API origin — stored XSS. SVG is excluded for the same
+    // reason: it is an executable document, not a flat image.
+    const ALLOWED_EXT = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif']);
     const rawExt = path.extname(file.originalname || '').toLowerCase();
-    const ext = /^\.[a-z0-9]{2,5}$/.test(rawExt) ? rawExt : '.jpg';
+    const ext = ALLOWED_EXT.has(rawExt) ? rawExt : '.jpg';
     const name = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${ext}`;
 
     await fs.promises.writeFile(path.join(dir, name), file.buffer);

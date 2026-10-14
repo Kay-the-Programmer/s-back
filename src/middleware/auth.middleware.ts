@@ -156,10 +156,14 @@ export const protect = async (req: express.Request, res: express.Response, next:
             next();
         } catch (error: any) {
             console.error('[auth] JWT verification failed:', error.message);
-            return res.status(401).json({ 
-                message: 'Not authorized, token failed', 
-                details: error.message,
-                code: 'TOKEN_INVALID'
+            // The reason stays in the server log. The only distinction the
+            // client needs is "expired" (refresh and retry) versus anything
+            // else; echoing error.message back described our token internals
+            // to an unauthenticated caller.
+            const expired = error?.name === 'TokenExpiredError';
+            return res.status(401).json({
+                message: expired ? 'Session expired, please sign in again' : 'Not authorized, token failed',
+                code: expired ? 'TOKEN_EXPIRED' : 'TOKEN_INVALID'
             });
         }
     }

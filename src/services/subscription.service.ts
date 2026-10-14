@@ -205,10 +205,44 @@ export const initiatePayment = async (storeId: string, planId: string, method: s
     };
 };
 
-export const verifyPayment = async (reference: string) => {
+/**
+ * A payment reference is attacker-controlled path input on its way to Lenco.
+ * Two separate problems come with it, so both are closed here:
+ *
+ *  - Shape. Unencoded, a reference containing `../` walks off
+ *    /collections/status/ onto any other endpoint of the Lenco API, carrying
+ *    our live secret key. Only our own reference alphabet is accepted, and the
+ *    value is still URL-encoded before it is interpolated.
+ *  - Ownership. The reference alone used to be enough: the row was looked up
+ *    globally, so any store owner could settle or cancel another store's
+ *    payment. Callers must now say which store they are acting for.
+ */
+const REFERENCE_RE = /^[A-Za-z0-9_-]{1,80}$/;
+
+const assertOwnedReference = async (reference: string, storeId: string) => {
+    if (!REFERENCE_RE.test(reference)) {
+        const err: any = new Error('Invalid payment reference');
+        err.status = 400;
+        throw err;
+    }
+    const owned = await db.query(
+        'SELECT 1 FROM subscription_payments WHERE reference = $1 AND store_id = $2',
+        [reference, storeId]
+    );
+    if (owned.rowCount === 0) {
+        // Deliberately indistinguishable from a reference that does not exist:
+        // a different message here would confirm other stores' references.
+        const err: any = new Error('Payment not found');
+        err.status = 404;
+        throw err;
+    }
+};
+
+export const verifyPayment = async (reference: string, storeId: string) => {
+    await assertOwnedReference(reference, storeId);
     try {
         const { secretKey, baseUrl } = getLencoConfig();
-        const response = await axios.get(`${baseUrl}/collections/status/${reference}`, {
+        const response = await axios.get(`${baseUrl}/collections/status/${encodeURIComponent(reference)}`, {
             headers: {
                 'Authorization': `Bearer ${secretKey}`
             }
@@ -326,10 +360,13 @@ const processSuccessfulPayment = async (reference: string, lencoDetails: any) =>
     return payment.id;
 }
 
-export const cancelPayment = async (reference: string) => {
+export const cancelPayment = async (reference: string, storeId: string) => {
+    await assertOwnedReference(reference, storeId);
+    // store_id is repeated in the UPDATE itself, so the write is scoped even if
+    // a future caller reaches this without the check above.
     const result = await db.query(
-        'UPDATE subscription_payments SET status = $1 WHERE reference = $2 AND status = $3 RETURNING *',
-        ['cancelled', reference, 'pending']
+        'UPDATE subscription_payments SET status = $1 WHERE reference = $2 AND store_id = $4 AND status = $3 RETURNING *',
+        ['cancelled', reference, 'pending', storeId]
     );
     if (result.rowCount === 0) {
         throw new Error('Payment not found or already processed');

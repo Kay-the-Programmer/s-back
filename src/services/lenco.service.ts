@@ -140,7 +140,7 @@ export class LencoService {
     this.logEnvOnce(key);
     try {
       const baseUrl = this.getBaseUrl(key);
-      const url = `${baseUrl}/collections/status/${reference}`;
+      const url = `${baseUrl}/collections/status/${encodeURIComponent(reference)}`;
       console.log(`Lenco verifying URL: ${url}`);
       const response = await axios.get(url, {
         headers: {
@@ -176,7 +176,7 @@ export class LencoService {
       console.log(`[LencoService] Cancellation requested for reference: ${reference}`);
 
       const baseUrl = this.getBaseUrl(key);
-      const url = `${baseUrl}/collections/status/${reference}/cancel`;
+      const url = `${baseUrl}/collections/status/${encodeURIComponent(reference)}/cancel`;
       await axios.post(url, {}, {
         headers: {
           Authorization: `Bearer ${key}`,

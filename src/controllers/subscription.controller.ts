@@ -23,11 +23,24 @@ export const getPageModules = async (_req: Request, res: Response) => {
     }
 };
 
+/**
+ * The store being billed is ALWAYS the caller's own active store, taken from
+ * the server-side session. It is never read from the request: `billing:manage`
+ * is held by every store owner, so a body-supplied storeId let any owner start
+ * a payment against — and read the plan state of — somebody else's store.
+ */
+const billingStoreId = (req: Request): string | undefined =>
+    (req as any).tenant?.storeId || req.user?.currentStoreId;
+
 export const createPayment = async (req: Request, res: Response) => {
     try {
-        const { storeId, planId, method, phoneNumber, billingCycle } = req.body;
+        const { planId, method, phoneNumber, billingCycle } = req.body;
+        const storeId = billingStoreId(req);
 
-        if (!storeId || !planId) {
+        if (!storeId) {
+            return res.status(400).json({ error: 'No store selected' });
+        }
+        if (!planId) {
             return res.status(400).json({ error: 'Missing required fields' });
         }
 
@@ -42,12 +55,16 @@ export const createPayment = async (req: Request, res: Response) => {
 export const verifyPayment = async (req: Request, res: Response) => {
     try {
         const { reference } = req.params;
+        const storeId = billingStoreId(req);
 
         if (!reference) {
             return res.status(400).json({ error: 'Reference is required' });
         }
+        if (!storeId) {
+            return res.status(400).json({ error: 'No store selected' });
+        }
 
-        const result = await subscriptionService.verifyPayment(reference);
+        const result = await subscriptionService.verifyPayment(reference, storeId);
         res.json(result);
     } catch (error) {
         console.error('Error verifying payment:', error);
@@ -58,12 +75,16 @@ export const verifyPayment = async (req: Request, res: Response) => {
 export const cancelPayment = async (req: Request, res: Response) => {
     try {
         const { reference } = req.params;
+        const storeId = billingStoreId(req);
 
         if (!reference) {
             return res.status(400).json({ error: 'Reference is required' });
         }
+        if (!storeId) {
+            return res.status(400).json({ error: 'No store selected' });
+        }
 
-        const result = await subscriptionService.cancelPayment(reference);
+        const result = await subscriptionService.cancelPayment(reference, storeId);
         res.json({ success: true, data: result });
     } catch (error: any) {
         console.error('Error cancelling payment:', error);
@@ -147,9 +168,17 @@ export const setAddonAutoRenew = async (req: Request, res: Response) => {
 
 export const getHistory = async (req: Request, res: Response) => {
     try {
-        const { storeId } = req.params;
+        // The :storeId in the path is honoured only for the platform operator.
+        // For everyone else the caller's own store wins, so passing another
+        // store's id can no longer read its payment history.
+        const own = billingStoreId(req);
+        const requested = req.params.storeId;
+        const storeId = req.user?.role === 'superadmin' ? (requested || own) : own;
         if (!storeId) {
             return res.status(400).json({ error: 'Store ID is required' });
+        }
+        if (req.user?.role !== 'superadmin' && requested && requested !== storeId) {
+            return res.status(403).json({ error: 'Forbidden: not your store' });
         }
 
         const history = await subscriptionService.getSubscriptionHistory(storeId);

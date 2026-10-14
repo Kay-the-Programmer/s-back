@@ -1,5 +1,5 @@
 import express from 'express';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import {
     authorizeOverride,
     getOverrideThresholds,
@@ -26,7 +26,7 @@ const guessAttempts = rateLimit({
     limit: 10,
     standardHeaders: 'draft-7',
     legacyHeaders: false,
-    keyGenerator: (req: any) => String(req.tenant?.storeId ?? req.user?.id ?? req.ip),
+    keyGenerator: (req: any) => String(req.tenant?.storeId ?? req.user?.id ?? ipKeyGenerator(req.ip)),
     message: { message: 'Too many PIN attempts. Wait a minute and try again.' },
 });
 
@@ -42,7 +42,7 @@ const pinChanges = rateLimit({
     limit: 8,
     standardHeaders: 'draft-7',
     legacyHeaders: false,
-    keyGenerator: (req: any) => String(req.user?.id ?? req.ip),
+    keyGenerator: (req: any) => String(req.user?.id ?? ipKeyGenerator(req.ip)),
     message: { message: 'Too many attempts. Wait a minute and try again.' },
 });
 

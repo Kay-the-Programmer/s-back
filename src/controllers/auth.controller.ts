@@ -28,9 +28,17 @@ const generateRandomToken = () => {
     return crypto.randomBytes(32).toString('hex');
 };
 
-// Helper to generate a 6-digit numeric OTP
+/**
+ * Six-digit numeric OTP, drawn from the CSPRNG.
+ *
+ * Math.random() is a non-cryptographic PRNG: V8 seeds one xorshift128+ stream
+ * per context, so observing a few outputs is enough to recover its state and
+ * predict the rest. Since this OTP is what proves control of an email address,
+ * a predictable one let an attacker verify an account whose inbox they do not
+ * own. randomInt is rejection-sampled, so the digits stay uniform.
+ */
 const generateOTP = () => {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+    return crypto.randomInt(100000, 1000000).toString();
 };
 
 export const loginUser = async (req: express.Request, res: express.Response) => {
@@ -540,8 +548,11 @@ export const googleLogin = async (req: express.Request, res: express.Response) =
         if (!user) {
             // Create new user (Role: customer by default)
             const id = generateId('user');
-            // Generate a random high-entropy password since they login with Google
-            const randomPassword = Math.random().toString(36).slice(-8) + Math.random().toString(36).slice(-8);
+            // Placeholder password for a Google-only account: nobody ever uses
+            // it, but it must be unguessable, because anyone who can predict it
+            // can sign in with password auth as this user. Math.random() gave
+            // ~41 bits from a recoverable PRNG stream; this gives 256 bits.
+            const randomPassword = crypto.randomBytes(32).toString('hex');
             const salt = await bcrypt.genSalt(10);
             const password_hash = await bcrypt.hash(randomPassword, salt);
 
