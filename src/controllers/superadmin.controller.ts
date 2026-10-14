@@ -720,3 +720,63 @@ export const removeStoreArchive = async (req: express.Request, res: express.Resp
         return res.status(500).json({ message: 'Could not delete that archive.' });
     }
 };
+
+// ── Refund queue ────────────────────────────────────────────────────────────
+// The operator half of the money-back window. Approving is the act that ends a
+// store's access, so it is deliberately reachable only from here, only by a
+// superadmin, and always recorded against the operator who decided.
+
+/** GET /superadmin/refunds?status=pending */
+export const listRefunds = async (req: express.Request, res: express.Response) => {
+    try {
+        const status = req.query.status ? String(req.query.status) : undefined;
+        return res.json(await refundService.listRefundRequests(status));
+    } catch (error) {
+        console.error('List refunds error:', error);
+        return res.status(500).json({ message: 'Could not list refund requests' });
+    }
+};
+
+/**
+ * POST /superadmin/refunds/:id/approve
+ *
+ * Ends the subscription and withdraws access. `refundReference` is the
+ * provider/bank reference for the payout the operator has actually sent — the
+ * system never moves the money itself, so recording it here is what keeps the
+ * books honest about whether the customer was really paid back.
+ */
+export const approveRefund = async (req: express.Request, res: express.Response) => {
+    try {
+        const result = await refundService.approveRefund(String(req.params.id), req.user!.id, {
+            note: req.body?.note,
+            refundReference: req.body?.refundReference,
+        });
+        await auditService.log({
+            action: 'REFUND_APPROVED',
+            entityType: 'refund_request',
+            entityId: String(req.params.id),
+            userId: req.user!.id,
+            details: { storeId: result.store_id, amount: result.amount, refundReference: req.body?.refundReference },
+        } as any);
+        return res.json({ message: 'Refund approved. Store access has been revoked.', request: result });
+    } catch (error: any) {
+        return res.status(error?.status || 500).json({ message: error?.message || 'Could not approve refund' });
+    }
+};
+
+/** POST /superadmin/refunds/:id/deny — the store keeps what it paid for. */
+export const denyRefund = async (req: express.Request, res: express.Response) => {
+    try {
+        const result = await refundService.denyRefund(String(req.params.id), req.user!.id, req.body?.note);
+        await auditService.log({
+            action: 'REFUND_DENIED',
+            entityType: 'refund_request',
+            entityId: String(req.params.id),
+            userId: req.user!.id,
+            details: { storeId: result.store_id, note: req.body?.note },
+        } as any);
+        return res.json({ message: 'Refund request denied.', request: result });
+    } catch (error: any) {
+        return res.status(error?.status || 500).json({ message: error?.message || 'Could not deny refund' });
+    }
+};

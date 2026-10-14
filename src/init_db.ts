@@ -2120,6 +2120,30 @@ async function initializeDatabase() {
         await client.query(`CREATE INDEX IF NOT EXISTS idx_feedback_store_id ON feedback(store_id);`);
         console.log('✅ Feedback table verified/created');
 
+        // Desktop app installers uploaded by the Super Admin and downloaded by
+        // users. Platform-wide, so deliberately NOT store-scoped (no store_id).
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS desktop_releases (
+                id TEXT PRIMARY KEY,
+                version TEXT NOT NULL,
+                platform TEXT NOT NULL DEFAULT 'windows' CHECK (platform IN ('windows','mac','linux')),
+                channel TEXT NOT NULL DEFAULT 'stable' CHECK (channel IN ('stable','beta')),
+                notes TEXT,
+                file_name TEXT NOT NULL,
+                storage_path TEXT NOT NULL,
+                file_size BIGINT NOT NULL,
+                checksum_sha256 TEXT,
+                is_published BOOLEAN NOT NULL DEFAULT FALSE,
+                download_count INT NOT NULL DEFAULT 0,
+                created_by TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_desktop_releases_platform_version ON desktop_releases(platform, version);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_desktop_releases_published ON desktop_releases(platform, channel, is_published, created_at DESC);`);
+        console.log('✅ Desktop releases table verified/created');
+
         console.log('✅ Database schema verified/updated successfully');
     } catch (error) {
         console.error('❌ Error initializing database:', error);

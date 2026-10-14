@@ -159,3 +159,41 @@ export const getHistory = async (req: Request, res: Response) => {
         res.status(500).json({ error: 'Failed to fetch subscription history' });
     }
 };
+
+// ── Refunds ─────────────────────────────────────────────────────────────────
+// The store-facing half of the money-back window. Eligibility is never taken
+// from the request body: it is recomputed from the store's own payment record
+// on every call, so a client cannot talk its way into a payout.
+
+/** GET /subscription/refund — may this store claim its money back, and has it already asked? */
+export const getRefundEligibility = async (req: Request, res: Response) => {
+    try {
+        const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
+        if (!storeId) return res.status(400).json({ message: 'No store selected' });
+        return res.json(await refundService.checkEligibility(storeId));
+    } catch (error: any) {
+        console.error('Refund eligibility error:', error);
+        return res.status(500).json({ message: 'Could not check refund eligibility' });
+    }
+};
+
+/** POST /subscription/refund — open a refund case for an operator to decide. */
+export const requestRefund = async (req: Request, res: Response) => {
+    try {
+        const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
+        if (!storeId) return res.status(400).json({ message: 'No store selected' });
+        const request = await refundService.requestRefund(storeId, req.user!.id, req.body?.reason);
+        return res.status(201).json({
+            message: 'Refund request received. Our team will review it and be in touch.',
+            request,
+            support: getSupportContact(),
+        });
+    } catch (error: any) {
+        const status = error?.status || 500;
+        return res.status(status).json({
+            message: status === 500 ? 'Could not submit refund request' : error.message,
+            code: error?.code,
+            support: getSupportContact(),
+        });
+    }
+};

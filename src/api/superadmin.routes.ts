@@ -1,5 +1,5 @@
 import express from 'express';
-import { listStores, updateStore, createNotification, listSystemNotifications, getNotificationStatus, listRevenueSummary, listSubscriptionPayments, recordSubscriptionPayment, getStoreDetails, sendStoreNotification, setStoreModules, getStoreModules, previewStoreDeletion, deleteStore, listStoreArchives, removeStoreArchive } from '../controllers/superadmin.controller';
+import { listStores, updateStore, createNotification, listSystemNotifications, getNotificationStatus, listRevenueSummary, listSubscriptionPayments, recordSubscriptionPayment, getStoreDetails, sendStoreNotification, setStoreModules, getStoreModules, previewStoreDeletion, deleteStore, listStoreArchives, removeStoreArchive, listRefunds, approveRefund, denyRefund } from '../controllers/superadmin.controller';
 import { handleSuperAdminChat } from '../controllers/ai.controller';
 import {
     listCatalogModules, saveCatalogModule, removeCatalogModule,
@@ -14,6 +14,10 @@ import {
     deleteEmailTemplateHandler, resetEmailTemplateHandler,
     previewEmailTemplateHandler, testEmailTemplateHandler,
 } from '../controllers/email-templates.controller';
+import {
+    listReleasesAdmin, uploadRelease, updateRelease, deleteRelease,
+} from '../controllers/releases.controller';
+import releaseUpload from '../middleware/release-upload.middleware';
 import { protect, superAdminOnly } from '../middleware/auth.middleware';
 
 const router = express.Router();
@@ -195,6 +199,19 @@ router.post('/revenue/payments', protect, superAdminOnly, recordSubscriptionPaym
 
 /**
  * @openapi
+ * /superadmin/refunds:
+ *   get:
+ *     tags: [SuperAdmin]
+ *     summary: The money-back request queue
+ */
+router.get('/refunds', protect, superAdminOnly, listRefunds);
+// Approving is what actually revokes a store's access, so it is superadmin-only
+// and audited against the operator who decided.
+router.post('/refunds/:id/approve', protect, superAdminOnly, approveRefund);
+router.post('/refunds/:id/deny', protect, superAdminOnly, denyRefund);
+
+/**
+ * @openapi
  * /superadmin/ai/chat:
  *   post:
  *     tags: [Super Admin]
@@ -256,5 +273,44 @@ router.delete('/email-templates/:key', protect, superAdminOnly, deleteEmailTempl
 router.post('/email-templates/:key/reset', protect, superAdminOnly, resetEmailTemplateHandler);
 router.post('/email-templates/:key/preview', protect, superAdminOnly, previewEmailTemplateHandler);
 router.post('/email-templates/:key/test', protect, superAdminOnly, testEmailTemplateHandler);
+
+/**
+ * @openapi
+ * /superadmin/releases:
+ *   get:
+ *     tags: [Super Admin]
+ *     summary: List every desktop release, published or not
+ *     security:
+ *       - bearerAuth: []
+ *   post:
+ *     tags: [Super Admin]
+ *     summary: Upload a desktop installer (multipart; field name "file")
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       201:
+ *         description: The created release, unpublished
+ *       409:
+ *         description: That version already exists for the platform
+ */
+router.get('/releases', protect, superAdminOnly, listReleasesAdmin);
+router.post('/releases', protect, superAdminOnly, releaseUpload.single('file'), uploadRelease);
+
+/**
+ * @openapi
+ * /superadmin/releases/{id}:
+ *   patch:
+ *     tags: [Super Admin]
+ *     summary: Publish, unpublish or re-note a release
+ *     security:
+ *       - bearerAuth: []
+ *   delete:
+ *     tags: [Super Admin]
+ *     summary: Delete a release and its installer file
+ *     security:
+ *       - bearerAuth: []
+ */
+router.patch('/releases/:id', protect, superAdminOnly, updateRelease);
+router.delete('/releases/:id', protect, superAdminOnly, deleteRelease);
 
 export default router;

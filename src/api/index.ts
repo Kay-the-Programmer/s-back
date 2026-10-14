@@ -40,6 +40,7 @@ import whatsappRoutes from './whatsapp.routes';
 import facebookRoutes from './facebook.routes';
 import smsRoutes from './sms.routes';
 import feedbackRoutes from './feedback.routes';
+import releaseRoutes from './releases.routes';
 
 const router = express.Router();
 
@@ -82,6 +83,7 @@ router.use('/whatsapp', whatsappRoutes);
 router.use('/facebook', facebookRoutes);
 router.use('/sms', smsRoutes);
 router.use('/feedback', feedbackRoutes);
+router.use('/releases', releaseRoutes);
 
 
 // A simple health check endpoint
