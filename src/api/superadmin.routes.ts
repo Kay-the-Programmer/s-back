@@ -1,5 +1,5 @@
 import express from 'express';
-import { listStores, updateStore, createNotification, listSystemNotifications, getNotificationStatus, listRevenueSummary, listSubscriptionPayments, recordSubscriptionPayment, getStoreDetails, sendStoreNotification, setStoreModules, getStoreModules, previewStoreDeletion, deleteStore, listStoreArchives, removeStoreArchive, listRefunds, approveRefund, denyRefund } from '../controllers/superadmin.controller';
+import { listStores, updateStore, createNotification, listSystemNotifications, getNotificationStatus, listRevenueSummary, listSubscriptionPayments, recordSubscriptionPayment, getStoreDetails, sendStoreNotification, setStoreModules, getStoreModules, previewStoreDeletion, deleteStore, listStoreArchives, removeStoreArchive } from '../controllers/superadmin.controller';
 import { handleSuperAdminChat } from '../controllers/ai.controller';
 import {
     listCatalogModules, saveCatalogModule, removeCatalogModule,
@@ -197,18 +197,8 @@ router.get('/revenue/summary', protect, superAdminOnly, listRevenueSummary);
 router.get('/revenue/payments', protect, superAdminOnly, listSubscriptionPayments);
 router.post('/revenue/payments', protect, superAdminOnly, recordSubscriptionPayment);
 
-/**
- * @openapi
- * /superadmin/refunds:
- *   get:
- *     tags: [SuperAdmin]
- *     summary: The money-back request queue
- */
-router.get('/refunds', protect, superAdminOnly, listRefunds);
-// Approving is what actually revokes a store's access, so it is superadmin-only
-// and audited against the operator who decided.
-router.post('/refunds/:id/approve', protect, superAdminOnly, approveRefund);
-router.post('/refunds/:id/deny', protect, superAdminOnly, denyRefund);
+// The /superadmin/refunds queue is not mounted: refund.service.ts was never
+// written. Restore these routes with the service and its controller handlers.
 
 /**
  * @openapi
