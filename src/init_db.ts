@@ -2202,6 +2202,76 @@ async function initializeDatabase() {
         await client.query(`CREATE INDEX IF NOT EXISTS idx_release_download_tokens_expires ON release_download_tokens(expires_at);`);
         console.log('✅ Release download tokens table verified/created');
 
+        // ─── CRM: loyalty program, redemptions, outreach ──────────────────────
+        // The loyalty program used to live in each browser's localStorage, so
+        // every device saw a different program and redemption history died with
+        // the browser profile. One row per store; the CRM reads/writes it.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS loyalty_programs (
+                store_id TEXT PRIMARY KEY REFERENCES stores(id) ON DELETE CASCADE,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                earn_spend_per_point DECIMAL(12,2) NOT NULL DEFAULT 10,
+                redeem_points_per_unit INTEGER NOT NULL DEFAULT 100,
+                redeem_value_per_unit DECIMAL(12,2) NOT NULL DEFAULT 5,
+                min_redeem_points INTEGER NOT NULL DEFAULT 0,
+                expiry_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                expiry_months INTEGER NOT NULL DEFAULT 12,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_by TEXT
+            );
+        `);
+
+        // Redemption ledger. `value` is the store credit granted; the grant and
+        // this row are written in one transaction so a failed credit can never
+        // leave a phantom redemption behind.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS loyalty_redemptions (
+                id TEXT PRIMARY KEY,
+                store_id TEXT NOT NULL,
+                customer_id TEXT NOT NULL,
+                points INTEGER NOT NULL,
+                value DECIMAL(12,2) NOT NULL,
+                redeemed_by TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_loyalty_redemptions_store ON loyalty_redemptions(store_id, created_at DESC);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_loyalty_redemptions_customer ON loyalty_redemptions(customer_id);`);
+
+        // Reusable message templates (WhatsApp / SMS / email), per store —
+        // previously localStorage-only, so they never followed the staff member.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS crm_message_templates (
+                id TEXT PRIMARY KEY,
+                store_id TEXT NOT NULL,
+                label TEXT NOT NULL,
+                body TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_crm_message_templates_store ON crm_message_templates(store_id, label);`);
+
+        // Emails the store sends to a customer from the CRM. Mirrors
+        // sms_messages so the customer profile can show one outreach history.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS customer_emails (
+                id TEXT PRIMARY KEY,
+                store_id TEXT NOT NULL,
+                customer_id TEXT,
+                recipient TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                body TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'sent',
+                error TEXT,
+                sent_by TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_customer_emails_store ON customer_emails(store_id, created_at DESC);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_customer_emails_customer ON customer_emails(customer_id);`);
+        console.log('✅ CRM loyalty / templates / outreach tables verified/created');
+
         console.log('✅ Database schema verified/updated successfully');
     } catch (error) {
         console.error('❌ Error initializing database:', error);

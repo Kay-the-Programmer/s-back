@@ -36,7 +36,7 @@ export const getCustomerById = async (req: express.Request, res: express.Respons
 };
 
 export const createCustomer = async (req: express.Request, res: express.Response) => {
-    const { name, email, phone, address, notes, storeCredit } = req.body;
+    const { name, email, phone, address, notes, storeCredit, creditLimit } = req.body;
     const id = generateId('cust');
     const createdAt = new Date().toISOString();
 
@@ -45,9 +45,14 @@ export const createCustomer = async (req: express.Request, res: express.Response
         if (!storeId) {
             return res.status(400).json({ message: 'Store context required' });
         }
+        // A credit line set while ADDING a customer used to be dropped on the
+        // floor (only updateCustomer honoured it); blank/absent = no limit.
+        const creditLimitValue = creditLimit === undefined || creditLimit === null || String(creditLimit).trim() === ''
+            ? null
+            : Math.max(0, Number(creditLimit) || 0);
         const result = await db.query(
-            'INSERT INTO customers (id, name, email, phone, address, notes, created_at, store_credit, account_balance, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *',
-            [id, name, email, phone, address, notes, createdAt, storeCredit || 0, 0, storeId]
+            'INSERT INTO customers (id, name, email, phone, address, notes, created_at, store_credit, account_balance, store_id, credit_limit) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *',
+            [id, name, email, phone, address, notes, createdAt, storeCredit || 0, 0, storeId, creditLimitValue]
         );
         const newCustomer = result.rows[0];
         auditService.log(req.user!, 'Customer Created', `Customer: "${newCustomer.name}"`);
