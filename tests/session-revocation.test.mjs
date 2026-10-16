@@ -158,7 +158,11 @@ const main = async () => {
     const demote = await req('PUT', `/users/${STAFF_ID}`, { role: 'staff' }, boss);
     check('the demotion is accepted', demote.status === 200, `status=${demote.status}`);
 
-    const afterDemotion = await req('GET', '/auth/me', null, bearer(inventoryToken));
+    // Checked on /products, NOT /auth/me: /auth/me is flagged as
+    // freshness-critical and deliberately skips the cache, so asking it would
+    // pass whether or not the cached row was evicted and would prove nothing
+    // about the bug this is guarding.
+    const afterDemotion = await req('GET', '/products', null, bearer(inventoryToken));
     check('the demoted session is ended immediately, not after the cache TTL',
         afterDemotion.status === 401 && afterDemotion.data?.code === 'SESSION_REVOKED',
         `status=${afterDemotion.status} code=${afterDemotion.data?.code}`);
@@ -167,17 +171,21 @@ const main = async () => {
     const quietToken = await login(DOOMED_EMAIL);
     const noop = await req('PUT', `/users/${DOOMED_ID}`, { role: 'staff' }, boss);
     check('re-saving the same role is accepted', noop.status === 200, `status=${noop.status}`);
-    const afterNoop = await req('GET', '/auth/me', null, bearer(quietToken));
+    const afterNoop = await req('GET', '/customers', null, bearer(quietToken));
     check('re-saving the same role leaves the session alone',
         afterNoop.status === 200, `status=${afterNoop.status}`);
 
     // ---- deletion ----
     // The other half of the cache guard: there is no token_version left to
     // bump once the row is gone, so only the eviction can stop this token.
+    // The /customers call above has just put this user's row in the cache,
+    // which is exactly the state that made the bug visible: with the row warm
+    // and no eviction, `protect` kept admitting the deleted account. Asked on
+    // a cache-eligible route for the same reason as the demotion check.
     const deleted = await req('DELETE', `/users/${DOOMED_ID}`, null, boss);
     check('the deletion is accepted', deleted.status === 200, `status=${deleted.status}`);
-    const afterDelete = await req('GET', '/auth/me', null, bearer(quietToken));
-    check('a deleted account cannot keep using its token',
+    const afterDelete = await req('GET', '/customers', null, bearer(quietToken));
+    check('a deleted account cannot keep using its token (cached row evicted)',
         afterDelete.status === 401, `status=${afterDelete.status}`);
 
     // ---- the version actually moved in the database ----
