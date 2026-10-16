@@ -10,6 +10,7 @@ import { Server } from 'socket.io';
 import apiRoutes from './api';
 import { errorMiddleware } from './middleware/error.middleware';
 import { idempotency } from './middleware/idempotency.middleware';
+import { csrfGuard, CSRF_HEADER } from './auth/session-cookie';
 import './types/request';
 import initializeDatabase from './init_db';
 import seedDatabase from './seed';
@@ -87,7 +88,7 @@ const corsOptions: cors.CorsOptions = {
   // offline-queue replays) so the server can dedupe retried writes. It MUST be
   // allowed here or the CORS preflight fails and every cross-origin mutation
   // (including POST /auth/google sign-in) is blocked by the browser.
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-firebase-appcheck', 'x-idempotency-key'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-firebase-appcheck', 'x-idempotency-key', CSRF_HEADER],
   credentials: true,
 };
 app.use(cors(corsOptions));
@@ -129,6 +130,13 @@ app.use('/api', rateLimit({
   legacyHeaders: false,
   message: { message: 'Too many requests. Please slow down.' },
 }));
+
+// CSRF, for cookie-authenticated writes only. A cookie travels on any request
+// the browser is persuaded to make, so once the session lives in one, another
+// site can aim a write at us; a Bearer header cannot be set cross-site and is
+// therefore left alone, which is what keeps the native clients working.
+// Mounted ahead of the routes so no handler can be reached without it.
+app.use('/api', csrfGuard);
 
 // Dedupe retried writes (offline-queue replays) by X-Idempotency-Key before
 // they reach the route handlers. No-op for requests without the header.

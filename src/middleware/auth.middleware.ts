@@ -3,6 +3,7 @@ import db from '../db_client';
 import express from 'express';
 import { User } from '../types';
 import { authorize, requirePermission, roleHasPermission, Role } from '../auth/rbac';
+import { tokenFromRequest } from '../auth/session-cookie';
 
 // Re-export the centralized RBAC helpers so routes can import everything
 // authorization-related from a single module if they prefer.
@@ -30,16 +31,17 @@ export const invalidateUserCache = (userId: string) => {
 };
 
 export const protect = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    let token;
-    const authHeader = req.headers.authorization;
+    // Either credential is accepted: the Authorization header (native clients,
+    // tests, and web sessions signed in before cookies existed) or the httpOnly
+    // session cookie. The header wins when both are present, so nothing about
+    // the existing clients changes. See auth/session-cookie.ts.
+    const token = tokenFromRequest(req);
     const url = req.originalUrl || req.url;
-    
-    if (AUTH_DEBUG) console.log(`[auth] Request to ${url} | Auth header: ${authHeader ? 'present' : 'missing'}`);
 
-    if (authHeader && authHeader.startsWith('Bearer')) {
+    if (AUTH_DEBUG) console.log(`[auth] Request to ${url} | credential: ${token ? (req.headers.authorization ? 'header' : 'cookie') : 'none'}`);
+
+    if (token) {
         try {
-            token = authHeader.split(' ')[1];
-            if (AUTH_DEBUG) console.log(`[auth] Token found: ${token.substring(0, 10)}...`);
             const decoded = jwt.verify(token, JWT_SECRET) as { id: string; tv?: number };
 
             // Try cache first unless this is an explicit freshness-critical endpoint (e.g., /api/auth/me)
@@ -200,13 +202,10 @@ export const protect = async (req: express.Request, res: express.Response, next:
 };
 
 export const optionalProtect = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    let token;
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+    // Same dual credential as `protect`; identity stays optional here.
+    const token = tokenFromRequest(req);
+    if (token) {
         try {
-            token = req.headers.authorization.split(' ')[1];
-            if (!token || token === 'null' || token === 'undefined') {
-                return next();
-            }
             const decoded = jwt.verify(token, JWT_SECRET) as { id: string; tv?: number };
 
             const result = await db.query(`

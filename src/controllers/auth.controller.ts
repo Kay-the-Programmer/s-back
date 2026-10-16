@@ -6,6 +6,7 @@ import { generateId, toCamelCase } from '../utils/helpers';
 import express from 'express';
 import { invalidateUserCache } from '../middleware/auth.middleware';
 import { revokeUserSessions } from '../services/session.service';
+import { setSessionCookies, clearSessionCookies } from '../auth/session-cookie';
 import { signInWithEmailAndPassword, signInWithPhoneNumber } from "firebase/auth";
 import { authentication } from "../firebase";
 
@@ -90,6 +91,7 @@ export const loginUser = async (req: express.Request, res: express.Response) => 
                     email: user.email,
                 });
             }
+            const loginToken = generateToken(user.id, user.token_version);
             const userResponse = toCamelCase({
                 id: user.id,
                 name: user.name,
@@ -103,8 +105,14 @@ export const loginUser = async (req: express.Request, res: express.Response) => 
                 subscription_status: user.subscription_status,
                 subscription_ends_at: user.subscription_ends_at,
                 subscription_plan: user.subscription_plan,
-                token: generateToken(user.id, user.token_version),
+                // Still in the body: the Flutter till, the mobile apps and the
+                // test suites all read it from here, and a browser client is
+                // free to ignore it now that the cookie carries the session.
+                token: loginToken,
             });
+            // The browser gets the same token as an httpOnly cookie, out of
+            // reach of any script — which is the point of the exercise.
+            setSessionCookies(res, loginToken);
             return res.json(userResponse);
         }
         return res.status(401).json({ message: 'Invalid credentials' });
@@ -520,11 +528,18 @@ export const changePassword = async (req: express.Request, res: express.Response
         );
         invalidateUserCache(userId);
 
+        const reissued = generateToken(userId, result2.rows[0]?.token_version ?? 0);
+        // The cookie must be replaced as well, not just the body token: the
+        // bump above just invalidated the token the browser is holding, so
+        // without this a cookie-based session is signed out by its own
+        // password change — the exact thing the reissue exists to prevent.
+        setSessionCookies(res, reissued);
+
         res.status(200).json({
             message: 'Password changed successfully.',
             // Clients that persist this keep their session; a client that
             // ignores it simply lands on a 401 and signs in again.
-            token: generateToken(userId, result2.rows[0]?.token_version ?? 0),
+            token: reissued,
             otherSessionsEnded: true,
         });
     } catch (error) {
@@ -632,6 +647,7 @@ export const googleLogin = async (req: express.Request, res: express.Response) =
         // token_version in its RETURNING list, which falls through to the
         // parameter default of 0 — the same value the column defaults to.
         const token = generateToken(user.id, user.token_version);
+        setSessionCookies(res, token);
 
         const userResponse = toCamelCase({
             id: user.id,
@@ -669,6 +685,10 @@ export const signOutEverywhere = async (req: express.Request, res: express.Respo
     try {
         const userId = req.user!.id;
         await revokeUserSessions(userId);
+        // This device is one of the devices: its cookie now holds a stranded
+        // token, so clear it rather than leaving the browser to discover that
+        // on its next request.
+        clearSessionCookies(res);
         return res.status(200).json({
             message: 'Signed out on all devices. Please sign in again.',
             signedOutEverywhere: true,
@@ -677,4 +697,25 @@ export const signOutEverywhere = async (req: express.Request, res: express.Respo
         console.error('Sign-out-everywhere error:', error);
         return res.status(500).json({ message: 'Could not sign out other sessions' });
     }
+};
+
+
+/**
+ * POST /auth/logout
+ *
+ * Clears the session cookies for this browser. There was no server-side logout
+ * before, because the token lived in localStorage and the client could simply
+ * drop it — an httpOnly cookie is precisely the thing a client CANNOT drop by
+ * itself, so this endpoint has to exist.
+ *
+ * Deliberately not a revocation: this ends the session on this device only and
+ * leaves other devices signed in. `/auth/sign-out-everywhere` is the one that
+ * strands every token.
+ *
+ * Unauthenticated on purpose — clearing a cookie you already hold needs no
+ * proof of anything, and an expired session must still be able to tidy up.
+ */
+export const logout = async (_req: express.Request, res: express.Response) => {
+    clearSessionCookies(res);
+    return res.status(200).json({ message: 'Signed out.' });
 };

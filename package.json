@@ -23,6 +23,7 @@
     "test:sales-docs": "node tests/sales-documents.test.mjs",
     "test:import": "node tests/product-import.test.mjs",
     "test:revocation": "node tests/session-revocation.test.mjs",
+    "test:cookies": "node tests/session-cookies.test.mjs",
     "test:downloads": "node tests/release-download-tokens.test.mjs"
   },
   "dependencies": {

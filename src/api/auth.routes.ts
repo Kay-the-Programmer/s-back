@@ -13,7 +13,8 @@ import {
     verifyRegistration,
     resendVerificationEmail,
     resetPassword,
-    signOutEverywhere
+    signOutEverywhere,
+    logout
 } from '../controllers/auth.controller';
 import { protect } from '../middleware/auth.middleware';
 
@@ -99,6 +100,8 @@ router.post('/resend-verification', resendVerificationEmail);
  */
 router.get('/me', protect, getCurrentUser);
 router.post('/sign-out-everywhere', protect, signOutEverywhere);
+// Unauthenticated: clearing your own cookie proves nothing and needs nothing.
+router.post('/logout', logout);
 router.post('/change-password', protect, changePassword);
 
 export default router;
