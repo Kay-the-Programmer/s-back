@@ -2181,6 +2181,27 @@ async function initializeDatabase() {
         await client.query(`CREATE INDEX IF NOT EXISTS idx_desktop_releases_published ON desktop_releases(platform, channel, is_published, created_at DESC);`);
         console.log('✅ App releases table verified/created (desktop + android)');
 
+        // Single-use download tickets. The installer endpoints sit behind
+        // `protect`, so the bearer token travels in a header — which the
+        // browser's own downloader cannot set, which is why the client used to
+        // buffer the whole file in memory. These rows let it hand the browser a
+        // plain URL instead: an opaque random value, valid for a couple of
+        // minutes, bound to one release and one user, and burned by the first
+        // request that redeems it. The session JWT itself still never appears
+        // in a URL.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS release_download_tokens (
+                token TEXT PRIMARY KEY,
+                release_id TEXT NOT NULL REFERENCES desktop_releases(id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL,
+                expires_at TIMESTAMPTZ NOT NULL,
+                used_at TIMESTAMPTZ,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_release_download_tokens_expires ON release_download_tokens(expires_at);`);
+        console.log('✅ Release download tokens table verified/created');
+
         console.log('✅ Database schema verified/updated successfully');
     } catch (error) {
         console.error('❌ Error initializing database:', error);

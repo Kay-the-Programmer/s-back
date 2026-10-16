@@ -284,42 +284,161 @@ export const getLatestRelease = async (req: express.Request, res: express.Respon
     }
 };
 
+/** How long a minted download ticket stays redeemable. */
+const DOWNLOAD_TICKET_TTL_MS = 2 * 60 * 1000;
+
 /**
- * Stream the installer. An unpublished release is downloadable by a Super Admin
- * only, so a build can be smoke-tested before anyone else can see it.
+ * Resolve a release to a file on disk, enforcing the published rule. Returns an
+ * HTTP status + message instead of throwing so the token-redeeming and the
+ * authenticated path answer identically.
+ */
+const resolveReleaseFile = async (
+    id: string,
+    isSuperAdmin: boolean
+): Promise<{ ok: true; row: any; abs: string } | { ok: false; status: number; message: string }> => {
+    const { rows } = await db.query('SELECT * FROM desktop_releases WHERE id = $1', [id]);
+    if (!rows.length) return { ok: false, status: 404, message: 'Release not found' };
+
+    const row = rows[0];
+    // An unpublished build is visible to a Super Admin only — and answers with
+    // the same 404 as a missing row, so its existence is not leaked.
+    if (!row.is_published && !isSuperAdmin) return { ok: false, status: 404, message: 'Release not found' };
+
+    // basename() strips any directory part before we touch the filesystem.
+    const abs = path.resolve(RELEASE_DIR, path.basename(row.storage_path));
+    if (!abs.startsWith(path.resolve(RELEASE_DIR)) || !fs.existsSync(abs)) {
+        console.error('[Releases] File missing on disk for release', id, row.storage_path);
+        return { ok: false, status: 410, message: 'This download is no longer available. Please contact support.' };
+    }
+    return { ok: true, row, abs };
+};
+
+/** Send the file, stamping the Android content type and bumping the counter. */
+const streamReleaseFile = (res: express.Response, row: any, abs: string) => {
+    // Counted before streaming: a cancelled download still signals intent,
+    // and completion cannot be detected reliably anyway.
+    db.query('UPDATE desktop_releases SET download_count = download_count + 1 WHERE id = $1', [row.id])
+        .catch((e: any) => console.warn('[Releases] download_count bump failed:', e?.message));
+
+    const explicitType = CONTENT_TYPE_BY_EXT[path.extname(row.file_name || '').toLowerCase()];
+    if (explicitType) res.type(explicitType);
+
+    res.download(abs, row.file_name, err => {
+        if (err && !res.headersSent) {
+            console.error('[Releases] download stream failed:', err);
+            res.status(500).end();
+        }
+    });
+};
+
+/**
+ * Mint a single-use download ticket for the caller.
+ *
+ * The download has to be authenticated, but a bearer header rules out the
+ * browser's native downloader, and buffering a 300MB installer (or an APK on a
+ * phone) into a Blob to work around that is exactly how a download silently
+ * dies on a failed allocation. So the client asks for a ticket here — a
+ * 32-byte opaque random value, good for two minutes, bound to this release and
+ * this user, single-use — and hands the plain URL to the browser, which
+ * streams straight to disk with its own progress and resume.
+ *
+ * This is deliberately NOT the session JWT: that must never reach a URL, where
+ * it would sit in proxy and server access logs with 30 days of life left in it.
+ */
+export const createDownloadTicket = async (req: express.Request, res: express.Response) => {
+    try {
+        const { id } = req.params;
+        const user = req.user;
+        if (!user?.id) return res.status(401).json({ message: 'Not authenticated' });
+
+        // Authorization is settled here, at mint time, by the same rule the
+        // authenticated endpoint applies.
+        const resolved = await resolveReleaseFile(id, user.role === 'superadmin');
+        if (!resolved.ok) return res.status(resolved.status).json({ message: resolved.message });
+
+        const token = crypto.randomBytes(32).toString('base64url');
+        const expiresAt = new Date(Date.now() + DOWNLOAD_TICKET_TTL_MS);
+        await db.query(
+            `INSERT INTO release_download_tokens (token, release_id, user_id, expires_at)
+             VALUES ($1, $2, $3, $4)`,
+            [token, id, user.id, expiresAt]
+        );
+
+        // Opportunistic sweep so the table cannot grow without bound; nothing
+        // depends on it succeeding.
+        db.query("DELETE FROM release_download_tokens WHERE expires_at < NOW() - INTERVAL '1 day'")
+            .catch(() => {});
+
+        res.json({
+            downloadPath: `/releases/file/${token}`,
+            fileName: resolved.row.file_name,
+            fileSize: Number(resolved.row.file_size),
+            expiresAt: expiresAt.toISOString(),
+        });
+    } catch (error) {
+        console.error('[Releases] createDownloadTicket failed:', error);
+        res.status(500).json({ message: 'Failed to prepare the download' });
+    }
+};
+
+/**
+ * Redeem a ticket and stream the file. Unauthenticated by necessity — the
+ * browser makes this request on its own — so the ticket is the whole
+ * credential, and a caller without one gets nothing.
+ */
+export const downloadReleaseByTicket = async (req: express.Request, res: express.Response) => {
+    const invalid = { message: 'This download link is invalid or has expired.' };
+    try {
+        const { token } = req.params;
+        if (!token || token.length > 128) return res.status(404).json(invalid);
+
+        const claimed = await db.query(
+            `SELECT release_id, user_id FROM release_download_tokens
+             WHERE token = $1 AND used_at IS NULL AND expires_at > NOW()`,
+            [token]
+        );
+        if (!claimed.rows.length) return res.status(404).json(invalid);
+
+        const { release_id: releaseId, user_id: userId } = claimed.rows[0];
+
+        // The minting user's role is read fresh: a release can be unpublished,
+        // or a user demoted, between minting and redeeming.
+        const userRes = await db.query('SELECT role FROM users WHERE id = $1', [userId]);
+        const isSuperAdmin = userRes.rows[0]?.role === 'superadmin';
+
+        const resolved = await resolveReleaseFile(releaseId, isSuperAdmin);
+        if (!resolved.ok) return res.status(resolved.status).json({ message: resolved.message });
+
+        // Burned last, and atomically: the UPDATE only matches a row that is
+        // still unused and unexpired, so two concurrent requests carrying the
+        // same token cannot both get a file, and a token is not consumed by a
+        // request that was going to fail anyway.
+        const burn = await db.query(
+            `UPDATE release_download_tokens SET used_at = NOW()
+             WHERE token = $1 AND used_at IS NULL AND expires_at > NOW()
+             RETURNING token`,
+            [token]
+        );
+        if (!burn.rows.length) return res.status(404).json(invalid);
+
+        streamReleaseFile(res, resolved.row, resolved.abs);
+    } catch (error) {
+        console.error('[Releases] downloadReleaseByTicket failed:', error);
+        res.status(500).json({ message: 'Failed to download the release' });
+    }
+};
+
+/**
+ * Stream the installer with a session token. Kept for the desktop updater and
+ * any older client; the web app mints a ticket above instead. An unpublished
+ * release is downloadable by a Super Admin only.
  */
 export const downloadRelease = async (req: express.Request, res: express.Response) => {
     try {
         const { id } = req.params;
-        const { rows } = await db.query('SELECT * FROM desktop_releases WHERE id = $1', [id]);
-        if (!rows.length) return res.status(404).json({ message: 'Release not found' });
-
-        const row = rows[0];
-        if (!row.is_published && req.user?.role !== 'superadmin') {
-            return res.status(404).json({ message: 'Release not found' });
-        }
-
-        // basename() strips any directory part before we touch the filesystem.
-        const abs = path.resolve(RELEASE_DIR, path.basename(row.storage_path));
-        if (!abs.startsWith(path.resolve(RELEASE_DIR)) || !fs.existsSync(abs)) {
-            console.error('[Releases] File missing on disk for release', id, row.storage_path);
-            return res.status(410).json({ message: 'This download is no longer available. Please contact support.' });
-        }
-
-        // Counted before streaming: a cancelled download still signals intent,
-        // and completion cannot be detected reliably anyway.
-        db.query('UPDATE desktop_releases SET download_count = download_count + 1 WHERE id = $1', [id])
-            .catch((e: any) => console.warn('[Releases] download_count bump failed:', e?.message));
-
-        const explicitType = CONTENT_TYPE_BY_EXT[path.extname(row.file_name || '').toLowerCase()];
-        if (explicitType) res.type(explicitType);
-
-        res.download(abs, row.file_name, err => {
-            if (err && !res.headersSent) {
-                console.error('[Releases] download stream failed:', err);
-                res.status(500).end();
-            }
-        });
+        const resolved = await resolveReleaseFile(id, req.user?.role === 'superadmin');
+        if (!resolved.ok) return res.status(resolved.status).json({ message: resolved.message });
+        streamReleaseFile(res, resolved.row, resolved.abs);
     } catch (error) {
         console.error('[Releases] downloadRelease failed:', error);
         res.status(500).json({ message: 'Failed to download the release' });

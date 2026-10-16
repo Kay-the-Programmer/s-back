@@ -22,7 +22,8 @@
     "test:expenses": "node tests/staff-expenses.test.mjs",
     "test:sales-docs": "node tests/sales-documents.test.mjs",
     "test:import": "node tests/product-import.test.mjs",
-    "test:revocation": "node tests/session-revocation.test.mjs"
+    "test:revocation": "node tests/session-revocation.test.mjs",
+    "test:downloads": "node tests/release-download-tokens.test.mjs"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.19.0",
