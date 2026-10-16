@@ -5,6 +5,7 @@ import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { accountingService } from '../services/accounting.service';
 import { findOpenSessionId } from '../services/cash-session.service';
+import { reversePointsForReturn } from '../services/loyalty.service';
 import { requiresOverride } from '../services/override-rules';
 import {
     OverrideError,
@@ -191,6 +192,19 @@ export const createReturn = async (req: express.Request, res: express.Response) 
         // Fetch cart items for the sale to pass to accounting (needed for price levels)
         const cartResult = await client.query('SELECT * FROM sale_items WHERE sale_id = $1 AND store_id = $2', [originalSaleId, storeId]);
         const enrichedSale = { ...originalSale, cart: toCamelCase(cartResult.rows) };
+
+        // Take back the loyalty points this refund corresponds to, at the rate
+        // the sale earned them at — not today's, which may have changed since.
+        if (originalSale.customerId) {
+            await reversePointsForReturn({
+                storeId,
+                saleId: originalSaleId,
+                returnId: id,
+                refundAmount: Number(refundAmount) || 0,
+                saleTotal: Number(originalSale.total) || 0,
+                returnedAt: timestamp,
+            }, client);
+        }
 
         await accountingService.recordReturn({ ...newReturn, returnedItems }, enrichedSale, client, storeId);
         await auditService.log(req.user!, 'Return Processed', `For Sale ID: ${originalSaleId}, Amount: ${refundAmount.toFixed(2)}`, client);

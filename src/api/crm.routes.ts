@@ -1,7 +1,7 @@
 import express from 'express';
 import {
     getLoyaltyProgram, saveLoyaltyProgram,
-    getRedemptions, createRedemption,
+    getRedemptions, createRedemption, getPointsEarned,
     getMessageTemplates, createMessageTemplate, updateMessageTemplate, deleteMessageTemplate,
     sendCustomerEmail, getCustomerOutreach,
 } from '../controllers/crm.controller';
@@ -28,6 +28,22 @@ const router = express.Router();
 router.route('/loyalty/program')
     .get(protect, requirePermission('customers:read'), getLoyaltyProgram)
     .put(protect, requirePermission('customers:manage'), saveLoyaltyProgram);
+
+/**
+ * @openapi
+ * /crm/loyalty/points:
+ *   get:
+ *     tags: [CRM]
+ *     summary: Points earned per customer, from the ledger
+ *     security: [{ bearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: customerId
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: One row per customer who has earned points }
+ */
+router.get('/loyalty/points', protect, requirePermission('customers:read'), getPointsEarned);
 
 /**
  * @openapi

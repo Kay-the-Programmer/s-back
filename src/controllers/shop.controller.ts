@@ -6,6 +6,7 @@ import { accountingService } from '../services/accounting.service';
 import SocketService from '../services/socket.service';
 import { sendTemplatedEmail } from '../services/email-template.service';
 import { pushService } from '../services/push.service';
+import { awardPointsForSale } from '../services/loyalty.service';
 
 // Whitelisted sort options → SQL. Never interpolate the raw query param.
 const PRODUCT_SORTS: Record<string, string> = {
@@ -518,6 +519,15 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
                 'UPDATE customers SET account_balance = account_balance + $1 WHERE id = $2 AND store_id = $3',
                 [total, customerId, storeId]
             );
+        }
+
+        // 4c. Loyalty points, at today's rate — an online order counts toward a
+        // customer's points exactly as a counter sale does. Cancelling the
+        // order (manually or by the stale-order job) takes them back.
+        if (customerId) {
+            await awardPointsForSale({
+                storeId, customerId, saleId: transactionId, total, earnedAt: timestamp,
+            }, client);
         }
 
         // 5. Record in Accounting

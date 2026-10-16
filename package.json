@@ -25,7 +25,8 @@
     "test:revocation": "node tests/session-revocation.test.mjs",
     "test:cookies": "node tests/session-cookies.test.mjs",
     "test:downloads": "node tests/release-download-tokens.test.mjs",
-    "test:crm": "node tests/crm.test.mjs"
+    "test:crm": "node tests/crm.test.mjs",
+    "test:loyalty": "node tests/loyalty-points.test.mjs"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.19.0",

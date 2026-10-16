@@ -2,6 +2,7 @@ import db from '../db_client';
 import { toCamelCase } from '../utils/helpers';
 import { accountingService } from './accounting.service';
 import { pushService } from './push.service';
+import { voidPointsForSale } from './loyalty.service';
 
 /**
  * Auto-cancel stale unpaid online orders.
@@ -57,6 +58,8 @@ const cancelStaleOrder = async (transactionId: string, storeId: string): Promise
                 );
             }
         }
+        // ... and the loyalty points the order earned, same as the manual path.
+        await voidPointsForSale({ storeId, saleId: transactionId }, client);
         await accountingService.voidSale(sale, client, storeId);
         await client.query(
             `UPDATE sales SET fulfillment_status = 'cancelled' WHERE transaction_id = $1 AND store_id = $2`,

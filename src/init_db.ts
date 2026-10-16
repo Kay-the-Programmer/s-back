@@ -2270,6 +2270,88 @@ async function initializeDatabase() {
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_customer_emails_store ON customer_emails(store_id, created_at DESC);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_customer_emails_customer ON customer_emails(customer_id);`);
+        // Points EARNED, as an append-only ledger. They used to be derived at
+        // read time as floor(lifetime spend / earn rate), so raising the rate
+        // retroactively re-priced balances customers had already been shown —
+        // and could push one below what they had already redeemed. A row is
+        // written at the rate IN FORCE when the sale happens; a return writes a
+        // negative row against the same sale, so the historical rate is used
+        // for the reversal too. Points are never recomputed after the fact.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS loyalty_points (
+                id TEXT PRIMARY KEY,
+                store_id TEXT NOT NULL,
+                customer_id TEXT NOT NULL,
+                sale_id TEXT,
+                return_id TEXT,
+                reason TEXT NOT NULL DEFAULT 'sale' CHECK (reason IN ('sale','return','backfill','adjustment')),
+                points INTEGER NOT NULL,
+                /* The rate and the amount the award was computed from, kept for
+                   audit: "why does this customer have 250 points?" */
+                earn_spend_per_point DECIMAL(12,2),
+                basis_amount DECIMAL(12,2),
+                earned_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_loyalty_points_customer ON loyalty_points(store_id, customer_id);`);
+        // One earn row per sale and one reversal row per return — these also
+        // make the backfill below, and a retried award, idempotent.
+        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_loyalty_points_sale ON loyalty_points(sale_id) WHERE sale_id IS NOT NULL AND reason IN ('sale','backfill');`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_loyalty_points_sale_all ON loyalty_points(sale_id);`);
+        await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_loyalty_points_return ON loyalty_points(return_id) WHERE return_id IS NOT NULL;`);
+
+        // Backfill: every attributed sale that has no earn row yet, at its
+        // store's CURRENT rate (the only rate we can know retroactively), so no
+        // customer loses a balance they can see today. The anti-join makes this
+        // a no-op on every later boot, and it is cheap once the index above
+        // exists. Sales rung up after this migration get their row from the
+        // sale itself, so they are never matched here.
+        await client.query(`
+            INSERT INTO loyalty_points (id, store_id, customer_id, sale_id, reason, points, earn_spend_per_point, basis_amount, earned_at)
+            SELECT
+                'lpt-bf-' || s.transaction_id,
+                s.store_id,
+                s.customer_id,
+                s.transaction_id,
+                'backfill',
+                FLOOR(s.total / COALESCE(NULLIF(p.earn_spend_per_point, 0), 10))::int,
+                COALESCE(NULLIF(p.earn_spend_per_point, 0), 10),
+                s.total,
+                s.timestamp
+            FROM sales s
+            LEFT JOIN loyalty_programs p ON p.store_id = s.store_id
+            WHERE s.customer_id IS NOT NULL
+              AND s.store_id IS NOT NULL
+              AND s.total > 0
+              AND NOT EXISTS (
+                  SELECT 1 FROM loyalty_points lp WHERE lp.sale_id = s.transaction_id AND lp.reason IN ('sale','backfill')
+              );
+        `);
+
+        // ... and the reversals for returns that already happened, so a sale
+        // refunded before this migration doesn't keep its points. Proportional
+        // to the refund, against the earn row just written for that sale.
+        await client.query(`
+            INSERT INTO loyalty_points (id, store_id, customer_id, sale_id, return_id, reason, points, earn_spend_per_point, basis_amount, earned_at)
+            SELECT
+                'lpt-bfr-' || r.id,
+                r.store_id,
+                s.customer_id,
+                s.transaction_id,
+                r.id,
+                'return',
+                -LEAST(lp.points, ROUND(lp.points * (r.refund_amount / NULLIF(s.total, 0))))::int,
+                lp.earn_spend_per_point,
+                r.refund_amount,
+                r."timestamp"
+            FROM returns r
+            JOIN sales s ON s.transaction_id = r.original_sale_id AND s.store_id = r.store_id
+            JOIN loyalty_points lp ON lp.sale_id = s.transaction_id AND lp.reason IN ('sale','backfill')
+            WHERE s.customer_id IS NOT NULL
+              AND r.refund_amount > 0
+              AND lp.points > 0
+              AND NOT EXISTS (SELECT 1 FROM loyalty_points x WHERE x.return_id = r.id);
+        `);
         console.log('✅ CRM loyalty / templates / outreach tables verified/created');
 
         console.log('✅ Database schema verified/updated successfully');

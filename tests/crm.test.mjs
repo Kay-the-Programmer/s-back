@@ -63,6 +63,7 @@ const seedUser = async (id, storeId, role) => {
 const cleanup = async () => {
     const stores = [STORE_A, STORE_B];
     const users = [ADMIN_A, STAFF_A, ADMIN_B];
+    await db.query('DELETE FROM loyalty_points WHERE store_id = ANY($1)', [stores]).catch(() => {});
     await db.query('DELETE FROM loyalty_redemptions WHERE store_id = ANY($1)', [stores]).catch(() => {});
     await db.query('DELETE FROM loyalty_programs WHERE store_id = ANY($1)', [stores]).catch(() => {});
     await db.query('DELETE FROM crm_message_templates WHERE store_id = ANY($1)', [stores]).catch(() => {});
@@ -98,6 +99,14 @@ const main = async () => {
         `INSERT INTO sales (transaction_id, timestamp, subtotal, tax, discount, total, amount_paid, payment_status, customer_id, store_id)
          VALUES ($1, NOW(), 2500, 0, 0, 2500, 2500, 'paid', $2, $3)`,
         [SALE_A, CUST_A, STORE_A],
+    );
+    // Points are an append-only ledger written when the sale is rung up (see
+    // tests/loyalty-points.test.mjs), not derived from spend at read time —
+    // so a sale seeded straight into the table needs its earn row too.
+    await db.query(
+        `INSERT INTO loyalty_points (id, store_id, customer_id, sale_id, reason, points, earn_spend_per_point, basis_amount)
+         VALUES ($1,$2,$3,$4,'sale',250,10,2500)`,
+        [`lpt-${RUN}`, STORE_A, CUST_A, SALE_A],
     );
 
     const login = async id => {

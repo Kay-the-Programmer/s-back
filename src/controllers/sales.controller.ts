@@ -16,6 +16,7 @@ import { accountingService } from '../services/accounting.service';
 import { notifyStoreOwner, sendTemplatedEmail } from '../services/email-template.service';
 import LencoService from '../services/lenco.service';
 
+import { awardPointsForSale, voidPointsForSale } from '../services/loyalty.service';
 import SocketService from '../services/socket.service';
 import { periodBounds } from '../utils/revenue';
 
@@ -615,6 +616,20 @@ export const createSale = async (req: express.Request, res: express.Response) =>
         await auditService.log(req.user!, 'Sale Created', `Transaction ID: ${transactionId}, Total: ${Number(saleData.total).toFixed(2)}`, client);
         await accountingService.recordSale(toCamelCase({ ...newSale, cart: saleData.cart }), client, storeId);
 
+        // Loyalty points are earned here, at the rate in force right now, so a
+        // later rate change can't re-price what this customer was told they
+        // have. Inside the sale's transaction: points and the sale land
+        // together or not at all. Backdated sales earn against their own date.
+        if (saleData.customerId) {
+            await awardPointsForSale({
+                storeId,
+                customerId: saleData.customerId,
+                saleId: transactionId,
+                total: Number(newSale.total),
+                earnedAt: timestamp,
+            }, client);
+        }
+
         await client.query('COMMIT');
 
         const saleResponse = toCamelCase({
@@ -929,6 +944,9 @@ export const updateFulfillmentStatus = async (req: express.Request, res: express
                         );
                     }
                 }
+
+                // Goods went back on the shelf, so the points go back too.
+                await voidPointsForSale({ storeId, saleId: id }, client);
 
                 await accountingService.voidSale(sale, client, storeId);
             }

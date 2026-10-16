@@ -146,6 +146,40 @@ export const getRedemptions = async (req: express.Request, res: express.Response
 };
 
 /**
+ * Points earned per customer, straight from the ledger.
+ *
+ * The CRM used to derive this client-side from lifetime spend, which meant the
+ * browser re-priced every balance whenever the earn rate changed. One row per
+ * customer who has ever earned, so the whole customer list can be rendered
+ * from a single call.
+ */
+export const getPointsEarned = async (req: express.Request, res: express.Response) => {
+    const storeId = requireStore(req, res);
+    if (!storeId) return;
+    const { customerId } = req.query as { customerId?: string };
+    try {
+        const params: any[] = [storeId];
+        let where = 'store_id = $1';
+        if (customerId) { params.push(customerId); where += ` AND customer_id = $${params.length}`; }
+        const result = await db.query(
+            `SELECT customer_id, COALESCE(SUM(points), 0)::int AS points
+               FROM loyalty_points WHERE ${where}
+              GROUP BY customer_id`,
+            params,
+        );
+        res.status(200).json(result.rows.map((r: any) => ({
+            customerId: r.customer_id,
+            // A customer whose returns outweigh their purchases is at zero, not
+            // in debt — the balance maths clamps the same way.
+            points: Math.max(0, Number(r.points) || 0),
+        })));
+    } catch (error) {
+        console.error('[crm] Error fetching earned points:', error);
+        res.status(500).json({ message: 'Error fetching earned points' });
+    }
+};
+
+/**
  * Redeem points for store credit.
  *
  * The grant and the ledger row are one transaction, so a failed credit can
@@ -180,19 +214,29 @@ export const createRedemption = async (req: express.Request, res: express.Respon
             return res.status(409).json({ message: 'The loyalty program is currently paused.', code: 'LOYALTY_PAUSED' });
         }
 
-        // Points earned = lifetime attributed spend / earn rate, minus what has
-        // already been redeemed. Mirrors the client's crmModel so the figure the
-        // owner sees and the figure granted agree.
-        const spendResult = await client.query(
-            'SELECT COALESCE(SUM(total), 0) AS spend, MAX(timestamp) AS last_purchase FROM sales WHERE customer_id = $1 AND store_id = $2',
+        // Points earned come from the append-only ledger — each row written at
+        // the rate in force when that sale happened — minus what has already
+        // been redeemed. They are NOT re-derived from lifetime spend, so
+        // changing the earn rate cannot re-price a balance the customer has
+        // already been shown. Mirrors the client's crmModel.
+        const earnedResult = await client.query(
+            'SELECT COALESCE(SUM(points), 0) AS points FROM loyalty_points WHERE customer_id = $1 AND store_id = $2',
             [customerId, storeId],
         );
-        const spend = Number(spendResult.rows[0].spend) || 0;
-        const lastPurchase = spendResult.rows[0].last_purchase ? new Date(spendResult.rows[0].last_purchase) : null;
+        const lastPurchaseResult = await client.query(
+            'SELECT MAX(timestamp) AS last_purchase FROM sales WHERE customer_id = $1 AND store_id = $2',
+            [customerId, storeId],
+        );
+        const lastPurchase = lastPurchaseResult.rows[0].last_purchase ? new Date(lastPurchaseResult.rows[0].last_purchase) : null;
 
+        // Expiry stays an ACCOUNT-level inactivity rule ("points lapse if a
+        // customer hasn't purchased in N months"), which is what the setting
+        // says and what stores that switched it on already have. Lapsing
+        // individual earn rows as they age would be a different, unannounced
+        // promise — and the ledger keeps the dates, so it stays available.
         const expired = cfg.expiryEnabled && !!lastPurchase
             && (Date.now() - lastPurchase.getTime()) > cfg.expiryMonths * 30 * 86400000;
-        const earned = expired ? 0 : Math.floor(spend / cfg.earnSpendPerPoint);
+        const earned = expired ? 0 : Math.max(0, Number(earnedResult.rows[0].points) || 0);
 
         const redeemedResult = await client.query(
             'SELECT COALESCE(SUM(points), 0) AS points FROM loyalty_redemptions WHERE customer_id = $1 AND store_id = $2',
