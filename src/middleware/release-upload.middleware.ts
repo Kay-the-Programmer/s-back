@@ -20,7 +20,10 @@ import crypto from 'crypto';
 // __dirname is dist/middleware at runtime -> ../../uploads = app root/uploads
 export const RELEASE_DIR = path.join(__dirname, '../../uploads/releases');
 
-const ALLOWED_EXT = new Set(['.zip', '.msix', '.exe', '.dmg', '.appimage', '.deb']);
+// .apk is the Android build. Note it is the one entry here that a browser will
+// hand to an OS installer rather than a desktop download folder, which is why
+// downloadRelease sends it with Android's own content type.
+const ALLOWED_EXT = new Set(['.zip', '.msix', '.exe', '.dmg', '.appimage', '.deb', '.apk']);
 
 const storage = multer.diskStorage({
     destination: (_req, _file, cb) => {

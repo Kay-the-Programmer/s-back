@@ -2142,7 +2142,7 @@ async function initializeDatabase() {
             CREATE TABLE IF NOT EXISTS desktop_releases (
                 id TEXT PRIMARY KEY,
                 version TEXT NOT NULL,
-                platform TEXT NOT NULL DEFAULT 'windows' CHECK (platform IN ('windows','mac','linux')),
+                platform TEXT NOT NULL DEFAULT 'windows' CHECK (platform IN ('windows','mac','linux','android')),
                 channel TEXT NOT NULL DEFAULT 'stable' CHECK (channel IN ('stable','beta')),
                 notes TEXT,
                 file_name TEXT NOT NULL,
@@ -2156,9 +2156,30 @@ async function initializeDatabase() {
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
         `);
+        // The table predates mobile, so an existing database still carries a
+        // CHECK that allows only the three desktop platforms and would reject
+        // every Android upload. CREATE TABLE IF NOT EXISTS above does nothing
+        // to a table that already exists, so the constraint is replaced here.
+        // Named explicitly because the auto-generated name is what we must drop.
+        await client.query(`
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.table_constraints
+                    WHERE table_name = 'desktop_releases'
+                      AND constraint_type = 'CHECK'
+                      AND constraint_name = 'desktop_releases_platform_check'
+                ) THEN
+                    ALTER TABLE desktop_releases DROP CONSTRAINT desktop_releases_platform_check;
+                END IF;
+                ALTER TABLE desktop_releases
+                    ADD CONSTRAINT desktop_releases_platform_check
+                    CHECK (platform IN ('windows','mac','linux','android'));
+            END $$;
+        `);
         await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_desktop_releases_platform_version ON desktop_releases(platform, version);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_desktop_releases_published ON desktop_releases(platform, channel, is_published, created_at DESC);`);
-        console.log('✅ Desktop releases table verified/created');
+        console.log('✅ App releases table verified/created (desktop + android)');
 
         console.log('✅ Database schema verified/updated successfully');
     } catch (error) {

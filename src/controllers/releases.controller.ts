@@ -8,7 +8,12 @@ import { auditService } from '../services/audit.service';
 import { RELEASE_DIR } from '../middleware/release-upload.middleware';
 
 /**
- * Desktop app distribution.
+ * App distribution — desktop installers and the Android APK.
+ *
+ * The table and the `/releases/desktop` paths are named for the desktop builds
+ * that came first; both have always been keyed by `platform`, so Android rides
+ * the same rows and endpoints rather than getting a parallel set. The names are
+ * kept to avoid a migration and a client-breaking route rename.
  *
  * The Super Admin uploads an installer (one row per version/platform) and
  * publishes it; any signed-in user can then list published releases and
@@ -17,8 +22,19 @@ import { RELEASE_DIR } from '../middleware/release-upload.middleware';
  * download count are all enforced server-side.
  */
 
-const PLATFORMS = ['windows', 'mac', 'linux'] as const;
+const PLATFORMS = ['windows', 'mac', 'linux', 'android'] as const;
 const CHANNELS = ['stable', 'beta'] as const;
+
+/**
+ * Android will only hand a download to its package installer if it arrives as
+ * application/vnd.android.package-archive. Express infers the type from the
+ * filename, and its mime database does not know .apk, so without this the APK
+ * is served as application/octet-stream and the phone just drops an opaque
+ * file in Downloads that the user has to find and open by hand.
+ */
+const CONTENT_TYPE_BY_EXT: Record<string, string> = {
+    '.apk': 'application/vnd.android.package-archive',
+};
 
 type Platform = (typeof PLATFORMS)[number];
 type Channel = (typeof CHANNELS)[number];
@@ -93,6 +109,23 @@ export const uploadRelease = async (req: express.Request, res: express.Response)
         const channel: Channel = CHANNELS.includes(req.body?.channel) ? req.body.channel : 'stable';
         const notes = typeof req.body?.notes === 'string' ? req.body.notes.trim().slice(0, 5000) : null;
 
+        // Extension and platform must agree. Nothing else cross-checks them, so
+        // a mis-selected dropdown would otherwise publish an .apk on the Windows
+        // tab (or an .exe on Android) and users would download something their
+        // device cannot install.
+        const ext = path.extname(file.originalname || '').toLowerCase();
+        const mismatch =
+            (ext === '.apk' && platform !== 'android') ||
+            (ext !== '.apk' && platform === 'android');
+        if (mismatch) {
+            await removeFileQuietly(file.filename);
+            return res.status(400).json({
+                message: ext === '.apk'
+                    ? 'An .apk is an Android build — set the platform to Android.'
+                    : `Android builds must be .apk files (got "${ext}").`,
+            });
+        }
+
         const dup = await db.query(
             'SELECT id FROM desktop_releases WHERE platform = $1 AND version = $2',
             [platform, version]
@@ -116,7 +149,7 @@ export const uploadRelease = async (req: express.Request, res: express.Response)
         );
 
         await auditService
-            .log(user!, 'Desktop Release Uploaded', `${platform} ${channel} ${version} (${file.originalname})`)
+            .log(user!, 'App Release Uploaded', `${platform} ${channel} ${version} (${file.originalname})`)
             .catch(() => {});
 
         res.status(201).json(toCamelCase(rows[0]));
@@ -166,7 +199,7 @@ export const updateRelease = async (req: express.Request, res: express.Response)
             await auditService
                 .log(
                     user!,
-                    isPublished ? 'Desktop Release Published' : 'Desktop Release Unpublished',
+                    isPublished ? 'App Release Published' : 'App Release Unpublished',
                     `${row.platform} ${row.version}`
                 )
                 .catch(() => {});
@@ -193,7 +226,7 @@ export const deleteRelease = async (req: express.Request, res: express.Response)
 
         await removeFileQuietly(rows[0].storage_path);
         await auditService
-            .log(user!, 'Desktop Release Deleted', `${rows[0].platform} ${rows[0].version}`)
+            .log(user!, 'App Release Deleted', `${rows[0].platform} ${rows[0].version}`)
             .catch(() => {});
 
         res.json({ success: true });
@@ -277,6 +310,9 @@ export const downloadRelease = async (req: express.Request, res: express.Respons
         // and completion cannot be detected reliably anyway.
         db.query('UPDATE desktop_releases SET download_count = download_count + 1 WHERE id = $1', [id])
             .catch((e: any) => console.warn('[Releases] download_count bump failed:', e?.message));
+
+        const explicitType = CONTENT_TYPE_BY_EXT[path.extname(row.file_name || '').toLowerCase()];
+        if (explicitType) res.type(explicitType);
 
         res.download(abs, row.file_name, err => {
             if (err && !res.headersSent) {
