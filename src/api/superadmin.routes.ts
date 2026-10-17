@@ -1,5 +1,5 @@
 import express from 'express';
-import { listStores, updateStore, createNotification, listSystemNotifications, getNotificationStatus, listRevenueSummary, listSubscriptionPayments, recordSubscriptionPayment, getStoreDetails, sendStoreNotification, setStoreModules, getStoreModules, previewStoreDeletion, deleteStore, listStoreArchives, removeStoreArchive } from '../controllers/superadmin.controller';
+import { listStores, updateStore, createNotification, listSystemNotifications, getNotificationStatus, listRevenueSummary, listSubscriptionPayments, recordSubscriptionPayment, getStoreDetails, sendStoreNotification, setStoreModules, getStoreModules, getStoreSmsSender, setStoreSmsSender, previewStoreDeletion, deleteStore, listStoreArchives, removeStoreArchive } from '../controllers/superadmin.controller';
 import { handleSuperAdminChat } from '../controllers/ai.controller';
 import {
     listCatalogModules, saveCatalogModule, removeCatalogModule,
@@ -134,6 +134,25 @@ router.post('/stores/:id/notifications', protect, superAdminOnly, sendStoreNotif
  */
 router.get('/stores/:id/modules', protect, superAdminOnly, getStoreModules);
 router.put('/stores/:id/modules', protect, superAdminOnly, setStoreModules);
+
+/**
+ * @openapi
+ * /superadmin/stores/{id}/sms-sender:
+ *   get:
+ *     tags: [Super Admin]
+ *     summary: A store's SMS display name and sender-id request
+ *     security: [{ bearerAuth: [] }]
+ *   put:
+ *     tags: [Super Admin]
+ *     summary: Approve, reject or revoke a store's alphanumeric SMS sender id
+ *     description: >
+ *       Not self-serve. The sender id must be registered with MTN/Airtel/Zamtel
+ *       by the store before the networks will carry it, and the platform checks
+ *       that the store is entitled to the brand it has asked for.
+ *     security: [{ bearerAuth: [] }]
+ */
+router.get('/stores/:id/sms-sender', protect, superAdminOnly, getStoreSmsSender);
+router.put('/stores/:id/sms-sender', protect, superAdminOnly, setStoreSmsSender);
 
 /**
  * @openapi

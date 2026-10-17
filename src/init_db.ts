@@ -553,6 +553,12 @@ async function initializeDatabase() {
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_sms_messages_store_created ON sms_messages(store_id, created_at);`);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_sms_messages_customer ON sms_messages(customer_id);`);
+        // What the customer actually received. `sender` is the id the provider was
+        // asked to send from (NULL = the shared platform sender) and `prefix` is the
+        // store-name prefix prepended on the way out, so the outreach history shows
+        // the real message rather than the one that was typed.
+        await client.query(`ALTER TABLE sms_messages ADD COLUMN IF NOT EXISTS sender TEXT;`);
+        await client.query(`ALTER TABLE sms_messages ADD COLUMN IF NOT EXISTS prefix TEXT;`);
 
         // Migration for existing sales table
         await client.query(`
@@ -1025,6 +1031,29 @@ async function initializeDatabase() {
         // JSONB rather than a table for the same reason payment_methods is: a
         // short, store-scoped list that is always read and written whole.
         await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS bank_accounts JSONB NOT NULL DEFAULT '[]'::jsonb;`);
+        // Who the customer sees an SMS from.
+        //
+        // Every store shares one Africa's Talking account, so without a name in
+        // the body a recipient cannot tell which shop texted them. The display
+        // name is prepended server-side on every send; it defaults to the store's
+        // own name below so no store starts out anonymous.
+        await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS sms_display_name TEXT;`);
+        // An alphanumeric sender id has to be registered with MTN/Airtel/Zamtel
+        // before the networks will carry it, and nothing in the string stops a
+        // store typing another business's brand. So the approved value lives in
+        // sms_sender_id (superadmin writes it, and only it is passed to the
+        // provider) while a store's own request waits in sms_sender_id_requested.
+        await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS sms_sender_id TEXT;`);
+        await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS sms_sender_id_requested TEXT;`);
+        await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS sms_sender_id_status TEXT NOT NULL DEFAULT 'none';`);
+        // One-time backfill: existing stores inherit their trading name, capped to
+        // the 20 characters the sender logic will prepend. Only touches NULLs, so
+        // a store that has edited its name keeps it across restarts.
+        await client.query(`
+            UPDATE store_settings
+               SET sms_display_name = LEFT(COALESCE(NULLIF(TRIM(name), ''), 'Store'), 20)
+             WHERE sms_display_name IS NULL;
+        `);
         // Product reviews: one per buyer per product, gated server-side to
         // verified purchases. Aggregates are denormalized onto products
         // (rating_avg/rating_count, updated in the review-write transaction)

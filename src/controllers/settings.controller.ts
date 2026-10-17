@@ -4,6 +4,7 @@ import { auditService } from '../services/audit.service';
 import { StoreSettings } from '../types';
 import { toCamelCase } from '../utils/helpers';
 import { isModuleEnabled, MODULES } from '../services/entitlements.service';
+import { resolveSenderIdRequest, sanitizeDisplayName } from '../services/sms-branding';
 
 export const getSettings = async (req: express.Request, res: express.Response) => {
     try {
@@ -45,8 +46,8 @@ export const getSettings = async (req: express.Request, res: express.Response) =
                 lencoSecretKey: ''
             };
             const insert = await db.query(
-                `INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled, lenco_public_key, lenco_secret_key)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+                `INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled, lenco_public_key, lenco_secret_key, sms_display_name)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
                  RETURNING *;`,
                 [
                     storeId,
@@ -65,7 +66,10 @@ export const getSettings = async (req: express.Request, res: express.Response) =
                     JSON.stringify(defaults.supplierPaymentMethods),
                     true, // Default is_online_store_enabled
                     defaults.lencoPublicKey,
-                    defaults.lencoSecretKey
+                    defaults.lencoSecretKey,
+                    // So a store's very first SMS already says who it is from,
+                    // rather than waiting for the next server boot to backfill.
+                    registeredStoreName.trim().slice(0, 20) || 'Store'
                 ]
             );
             return res.status(200).json(toCamelCase(insert.rows[0]));
@@ -188,9 +192,44 @@ export const updateSettings = async (req: express.Request, res: express.Response
                 .filter((a: any) => a.bankName || a.accountNumber)
         );
 
+        /**
+         * Who a customer sees an SMS from.
+         *
+         * The display name is prepended to every outgoing message server-side,
+         * so it is sanitized and capped here rather than trusted. The sender id
+         * is a different matter: it has to be registered with the networks, and
+         * the string alone cannot tell us whether this shop is entitled to it —
+         * a store's save only ever fills the pending column, and a superadmin
+         * moves it across (see resolveSenderIdRequest).
+         */
+        const smsDisplayName = (newSettings as any).smsDisplayName === undefined
+            ? null
+            : (sanitizeDisplayName((newSettings as any).smsDisplayName) || null);
+
+        let senderDecision: ReturnType<typeof resolveSenderIdRequest> | null = null;
+        if ((newSettings as any).smsSenderId !== undefined || (newSettings as any).smsSenderIdRequested !== undefined) {
+            const cur = await db.query(
+                'SELECT sms_sender_id, sms_sender_id_requested, sms_sender_id_status FROM store_settings WHERE store_id = $1',
+                [storeId],
+            );
+            const row = cur.rows[0] || {};
+            senderDecision = resolveSenderIdRequest({
+                currentSenderId: row.sms_sender_id,
+                currentRequested: row.sms_sender_id_requested,
+                currentStatus: row.sms_sender_id_status,
+                // Either field name is read as "this is what we would like"; only
+                // the superadmin route can approve one.
+                requested: (newSettings as any).smsSenderIdRequested !== undefined
+                    ? (newSettings as any).smsSenderIdRequested
+                    : (newSettings as any).smsSenderId,
+                isSuperAdmin: req.user?.role === 'superadmin',
+            });
+            if (!senderDecision.changed) senderDecision = null;
+        }
+
         const query = `
-            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled, lenco_public_key, lenco_secret_key, is_wholesale_supplier, delivery_fee, free_delivery_above, store_description, tpin, business_tagline, bank_accounts, prices_include_tax, override_thresholds)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, COALESCE($18, FALSE), COALESCE($19, 0), $20, $21, $24, $25, COALESCE($26::jsonb, '[]'::jsonb), COALESCE($27, FALSE), $28::jsonb)
+            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled, lenco_public_key, lenco_secret_key, is_wholesale_supplier, delivery_fee, free_delivery_above, store_description, tpin, business_tagline, bank_accounts, prices_include_tax, override_thresholds, sms_display_name, sms_sender_id, sms_sender_id_requested, sms_sender_id_status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, COALESCE($18, FALSE), COALESCE($19, 0), $20, $21, $24, $25, COALESCE($26::jsonb, '[]'::jsonb), COALESCE($27, FALSE), $28::jsonb, $29, $31, $32, COALESCE($33, 'none'))
             ON CONFLICT (store_id) DO UPDATE SET
                                            name = EXCLUDED.name,
                                            address = EXCLUDED.address,
@@ -224,7 +263,17 @@ export const updateSettings = async (req: express.Request, res: express.Response
                                            -- When a manager must be asked. Undefined leaves the
                                            -- stored limits alone; a settings screen that does not
                                            -- know the field must not quietly switch the control off.
-                                           override_thresholds = COALESCE($28::jsonb, store_settings.override_thresholds)
+                                           override_thresholds = COALESCE($28::jsonb, store_settings.override_thresholds),
+                                           -- Undefined leaves the stored name alone; a settings
+                                           -- screen that predates the field must not blank the
+                                           -- only thing identifying the shop in a text.
+                                           sms_display_name = COALESCE($29, store_settings.sms_display_name),
+                                           -- $30 is the "the sender id changed" flag. Without it a
+                                           -- save would have no way to clear an approved id, since
+                                           -- NULL is itself a meaningful value here.
+                                           sms_sender_id = CASE WHEN $30 THEN $31 ELSE store_settings.sms_sender_id END,
+                                           sms_sender_id_requested = CASE WHEN $30 THEN $32 ELSE store_settings.sms_sender_id_requested END,
+                                           sms_sender_id_status = CASE WHEN $30 THEN COALESCE($33, 'none') ELSE store_settings.sms_sender_id_status END
             RETURNING *;
         `;
         const values = [
@@ -258,6 +307,13 @@ export const updateSettings = async (req: express.Request, res: express.Response
             (newSettings as any).overrideThresholds === undefined
                 ? null
                 : JSON.stringify((newSettings as any).overrideThresholds ?? {}),
+            // SMS identity. The sender id trio is written only when
+            // resolveSenderIdRequest decided something actually changed.
+            smsDisplayName,
+            senderDecision !== null,
+            senderDecision?.senderId ?? null,
+            senderDecision?.requestedSenderId ?? null,
+            senderDecision?.status ?? null,
         ];
 
         const result = await db.query(query, values);

@@ -6,6 +6,7 @@ import { getEnabledModules, setEnabledModules } from '../services/entitlements.s
 import { SUBSCRIPTION_PLANS, getPlans } from '../services/subscription.service';
 import { planStoreDeletion, executeStoreDeletion, listArchives, deleteArchive, archiveRetentionDays } from '../services/store-deletion.service';
 import { storageService } from '../services/storage.service';
+import { sanitizeSenderId } from '../services/sms-branding';
 
 // Monthly price per plan id (all current plans bill monthly), for MRR.
 const PLAN_MONTHLY_PRICE: Record<string, number> = Object.fromEntries(
@@ -45,6 +46,83 @@ export const getStoreModules = async (req: express.Request, res: express.Respons
     } catch (e: any) {
         console.error('Error reading store modules', e);
         return res.status(500).json({ message: 'Failed to read store modules.' });
+    }
+};
+
+/**
+ * Read a store's SMS sender identity: the display name prepended to messages,
+ * the id it has asked the networks for, and whether that has been approved.
+ */
+export const getStoreSmsSender = async (req: express.Request, res: express.Response) => {
+    const { id } = req.params;
+    try {
+        const r = await db.query(
+            'SELECT name, sms_display_name, sms_sender_id, sms_sender_id_requested, sms_sender_id_status FROM store_settings WHERE store_id = $1',
+            [id],
+        );
+        if (r.rowCount === 0) return res.status(404).json({ message: 'Store settings not found.' });
+        return res.status(200).json({ storeId: id, ...toCamelCase(r.rows[0]) });
+    } catch (e: any) {
+        console.error('Error reading store SMS sender', e);
+        return res.status(500).json({ message: 'Failed to read the store SMS sender.' });
+    }
+};
+
+/**
+ * Approve or reject a store's requested alphanumeric sender id.
+ *
+ * Deliberately not self-serve. An alphanumeric sender has to be registered with
+ * MTN, Airtel and Zamtel before they will carry it, an unregistered one is
+ * rewritten or dropped, and nothing in the string stops a shop typing a bank's
+ * name into the box — so a human checks the paperwork, exactly as premium
+ * modules are granted above.
+ */
+export const setStoreSmsSender = async (req: express.Request, res: express.Response) => {
+    const { id } = req.params;
+    const { action, senderId } = req.body as { action?: 'approve' | 'reject' | 'revoke'; senderId?: string };
+    if (!action || !['approve', 'reject', 'revoke'].includes(action)) {
+        return res.status(400).json({ message: 'action must be one of approve, reject, revoke.' });
+    }
+    try {
+        const cur = await db.query(
+            'SELECT sms_sender_id, sms_sender_id_requested FROM store_settings WHERE store_id = $1',
+            [id],
+        );
+        if (cur.rowCount === 0) return res.status(404).json({ message: 'Store settings not found.' });
+
+        let sql: string;
+        let params: any[];
+        let detail: string;
+        if (action === 'approve') {
+            // Approving the request as it stands is the normal path; a sender id
+            // passed explicitly lets the operator approve the corrected spelling
+            // the networks actually registered.
+            const value = sanitizeSenderId(senderId ?? cur.rows[0].sms_sender_id_requested);
+            if (!value) return res.status(400).json({ message: 'There is no sender id to approve.' });
+            sql = `UPDATE store_settings SET sms_sender_id = $2, sms_sender_id_requested = NULL, sms_sender_id_status = 'approved'
+                   WHERE store_id = $1 RETURNING sms_sender_id, sms_sender_id_requested, sms_sender_id_status`;
+            params = [id, value];
+            detail = `Approved SMS sender id "${value}" for store ${id}`;
+        } else if (action === 'reject') {
+            sql = `UPDATE store_settings SET sms_sender_id_requested = NULL, sms_sender_id_status = CASE WHEN sms_sender_id IS NULL THEN 'rejected' ELSE 'approved' END
+                   WHERE store_id = $1 RETURNING sms_sender_id, sms_sender_id_requested, sms_sender_id_status`;
+            params = [id];
+            detail = `Rejected the requested SMS sender id for store ${id}`;
+        } else {
+            // Revoking drops the approval too, so the store falls back to the
+            // display-name prefix rather than silently sending unbranded.
+            sql = `UPDATE store_settings SET sms_sender_id = NULL, sms_sender_id_requested = NULL, sms_sender_id_status = 'none'
+                   WHERE store_id = $1 RETURNING sms_sender_id, sms_sender_id_requested, sms_sender_id_status`;
+            params = [id];
+            detail = `Revoked the SMS sender id for store ${id}`;
+        }
+
+        const saved = await db.query(sql, params);
+        await auditService.log(req.user!, 'Store SMS Sender Updated', detail);
+        return res.status(200).json({ storeId: id, ...toCamelCase(saved.rows[0]) });
+    } catch (e: any) {
+        console.error('Error updating store SMS sender', e);
+        return res.status(500).json({ message: 'Failed to update the store SMS sender.' });
     }
 };
 

@@ -26,7 +26,8 @@
     "test:cookies": "node tests/session-cookies.test.mjs",
     "test:downloads": "node tests/release-download-tokens.test.mjs",
     "test:crm": "node tests/crm.test.mjs",
-    "test:loyalty": "node tests/loyalty-points.test.mjs"
+    "test:loyalty": "node tests/loyalty-points.test.mjs",
+    "test:sms": "npm run build && node tests/sms-branding.test.mjs"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.19.0",

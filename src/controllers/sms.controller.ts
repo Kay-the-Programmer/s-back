@@ -4,6 +4,42 @@ import { smsService } from '../services/sms.service';
 import { auditService } from '../services/audit.service';
 import { MODULES, isModuleEnabled } from '../services/entitlements.service';
 import { generateId, toCamelCase } from '../utils/helpers';
+import {
+    resolveOutboundSms,
+    sanitizeDisplayName,
+    sanitizeSenderId,
+    SmsSenderIdStatus,
+} from '../services/sms-branding';
+
+/**
+ * How this store identifies itself to a customer: the name prepended to the
+ * body, and the sender id — but only once a superadmin has approved it, since
+ * the networks reject an unregistered one and nothing stops a store typing
+ * someone else's brand into the box.
+ */
+const getStoreBranding = async (storeId?: string) => {
+    if (!storeId) return { displayName: '', senderId: null as string | null, senderIdStatus: 'none' as SmsSenderIdStatus };
+    try {
+        const r = await db.query(
+            'SELECT name, sms_display_name, sms_sender_id, sms_sender_id_status FROM store_settings WHERE store_id = $1',
+            [storeId],
+        );
+        const row = r.rows[0];
+        if (!row) return { displayName: '', senderId: null, senderIdStatus: 'none' as SmsSenderIdStatus };
+        return {
+            // A store that has never opened the SMS settings still gets its
+            // trading name, so no message goes out anonymous.
+            displayName: sanitizeDisplayName(row.sms_display_name || row.name || ''),
+            senderId: sanitizeSenderId(row.sms_sender_id) || null,
+            senderIdStatus: (row.sms_sender_id_status || 'none') as SmsSenderIdStatus,
+        };
+    } catch (e: any) {
+        // Un-migrated deployment: fall back to no branding rather than refusing
+        // to send a message the store is paying for.
+        console.warn('[sms] branding lookup failed (non-fatal):', e.message);
+        return { displayName: '', senderId: null, senderIdStatus: 'none' as SmsSenderIdStatus };
+    }
+};
 
 /**
  * Persist an SMS attempt. Best-effort: a logging failure (e.g. the table not
@@ -12,14 +48,16 @@ import { generateId, toCamelCase } from '../utils/helpers';
 const logSms = async (row: {
     storeId?: string; customerId?: string | null; recipient: string; message: string;
     status: string; providerMessageId?: string | null; cost?: string | null; error?: string | null; sentBy?: string | null;
+    sender?: string | null; prefix?: string | null;
 }) => {
     try {
         const id = generateId('sms');
         await db.query(
-            `INSERT INTO sms_messages (id, store_id, customer_id, recipient, message, status, provider, provider_message_id, cost, error, sent_by)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+            `INSERT INTO sms_messages (id, store_id, customer_id, recipient, message, status, provider, provider_message_id, cost, error, sent_by, sender, prefix)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
             [id, row.storeId || null, row.customerId || null, row.recipient, row.message, row.status,
-                'africastalking', row.providerMessageId || null, row.cost || null, row.error || null, row.sentBy || null],
+                'africastalking', row.providerMessageId || null, row.cost || null, row.error || null, row.sentBy || null,
+                row.sender || null, row.prefix || null],
         );
         return id;
     } catch (e: any) {
@@ -31,7 +69,19 @@ const logSms = async (row: {
 export const getSmsConfig = async (req: express.Request, res: express.Response) => {
     const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
     const entitled = await isModuleEnabled(storeId, MODULES.SMS_MESSAGING);
-    res.status(200).json({ ...smsService.publicConfig(), entitled });
+    const branding = await getStoreBranding(storeId);
+    // The composer needs the prefix to price a message: the characters it costs
+    // are charged whether or not whoever is typing can see them.
+    const approved = branding.senderIdStatus === 'approved' && !!branding.senderId;
+    res.status(200).json({
+        ...smsService.publicConfig(),
+        entitled,
+        displayName: branding.displayName || null,
+        storeSenderId: approved ? branding.senderId : null,
+        senderIdStatus: branding.senderIdStatus,
+        // When the handset already shows the store's name, the body is left alone.
+        prefixesBody: !approved && !!branding.displayName,
+    });
 };
 
 export const sendSms = async (req: express.Request, res: express.Response) => {
@@ -57,16 +107,24 @@ export const sendSms = async (req: express.Request, res: express.Response) => {
     const recipient = smsService.normalizePhone(to);
     if (!recipient) return res.status(400).json({ message: 'Invalid recipient phone number.' });
 
+    // Branding is applied here, not in the client: a prefix the cashier can
+    // delete is a prefix that will be forgotten.
+    const branding = await getStoreBranding(storeId);
+    const outbound = resolveOutboundSms(branding, message);
+
     try {
-        const result = await smsService.sendSms(recipient, message.trim());
+        const result = await smsService.sendSms(recipient, outbound.text, outbound.from);
         const first = result.recipients[0];
         const status = first?.status || 'Submitted';
         const ok = /success|sent|submitted/i.test(status);
 
         const logId = await logSms({
-            storeId, customerId, recipient, message: message.trim(),
+            // The log stores what was actually delivered, prefix included, so the
+            // outreach history matches the customer's handset.
+            storeId, customerId, recipient, message: outbound.text,
             status: ok ? status : `Failed: ${status}`,
             providerMessageId: first?.messageId, cost: first?.cost, sentBy: req.user?.id,
+            sender: outbound.from || null, prefix: outbound.prefix || null,
         });
 
         if (req.user) {
@@ -82,11 +140,17 @@ export const sendSms = async (req: express.Request, res: express.Response) => {
             cost: first?.cost,
             messageId: first?.messageId,
             providerMessage: result.message,
+            sender: outbound.from || null,
+            text: outbound.text,
+            segments: outbound.segments.segments,
         });
     } catch (error: any) {
         const code = error?.code || 'SMS_ERROR';
         const msg = error?.message || 'Failed to send SMS.';
-        await logSms({ storeId, customerId, recipient, message: message.trim(), status: 'Failed', error: msg, sentBy: req.user?.id });
+        await logSms({
+            storeId, customerId, recipient, message: outbound.text, status: 'Failed', error: msg,
+            sentBy: req.user?.id, sender: outbound.from || null, prefix: outbound.prefix || null,
+        });
         console.error('[sms] send error:', msg);
         const httpStatus = code === 'SMS_NOT_CONFIGURED' ? 503 : 502;
         return res.status(httpStatus).json({ success: false, message: msg, code });
