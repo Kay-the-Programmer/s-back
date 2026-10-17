@@ -265,7 +265,14 @@ test('a store cannot overwrite an approval it already has', () => {
     });
     assert.equal(d.senderId, 'KAYHW');
     assert.equal(d.requestedSenderId, 'BIGBANK');
-    assert.equal(d.status, 'pending');
+    // And it stays approved. Flipping to 'pending' here would take a working
+    // sender id out of service the moment the store asked about another one —
+    // the messages would quietly fall back to the body prefix.
+    assert.equal(d.status, 'approved');
+    assert.equal(
+        resolveOutboundSms({ displayName: 'Kay Hardware', senderId: d.senderId, senderIdStatus: d.status }, 'hi').from,
+        'KAYHW',
+    );
 });
 
 test('a store can withdraw its own request but not its approval', () => {

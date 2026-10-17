@@ -257,6 +257,15 @@ export const resolveSenderIdRequest = (input: SenderIdRequest): SenderIdDecision
 
     // A store re-asking for what it already has approved changes nothing.
     if (currentApproved === wanted && currentStatus === 'approved') return unchanged;
-    if (currentRequested === wanted && currentStatus === 'pending') return unchanged;
-    return { senderId: currentApproved || null, requestedSenderId: wanted, status: 'pending', changed: true };
+    if (currentRequested === wanted && currentStatus === (currentApproved ? 'approved' : 'pending')) return unchanged;
+    return {
+        senderId: currentApproved || null,
+        requestedSenderId: wanted,
+        // A store that already has a working sender id and asks for a different
+        // one stays approved: whether a request is outstanding is told by
+        // requestedSenderId, and letting it flip the status to 'pending' would
+        // quietly stop using the id the networks have already granted.
+        status: currentApproved ? 'approved' : 'pending',
+        changed: true,
+    };
 };
