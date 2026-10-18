@@ -5,6 +5,7 @@ import {
     listCampaigns, createCampaign, updateCampaignStatus, deleteCampaign, runCampaignNow,
 } from '../services/whatsapp-campaign.service';
 
+/** WhatsApp ships included rather than sold — see whatsapp.controller. */
 const WHATSAPP_FREE = process.env.WHATSAPP_FREE !== 'false';
 
 const ensureEntitled = async (req: express.Request, res: express.Response): Promise<string | null> => {

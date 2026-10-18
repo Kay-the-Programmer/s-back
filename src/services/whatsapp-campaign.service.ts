@@ -3,7 +3,7 @@ import whatsAppService from './whatsapp.service';
 import { MODULES, isModuleEnabled } from './entitlements.service';
 import { generateId } from '../utils/helpers';
 
-/** Dev free-override (mirrors whatsapp.controller). */
+/** WhatsApp ships included rather than sold — see whatsapp.controller. */
 const WHATSAPP_FREE = process.env.WHATSAPP_FREE !== 'false';
 /** Safety cap: max recipients messaged per campaign per scheduler tick. */
 const MAX_PER_RUN = 250;

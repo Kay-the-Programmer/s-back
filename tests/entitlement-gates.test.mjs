@@ -186,17 +186,41 @@ const main = async () => {
             ['advanced_reports', 'auto_reorder', 'team_members', 'unlimited_products'].every(id => ids.includes(id)), ids.join(','));
     }
 
+    // ---------------------------------------------------- whatsapp ---------
+    // WhatsApp ships included rather than sold: connecting the inbox needs Meta
+    // dashboard work a one-till shop cannot do alone. So it must NOT be on the
+    // price list, and must keep working for a store with no modules at all.
+    check('WhatsApp is not on the price list', !ids.includes('whatsapp_messaging'), ids.join(','));
+
+    await setModules([]);
+    const waStatus = await req('GET', '/whatsapp/status', null, H);
+    check('WhatsApp stays usable without any add-on', waStatus.status === 200, `status=${waStatus.status}`);
+    const waConfig = await req('GET', '/whatsapp/config', null, H);
+    check('the WhatsApp connection screen still opens', waConfig.status === 200, `status=${waConfig.status}`);
+    const waCampaigns = await req('GET', '/whatsapp/campaigns', null, H);
+    check('WhatsApp campaigns stay usable', waCampaigns.status === 200, `status=${waCampaigns.status}`);
+
     // And the database rows themselves say the same, for an already-seeded
-    // catalogue that the one-time correction had to repair.
+    // catalogue that the one-time corrections had to repair.
     const rows = await db.query(
         `SELECT id, active, is_core, price FROM catalog_modules WHERE id = ANY($1::text[])`,
-        [['quick_import', 'social_marketing', 'public_tracking']],
+        [['quick_import', 'social_marketing', 'public_tracking', 'whatsapp_messaging']],
     );
     const byId = Object.fromEntries(rows.rows.map(r => [r.id, r]));
     check('quick_import is marked core and free', byId.quick_import?.is_core === true && Number(byId.quick_import?.price) === 0,
         JSON.stringify(byId.quick_import));
     check('social_marketing is inactive', byId.social_marketing?.active === false);
     check('public_tracking is inactive', byId.public_tracking?.active === false);
+    check('whatsapp_messaging is included, not sold',
+        byId.whatsapp_messaging?.active === false && byId.whatsapp_messaging?.is_core === true
+        && Number(byId.whatsapp_messaging?.price) === 0, JSON.stringify(byId.whatsapp_messaging));
+
+    // No plan may still advertise a module that is no longer sold, or a store
+    // upgrading to it would be paying for something already included.
+    const plans = await db.query('SELECT id, module_ids FROM catalog_plans');
+    const stillBundled = plans.rows.filter(p => (p.module_ids || []).includes('whatsapp_messaging') || (p.module_ids || []).includes('quick_import'));
+    check('no plan bundles a now-free module', stillBundled.length === 0,
+        stillBundled.map(p => p.id).join(',') || 'none');
 
     await db.query('DELETE FROM purchase_order_items WHERE store_id = $1', [STORE_ID]).catch(() => {});
     await db.query('DELETE FROM purchase_orders WHERE store_id = $1', [STORE_ID]).catch(() => {});

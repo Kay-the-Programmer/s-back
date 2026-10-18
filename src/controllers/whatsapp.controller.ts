@@ -37,14 +37,21 @@ const isValidSignature = (req: express.Request): boolean => {
 };
 
 /**
- * DEV OVERRIDE: WhatsApp messaging is free while the team is building/testing the
- * CRM integration, so no one hits the premium paywall. Defaults to FREE; set
- * `WHATSAPP_FREE=false` in the environment (and `VITE_WHATSAPP_FREE=false` on the
- * frontend) to re-enable the paid add-on before charging for it.
+ * WhatsApp messaging ships INCLUDED, not sold — this is a launch decision, not
+ * the dev override it started life as. Connecting the inbox means the shop
+ * creating a Meta app, obtaining a phone_number_id and a permanent access
+ * token, and registering our callback URL in the Meta dashboard; there is no
+ * shared platform number for stores. A one-till shop cannot do that unaided,
+ * so billing 110 a month for it would be selling support calls. The catalogue
+ * row is off sale to match (see catalog.service `whatsapp_included_v1`).
+ *
+ * Set `WHATSAPP_FREE=false` here and `VITE_WHATSAPP_FREE=false` on the frontend
+ * to charge for it once onboarding is self-serve; the gates below are already
+ * written for that day and are covered by tests/entitlement-gates.
  */
 const WHATSAPP_FREE = process.env.WHATSAPP_FREE !== 'false';
 
-/** Whether a store may use WhatsApp — honours the dev free-override. */
+/** Whether a store may use WhatsApp — free unless the add-on is switched on. */
 const isWhatsappEntitled = async (storeId?: string | null): Promise<boolean> =>
     WHATSAPP_FREE || isModuleEnabled(storeId, MODULES.WHATSAPP_MESSAGING);
 

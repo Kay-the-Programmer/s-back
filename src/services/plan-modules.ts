@@ -32,7 +32,7 @@ export const PLAN_MODULES: Record<string, ModuleId[]> = {
         MODULES.ADVANCED_REPORTS,
         MODULES.AI_ASSISTANT,
         MODULES.SMS_MESSAGING,
-        MODULES.WHATSAPP_MESSAGING,
+        // WHATSAPP_MESSAGING is included free as of launch — no plan grants it.
         MODULES.SOCIAL_MARKETING,
         MODULES.PUBLIC_TRACKING,
         MODULES.UNLIMITED_PRODUCTS,

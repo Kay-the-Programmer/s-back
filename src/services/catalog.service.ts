@@ -53,7 +53,14 @@ const MODULE_SEED: CatalogModule[] = [
     // row so already-seeded databases stop offering it for sale.
     { id: MODULES.QUICK_IMPORT,    name: 'Quick Import',             description: 'Bulk-import products and build purchase orders from lists fast. Included free.', price: 0, currency: 'ZMW', pages: [],         independentlyPurchasable: false, isCore: true,  active: false, sortOrder: 5 },
     { id: MODULES.SMS_MESSAGING,   name: 'SMS Messaging',            description: 'Send SMS to customers directly from the app.',                            price: 90,  currency: 'ZMW', pages: [],             independentlyPurchasable: true, isCore: false, active: true, sortOrder: 6 },
-    { id: MODULES.WHATSAPP_MESSAGING, name: 'WhatsApp Messaging',     description: 'Chat with customers on WhatsApp Business — two-way inbox right inside the CRM.', price: 110, currency: 'ZMW', pages: [],         independentlyPurchasable: true, isCore: false, active: true, sortOrder: 7 },
+    // Included free at launch rather than sold. Connecting the inbox means the
+    // shop creating a Meta app, getting a phone_number_id and a permanent
+    // access token, and registering our callback URL in the Meta dashboard
+    // (see CrmWhatsAppConnect) — there is no shared platform number for stores.
+    // That is not something a one-till shop does unaided, so charging 110 for
+    // it would sell support calls. The price returns when onboarding is
+    // self-serve; until then the feature works and is not billed.
+    { id: MODULES.WHATSAPP_MESSAGING, name: 'WhatsApp Messaging',     description: 'Chat with customers on WhatsApp Business — two-way inbox right inside the CRM. Included free.', price: 0, currency: 'ZMW', pages: [],  independentlyPurchasable: false, isCore: true,  active: false, sortOrder: 7 },
     // Withdrawn from sale for launch: both sit behind apps that are not in the
     // launcher (Marketing Suite, Logistics), so they cannot be sold honestly
     // yet. Re-activate these two rows when those apps ship.
@@ -241,6 +248,30 @@ export const ensureCatalogSeeded = async (): Promise<void> => {
         );
         await db.query('INSERT INTO catalog_meta (key) VALUES ($1) ON CONFLICT DO NOTHING', [CORRECTION_KEY]);
         console.log('[catalog] applied launch withdrawals (quick_import now core; social_marketing + public_tracking off sale).');
+    }
+
+    // WhatsApp Messaging, same treatment, separate key: it was listed at 110
+    // but given away by a dev override, so nobody was ever billed for it.
+    // Connecting the inbox needs Meta dashboard work the shop cannot do alone,
+    // so it ships included rather than sold. Its own key, because the step
+    // above may already have been applied on this database.
+    const WHATSAPP_KEY = 'whatsapp_included_v1';
+    const waApplied = await db.query('SELECT 1 FROM catalog_meta WHERE key = $1', [WHATSAPP_KEY]);
+    if (waApplied.rowCount === 0) {
+        await db.query(
+            `UPDATE catalog_modules
+                SET active = FALSE, independently_purchasable = FALSE, is_core = TRUE, price = 0, updated_at = NOW()
+              WHERE id = $1`,
+            [MODULES.WHATSAPP_MESSAGING],
+        );
+        await db.query(
+            `UPDATE catalog_plans
+                SET module_ids = array_remove(module_ids, $1), updated_at = NOW()
+              WHERE $1 = ANY(module_ids)`,
+            [MODULES.WHATSAPP_MESSAGING],
+        );
+        await db.query('INSERT INTO catalog_meta (key) VALUES ($1) ON CONFLICT DO NOTHING', [WHATSAPP_KEY]);
+        console.log('[catalog] WhatsApp Messaging is now included free rather than sold.');
     }
 
     const pCount = await db.query('SELECT COUNT(*)::int AS n FROM catalog_plans');
