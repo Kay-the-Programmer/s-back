@@ -10,7 +10,7 @@
  *   npm run build && node tests/archive-retention.test.mjs
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, existsSync, rmSync, utimesSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, rmSync, utimesSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 const ARCHIVES = 'archives';
@@ -44,8 +44,20 @@ const load = async () => {
     return mod;
 };
 
+/**
+ * Empty the archive directory WITHOUT removing the directory itself. Compose
+ * bind-mounts `archives/` into the backend container; deleting the directory
+ * on the host leaves that mount dangling, and every later store deletion then
+ * fails with ENOENT until the container is recreated. So only the contents go.
+ */
 const cleanup = () => {
-    try { rmSync(ARCHIVES, { recursive: true, force: true }); } catch { /* nothing to clear */ }
+    try {
+        mkdirSync(ARCHIVES, { recursive: true });
+        for (const name of readdirSync(ARCHIVES)) {
+            if (name === '.gitkeep') continue;
+            rmSync(join(ARCHIVES, name), { recursive: true, force: true });
+        }
+    } catch { /* nothing to clear */ }
 };
 
 const main = async () => {

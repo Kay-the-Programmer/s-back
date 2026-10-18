@@ -324,3 +324,62 @@ export const receiveItems = async (req: express.Request, res: express.Response) 
         client.release();
     }
 };
+
+/**
+ * Reorder suggestions — one draft purchase order per supplier, covering every
+ * active product at or below its reorder point. This is the server half of the
+ * AUTO_REORDER add-on: the maths lives here rather than in the browser so the
+ * entitlement is actually enforceable (a client-side generator can simply be
+ * un-hidden). Mirrors `generateReorderDrafts` in the web client's poModel.
+ *
+ * Suggested quantity tops stock back up to reorderPoint + safetyStock, never
+ * less than one unit. Drafts are returned richest-first, as the UI lists them.
+ */
+export const getReorderSuggestions = async (req: express.Request, res: express.Response) => {
+    try {
+        const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
+        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+
+        const { rows } = await db.query(`
+            SELECT p.id, p.name, p.sku, p.cost_price, p.stock, p.reorder_point, p.safety_stock,
+                   p.supplier_id, s.name AS supplier_name
+            FROM products p
+                     JOIN suppliers s ON s.id = p.supplier_id AND s.store_id = p.store_id
+            WHERE p.store_id = $1
+              AND p.status = 'active'
+              AND p.reorder_point IS NOT NULL
+              AND p.reorder_point > 0
+              AND p.stock <= p.reorder_point
+            ORDER BY s.name, p.name
+        `, [storeId]);
+
+        const settings = await db.query('SELECT tax_rate FROM store_settings WHERE store_id = $1', [storeId]);
+        const taxRate = Number(settings.rows[0]?.tax_rate) || 0;
+
+        type DraftItem = { productId: string; productName: string; sku: string; quantity: number; costPrice: number; receivedQuantity: number };
+        type Draft = { supplierId: string; supplierName: string; items: DraftItem[] };
+        const bySupplier = new Map<string, Draft>();
+        for (const r of rows) {
+            const quantity = Math.max(1, (Number(r.reorder_point) || 0) + (Number(r.safety_stock) || 0) - (Number(r.stock) || 0));
+            const draft: Draft = bySupplier.get(r.supplier_id)
+                || { supplierId: r.supplier_id, supplierName: r.supplier_name || 'Supplier', items: [] };
+            draft.items.push({
+                productId: r.id, productName: r.name, sku: r.sku,
+                quantity, costPrice: Number(r.cost_price) || 0, receivedQuantity: 0,
+            });
+            bySupplier.set(r.supplier_id, draft);
+        }
+
+        const drafts = Array.from(bySupplier.values()).map(d => {
+            const subtotal = d.items.reduce((s, it) => s + it.quantity * it.costPrice, 0);
+            const units = d.items.reduce((s, it) => s + it.quantity, 0);
+            const tax = subtotal * (taxRate / 100);
+            return { ...d, units, subtotal, tax, total: subtotal + tax };
+        }).sort((a, b) => b.total - a.total);
+
+        res.status(200).json({ drafts });
+    } catch (error) {
+        console.error('Error building reorder suggestions:', error);
+        res.status(500).json({ message: 'Error building reorder suggestions' });
+    }
+};

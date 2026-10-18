@@ -47,11 +47,18 @@ const MODULE_SEED: CatalogModule[] = [
     { id: MODULES.ADVANCED_REPORTS, name: 'Advanced Reports',         description: 'Full analytics: profit, channels, trends and exports.',                  price: 70,  currency: 'ZMW', pages: ['reports'],    independentlyPurchasable: true, isCore: false, active: true, sortOrder: 2 },
     { id: MODULES.TEAM_MEMBERS,    name: 'Team Members',             description: 'Add staff accounts with role-based permissions (beyond the free seat).', price: 60,  currency: 'ZMW', pages: [],             independentlyPurchasable: true, isCore: false, active: true, sortOrder: 3 },
     { id: MODULES.AUTO_REORDER,    name: 'Auto Reorder & POs',       description: 'Auto-generate purchase orders from low-stock alerts.',                    price: 80,  currency: 'ZMW', pages: [],             independentlyPurchasable: true, isCore: false, active: true, sortOrder: 4 },
-    { id: MODULES.QUICK_IMPORT,    name: 'Quick Import',             description: 'Bulk-import products and build purchase orders from lists fast.',         price: 40,  currency: 'ZMW', pages: [],             independentlyPurchasable: true, isCore: false, active: true, sortOrder: 5 },
+    // Quick Import is FREE CORE as of launch. Getting a catalogue into the app
+    // is the first thing a new store must do, so charging at that moment just
+    // costs activations. Kept in the catalogue as an inactive, zero-priced core
+    // row so already-seeded databases stop offering it for sale.
+    { id: MODULES.QUICK_IMPORT,    name: 'Quick Import',             description: 'Bulk-import products and build purchase orders from lists fast. Included free.', price: 0, currency: 'ZMW', pages: [],         independentlyPurchasable: false, isCore: true,  active: false, sortOrder: 5 },
     { id: MODULES.SMS_MESSAGING,   name: 'SMS Messaging',            description: 'Send SMS to customers directly from the app.',                            price: 90,  currency: 'ZMW', pages: [],             independentlyPurchasable: true, isCore: false, active: true, sortOrder: 6 },
     { id: MODULES.WHATSAPP_MESSAGING, name: 'WhatsApp Messaging',     description: 'Chat with customers on WhatsApp Business — two-way inbox right inside the CRM.', price: 110, currency: 'ZMW', pages: [],         independentlyPurchasable: true, isCore: false, active: true, sortOrder: 7 },
-    { id: MODULES.SOCIAL_MARKETING, name: 'Social Marketing',        description: 'Manage your Facebook Page — publish posts, moderate comments and see engagement insights.', price: 120, currency: 'ZMW', pages: ['marketing'], independentlyPurchasable: true, isCore: false, active: true, sortOrder: 8 },
-    { id: MODULES.PUBLIC_TRACKING, name: 'Public Shipment Tracking', description: 'Let customers track their deliveries via a public link.',                 price: 50,  currency: 'ZMW', pages: [],             independentlyPurchasable: true, isCore: false, active: true, sortOrder: 9 },
+    // Withdrawn from sale for launch: both sit behind apps that are not in the
+    // launcher (Marketing Suite, Logistics), so they cannot be sold honestly
+    // yet. Re-activate these two rows when those apps ship.
+    { id: MODULES.SOCIAL_MARKETING, name: 'Social Marketing',        description: 'Manage your Facebook Page — publish posts, moderate comments and see engagement insights.', price: 120, currency: 'ZMW', pages: ['marketing'], independentlyPurchasable: true, isCore: false, active: false, sortOrder: 8 },
+    { id: MODULES.PUBLIC_TRACKING, name: 'Public Shipment Tracking', description: 'Let customers track their deliveries via a public link.',                 price: 50,  currency: 'ZMW', pages: [],             independentlyPurchasable: true, isCore: false, active: false, sortOrder: 9 },
     { id: MODULES.UNLIMITED_PRODUCTS, name: 'Unlimited Products',    description: 'Remove the free 100-product limit — add as many products as you like.',   price: 100, currency: 'ZMW', pages: [],             independentlyPurchasable: true, isCore: false, active: true, sortOrder: 10 },
     { id: MODULES.PAYMENT_GATEWAY,    name: 'Accept Mobile Money',      description: 'Take Airtel & MTN mobile-money payments at checkout. Connect your own Lenco account and get paid directly.', price: 60, currency: 'ZMW', pages: [], independentlyPurchasable: true, isCore: false, active: true, sortOrder: 11 },
 ];
@@ -196,6 +203,46 @@ export const ensureCatalogSeeded = async (): Promise<void> => {
             console.log('[catalog] added Accept Mobile Money add-on to existing catalog.');
         }
     }
+
+    // --- Launch catalogue correction (one-time) ------------------------------
+    // Seeding above only runs on an empty catalogue, so an existing database
+    // would keep selling three add-ons we are no longer selling:
+    //   • quick_import      → now free core (charging at import time cost activations)
+    //   • social_marketing  → its app is not in the launcher
+    //   • public_tracking   → its app is not in the launcher
+    // Applied once and recorded, so a Super Admin can re-activate any of them
+    // afterwards without this undoing their decision on the next boot.
+    await db.query(`
+        CREATE TABLE IF NOT EXISTS catalog_meta (
+            key TEXT PRIMARY KEY,
+            applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )`);
+    const CORRECTION_KEY = 'launch_withdrawals_v1';
+    const applied = await db.query('SELECT 1 FROM catalog_meta WHERE key = $1', [CORRECTION_KEY]);
+    if (applied.rowCount === 0) {
+        await db.query(
+            `UPDATE catalog_modules
+                SET active = FALSE, independently_purchasable = FALSE, updated_at = NOW()
+              WHERE id = ANY($1::text[])`,
+            [[MODULES.SOCIAL_MARKETING, MODULES.PUBLIC_TRACKING]],
+        );
+        await db.query(
+            `UPDATE catalog_modules
+                SET active = FALSE, independently_purchasable = FALSE, is_core = TRUE, price = 0, updated_at = NOW()
+              WHERE id = $1`,
+            [MODULES.QUICK_IMPORT],
+        );
+        // Paid plans no longer advertise an add-on that is now free core.
+        await db.query(
+            `UPDATE catalog_plans
+                SET module_ids = array_remove(module_ids, $1), updated_at = NOW()
+              WHERE $1 = ANY(module_ids)`,
+            [MODULES.QUICK_IMPORT],
+        );
+        await db.query('INSERT INTO catalog_meta (key) VALUES ($1) ON CONFLICT DO NOTHING', [CORRECTION_KEY]);
+        console.log('[catalog] applied launch withdrawals (quick_import now core; social_marketing + public_tracking off sale).');
+    }
+
     const pCount = await db.query('SELECT COUNT(*)::int AS n FROM catalog_plans');
     if (pCount.rows[0].n === 0) {
         for (const p of PLAN_SEED) await writePlan(p);

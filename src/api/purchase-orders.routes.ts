@@ -1,10 +1,32 @@
 import express from 'express';
-import { getPurchaseOrders, createPurchaseOrder, updatePurchaseOrder, deletePurchaseOrder, receiveItems } from '../controllers/purchase-orders.controller';
+import { getPurchaseOrders, createPurchaseOrder, updatePurchaseOrder, deletePurchaseOrder, receiveItems, getReorderSuggestions } from '../controllers/purchase-orders.controller';
 import { protect, canManageInventory } from '../middleware/auth.middleware';
+import { requireModule } from '../middleware/entitlements.middleware';
+import { MODULES } from '../services/entitlements.service';
 
 const router = express.Router();
 
 router.use(protect, canManageInventory);
+
+/**
+ * @openapi
+ * /purchase-orders/reorder-suggestions:
+ *   get:
+ *     tags: [Purchase Orders]
+ *     summary: Draft purchase orders for everything at or below its reorder point
+ *     description: >
+ *       Premium (AUTO_REORDER add-on). Raising a purchase order by hand stays
+ *       free; only the automatic suggestion is paid for, which is why the gate
+ *       sits here rather than on POST /purchase-orders.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: One draft per supplier, richest first
+ *       402:
+ *         description: The store does not have the Auto Reorder add-on
+ */
+router.get('/reorder-suggestions', requireModule(MODULES.AUTO_REORDER), getReorderSuggestions);
 
 /**
  * @openapi

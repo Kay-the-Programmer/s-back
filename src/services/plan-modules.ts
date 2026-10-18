@@ -19,7 +19,7 @@ export const PLAN_MODULES: Record<string, ModuleId[]> = {
     plan_pro: [
         MODULES.TEAM_MEMBERS,
         MODULES.AUTO_REORDER,
-        MODULES.QUICK_IMPORT,
+        // QUICK_IMPORT is free core as of launch — no plan needs to grant it.
         MODULES.ADVANCED_REPORTS,
         MODULES.AI_ASSISTANT,
         MODULES.UNLIMITED_PRODUCTS,
@@ -28,7 +28,7 @@ export const PLAN_MODULES: Record<string, ModuleId[]> = {
     plan_enterprise: [
         MODULES.TEAM_MEMBERS,
         MODULES.AUTO_REORDER,
-        MODULES.QUICK_IMPORT,
+        // QUICK_IMPORT is free core as of launch — no plan needs to grant it.
         MODULES.ADVANCED_REPORTS,
         MODULES.AI_ASSISTANT,
         MODULES.SMS_MESSAGING,

@@ -51,4 +51,7 @@ available_models.txt
 !package-lock.json
 !public/.well-known/assetLinks.json
 # Store archives written before a deletion. Whole shops, customers included.
-archives/
+# The directory itself is tracked (via .gitkeep) because compose bind-mounts it:
+# if it is missing on the host the mount lands broken and store deletion 500s.
+archives/*
+!archives/.gitkeep

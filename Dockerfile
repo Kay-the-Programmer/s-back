@@ -29,8 +29,11 @@ RUN npm install --omit=dev --ignore-scripts
 # Copy compiled code from builder stage
 COPY --from=builder /usr/src/app/dist ./dist
 
-# Create necessary directories for the application
-RUN mkdir -p uploads public/images
+# Create necessary directories for the application. `archives` must exist in
+# the image: store deletion writes a full archive before destroying anything,
+# and on a host where ./archives was never created the bind mount lands broken
+# and even a recursive mkdir fails — every deletion then 500s.
+RUN mkdir -p uploads public/images archives
 
 # Expose the application port
 EXPOSE 5000

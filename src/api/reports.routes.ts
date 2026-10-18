@@ -1,8 +1,18 @@
 import express from 'express';
 import { getDashboardData, getDailySalesWithProducts, getProductSales, getPersonalUseAdjustments } from '../controllers/reports.controller';
 import { protect, canManageInventory, canPerformSales } from '../middleware/auth.middleware';
+import { requireModule } from '../middleware/entitlements.middleware';
+import { MODULES } from '../services/entitlements.service';
 
 const router = express.Router();
+
+/**
+ * Entitlement split for this group. `/dashboard` and `/daily-sales` stay FREE —
+ * they feed the core Business Dashboard and the POS day summary, both of which
+ * the free tier includes. The analytical reports behind the Reports page are
+ * the ADVANCED_REPORTS add-on, so they are gated here as well as in the UI;
+ * hiding a button is UX, not enforcement.
+ */
 
 /**
  * @openapi
@@ -71,7 +81,7 @@ router.get('/daily-sales', protect, canPerformSales, getDailySalesWithProducts);
  *       200:
  *         description: Per-product units sold, revenue, cost and profit
  */
-router.get('/product-sales', protect, canPerformSales, getProductSales);
+router.get('/product-sales', protect, canPerformSales, requireModule(MODULES.ADVANCED_REPORTS), getProductSales);
 
 /**
  * @openapi
@@ -85,6 +95,6 @@ router.get('/product-sales', protect, canPerformSales, getProductSales);
  *       200:
  *         description: Personal use adjustment records
  */
-router.get('/personal-use', protect, canManageInventory, getPersonalUseAdjustments);
+router.get('/personal-use', protect, canManageInventory, requireModule(MODULES.ADVANCED_REPORTS), getPersonalUseAdjustments);
 
 export default router;
