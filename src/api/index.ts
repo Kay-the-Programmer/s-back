@@ -28,8 +28,6 @@ import expenseRoutes from './expenses.routes';
 import salesDocumentRoutes from './sales-documents.routes';
 import onboardingRoutes from './onboarding.routes';
 import subscriptionRoutes from './subscription.routes';
-import offerRoutes from './offers.routes';
-import messageRoutes from './messages.routes';
 import verificationRoutes from './verification.routes';
 
 import paymentRoutes from './payments.routes';
@@ -75,8 +73,6 @@ router.use('/expenses', expenseRoutes);
 router.use('/sales-documents', salesDocumentRoutes);
 router.use('/onboarding', onboardingRoutes);
 router.use('/subscriptions', subscriptionRoutes);
-router.use('/offers', offerRoutes);
-router.use('/messages', messageRoutes);
 router.use('/verification', verificationRoutes);
 router.use('/payments', paymentRoutes);
 router.use('/recurring-expenses', recurringExpenseRoutes);

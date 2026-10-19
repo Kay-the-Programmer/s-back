@@ -177,7 +177,6 @@ new SocketService(io);
 import { runRecurringExpenses } from './controllers/recurring-expenses.controller';
 import { notificationSchedulerService } from './services/notification-scheduler.service';
 import { runSubscriptionLifecycle } from './services/subscription-lifecycle.service';
-import { runAddonRenewals } from './services/module-purchase.service';
 import { runStaleOrderCleanup } from './services/stale-order.service';
 import { runPlanRenewals } from './services/subscription.service';
 import { ensureCatalogSeeded } from './services/catalog.service';
@@ -226,10 +225,14 @@ const startServer = async () => {
       runSubscriptionLifecycle().catch(err => console.error('[lifecycle] Error in interval run:', err));
     }, 6 * 60 * 60 * 1000);
 
-    // Auto-renew / dunning for à-la-carte add-ons AND subscription plans (initiate
-    // near expiry, confirm pending charges, remind manual renewers). Every 12 hours.
+    // Auto-renew / dunning for subscription plans (initiate near expiry, confirm
+    // pending charges, remind manual renewers). Every 12 hours.
+    //
+    // The à-la-carte add-on sweep that used to run alongside this is gone:
+    // nothing is sold per-feature any more, so it was a live billing path with
+    // no product behind it, waking twice a day to look for module_purchases
+    // rows that can no longer be created.
     const runRenewals = () => {
-      runAddonRenewals().catch(err => console.error('[renewal] add-on error:', err));
       runPlanRenewals().catch(err => console.error('[plan-renewal] error:', err));
     };
     runRenewals();
