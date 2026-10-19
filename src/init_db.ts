@@ -9,6 +9,34 @@ async function initializeDatabase() {
     console.log('--- Initializing Database Tables / Migrations ---');
     const client = await (db as any)._pool.connect();
 
+    /**
+     * Migrations whose table is created further down this file than the
+     * migration itself. On an existing database the table is already there and
+     * they apply immediately; on a FRESH one they would throw 42P01
+     * (undefined_table) and abort the whole init — which is exactly what
+     * `npm run db:reset` and any new environment do, leaving a half-built
+     * schema of ~18 tables and a backend that 500s on store registration.
+     *
+     * Rather than depend on statement order staying correct forever, anything
+     * that hits a missing table is parked here and replayed once every
+     * CREATE TABLE has run. Skipping them instead would not do: some add
+     * columns that the CREATE does not contain (store_settings.override_thresholds,
+     * sales_documents.prices_include_tax), so a fresh database would come up
+     * missing them and fail at runtime instead of at boot.
+     */
+    const deferredMigrations: { sql: string; label: string }[] = [];
+    const migrate = async (sql: string, label: string) => {
+        try {
+            await client.query(sql);
+        } catch (e: any) {
+            if (e?.code === '42P01') {
+                deferredMigrations.push({ sql, label });
+                return;
+            }
+            throw e;
+        }
+    };
+
     try {
         // Phase A: Ensure critical auth table exists and is committed independently
         await client.query('BEGIN');
@@ -681,8 +709,9 @@ async function initializeDatabase() {
                 END IF;
             END $$;
         `);
-        await client.query(
+        await migrate(
             `ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS prices_include_tax BOOLEAN NOT NULL DEFAULT FALSE;`,
+            'store_settings.prices_include_tax',
         );
 
         // The tax charged, broken down by class, frozen at the moment of sale.
@@ -736,14 +765,18 @@ async function initializeDatabase() {
 
         // When a manager must be asked, per store. Null means never — which is
         // exactly how every store behaved before this existed.
-        await client.query(
+        await migrate(
             `ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS override_thresholds JSONB;`,
+            'store_settings.override_thresholds',
         );
 
         // A document freezes the tax mode it was issued under alongside its rate,
         // so editing an old invoice cannot reprice it against a setting the store
         // has changed since.
-        await client.query(`ALTER TABLE sales_documents ADD COLUMN IF NOT EXISTS prices_include_tax BOOLEAN NOT NULL DEFAULT FALSE;`);
+        await migrate(
+            `ALTER TABLE sales_documents ADD COLUMN IF NOT EXISTS prices_include_tax BOOLEAN NOT NULL DEFAULT FALSE;`,
+            'sales_documents.prices_include_tax',
+        );
 
         // The class each line was sold under, for tax reporting that needs to
         // go deeper than the sale total.
@@ -2382,6 +2415,22 @@ async function initializeDatabase() {
               AND NOT EXISTS (SELECT 1 FROM loyalty_points x WHERE x.return_id = r.id);
         `);
         console.log('✅ CRM loyalty / templates / outreach tables verified/created');
+
+        // Replay anything that ran before its table existed (see deferredMigrations).
+        // Every CREATE TABLE has now run, so these must succeed; if one still
+        // fails it is a genuine fault and is logged loudly rather than hidden.
+        if (deferredMigrations.length > 0) {
+            for (const { sql, label } of deferredMigrations) {
+                try {
+                    await client.query(sql);
+                } catch (e: any) {
+                    console.error(`❌ Deferred migration still failed (${label}):`, e.message);
+                    throw e;
+                }
+            }
+            console.log(`✅ Applied ${deferredMigrations.length} deferred migration(s) on a fresh schema: `
+                + deferredMigrations.map(d => d.label).join(', '));
+        }
 
         console.log('✅ Database schema verified/updated successfully');
     } catch (error) {
