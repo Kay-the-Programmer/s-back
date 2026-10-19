@@ -5,7 +5,7 @@ import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { invalidateUserCache } from '../middleware/auth.middleware';
 import { revokeUserSessions } from '../services/session.service';
-import { MODULES, FREE_SEATS, isModuleEnabled } from '../services/entitlements.service';
+import { limitsForStore, withinLimit, describeLimit } from '../services/plan-limits';
 import bcrypt from 'bcryptjs';
 
 // Helper: determine if requester is superadmin
@@ -114,17 +114,20 @@ export const createUser = async (req: express.Request, res: express.Response) =>
             targetStoreId = requester.currentStoreId;
         }
 
-        // Premium seat gate: adding an extra user beyond the free allotment
-        // requires the Team Members add-on. Superadmin bypasses (platform-level).
+        // Seat capacity is what the tiers differ on now (every tier has every
+        // feature), so the ceiling comes from the plan rather than from an
+        // add-on. Superadmin bypasses — platform level.
         if (!isSuperAdmin(req) && targetStoreId) {
             const seatRes = await db.query('SELECT COUNT(*)::int AS c FROM users WHERE current_store_id = $1', [targetStoreId]);
             const usedSeats = seatRes.rows[0]?.c ?? 0;
-            const entitled = await isModuleEnabled(targetStoreId, MODULES.TEAM_MEMBERS);
-            if (!entitled && usedSeats >= FREE_SEATS) {
+            const { seats } = await limitsForStore(targetStoreId);
+            if (!withinLimit(usedSeats, seats)) {
                 return res.status(402).json({
-                    message: `Your plan includes ${FREE_SEATS} user seat. Unlock Team Members to add more staff.`,
-                    code: 'MODULE_LOCKED',
-                    module: MODULES.TEAM_MEMBERS,
+                    message: `Your plan includes ${describeLimit(seats)} user login${seats === 1 ? '' : 's'}. Upgrade your plan to add more staff.`,
+                    code: 'PLAN_LIMIT',
+                    limit: 'seats',
+                    allowed: seats,
+                    used: usedSeats,
                 });
             }
         }

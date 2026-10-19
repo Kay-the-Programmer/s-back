@@ -6,7 +6,7 @@ import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { accountingService } from '../services/accounting.service';
 import { storageService } from '../services/storage.service';
-import { MODULES, FREE_PRODUCT_LIMIT, isModuleEnabled } from '../services/entitlements.service';
+import { limitsForStore, withinLimit } from '../services/plan-limits';
 import path from "path";
 import fs from "fs";
 
@@ -105,15 +105,19 @@ export const createProduct = async (req: express.Request, res: express.Response)
             return res.status(400).json({ message: 'Store context required' });
         }
 
-        // Freemium product cap: the free core allows FREE_PRODUCT_LIMIT products;
-        // going beyond needs the Unlimited Products add-on (402 -> upgrade prompt).
-        if (!(await isModuleEnabled(storeId, MODULES.UNLIMITED_PRODUCTS))) {
+        // Catalogue size is a plan capacity now, not an add-on: every tier can
+        // do everything, the entry tier just holds fewer products.
+        const { products: productLimit } = await limitsForStore(storeId);
+        if (productLimit !== -1) {
             const countRes = await db.query('SELECT COUNT(*)::int AS c FROM products WHERE store_id = $1', [storeId]);
-            if ((countRes.rows[0]?.c ?? 0) >= FREE_PRODUCT_LIMIT) {
+            const used = countRes.rows[0]?.c ?? 0;
+            if (!withinLimit(used, productLimit)) {
                 return res.status(402).json({
-                    message: `Your free plan includes ${FREE_PRODUCT_LIMIT} products. Unlock Unlimited Products to add more.`,
-                    code: 'MODULE_LOCKED',
-                    module: MODULES.UNLIMITED_PRODUCTS,
+                    message: `Your plan includes ${productLimit} products. Upgrade your plan to add more.`,
+                    code: 'PLAN_LIMIT',
+                    limit: 'products',
+                    allowed: productLimit,
+                    used,
                 });
             }
         }

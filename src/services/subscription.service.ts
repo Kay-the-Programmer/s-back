@@ -33,6 +33,12 @@ export interface SubscriptionPlan {
     aiRequestsLimit: number; // Monthly limit, -1 for unlimited
 }
 
+/**
+ * Fallback plans for when the Super-Admin catalogue cannot be read. All three
+ * tiers include every feature — they differ on capacity, so the copy below
+ * must never imply that a bigger plan can do something a smaller one cannot.
+ * Capacity itself lives in plan-limits.ts.
+ */
 export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
     {
         id: 'plan_basic',
@@ -40,13 +46,14 @@ export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
         price: 99,
         currency: 'ZMW',
         interval: 'month',
-        description: 'Essential features for small businesses',
+        description: 'Everything included, sized for one till',
         features: [
-            'Up to 100 Products',
-            'Basic Sales Reports',
-            '1 User Account',
-            '50 AI Requests/month',
-            'Email Support'
+            'Every feature included',
+            '1 shop',
+            'Owner + 1 staff login',
+            'Up to 500 products',
+            '50 AI requests/month',
+            'Email support'
         ],
         aiRequestsLimit: 50
     },
@@ -56,14 +63,14 @@ export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
         price: 249,
         currency: 'ZMW',
         interval: 'month',
-        description: 'Advanced tools for growing stores',
+        description: 'Everything included, sized for a full shift',
         features: [
-            'Unlimited Products',
-            'Advanced Analytics',
-            'Up to 5 User Accounts',
-            '500 AI Requests/month',
-            'Inventory Alerts',
-            'Priority Support'
+            'Every feature included',
+            '1 shop',
+            'Up to 6 staff logins',
+            'Unlimited products',
+            '500 AI requests/month',
+            'Priority support'
         ],
         aiRequestsLimit: 500
     },
@@ -73,14 +80,14 @@ export const SUBSCRIPTION_PLANS: SubscriptionPlan[] = [
         price: 599,
         currency: 'ZMW',
         interval: 'month',
-        description: 'Complete solution for large operations',
+        description: 'Everything included, no ceilings',
         features: [
-            'Unlimited Everything',
-            'Custom Reports',
-            'Unlimited AI Requests',
-            'Dedicated Account Manager',
-            'API Access',
-            'Multi-store Management'
+            'Every feature included',
+            'Unlimited shops',
+            'Unlimited staff logins',
+            'Unlimited products',
+            'Unlimited AI requests',
+            'Dedicated account manager'
         ],
         aiRequestsLimit: -1
     }

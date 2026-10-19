@@ -207,14 +207,26 @@ const run = async () => {
     const noAuth = await req('POST', '/products/import', { rows: goodRows });
     check('an unauthenticated import is refused', noAuth.status === 401, `status ${noAuth.status}`);
 
-    // The freemium cap: drop the unlimited add-on and import past FREE_PRODUCT_LIMIT
-    // (100 by default), which 5 existing + 120 new comfortably exceeds.
-    await db.query(`UPDATE store_settings SET enabled_modules = '{}' WHERE store_id = $1`, [STORE_ID]);
+    // The catalogue ceiling is a PLAN capacity now, not an add-on: every tier
+    // has every feature, and Basic simply holds fewer products (500). Put the
+    // store on Basic and import past that in one file.
+    await db.query(`UPDATE stores SET subscription_plan = 'plan_basic' WHERE id = $1`, [STORE_ID]);
     const capped = await req('POST', '/products/import', {
-        rows: Array.from({ length: 120 }, (_, i) => ({ name: `Capped ${RUN} ${i}`, price: '5' })),
+        rows: Array.from({ length: 600 }, (_, i) => ({ name: `Capped ${RUN} ${i}`, price: '5' })),
     }, admin);
-    check('the free product cap applies to the whole batch', capped.status === 402, `status ${capped.status}`);
-    check('nothing was imported when the cap blocked it', (await countProducts()) === 5, `count=${await countProducts()}`);
+    check('the plan product ceiling applies to the whole batch', capped.status === 402, `status ${capped.status}`);
+    check('it refuses as a plan ceiling, not a locked feature', capped.data?.code === 'PLAN_LIMIT',
+        JSON.stringify(capped.data).slice(0, 120));
+    check('nothing was imported when the ceiling blocked it', (await countProducts()) === 5, `count=${await countProducts()}`);
+
+    // Pro has no ceiling, so the same file goes in. This is the shape of the
+    // whole pricing model: a bigger plan raises a limit, it does not unlock a
+    // feature the smaller plan lacked.
+    await db.query(`UPDATE stores SET subscription_plan = 'plan_pro' WHERE id = $1`, [STORE_ID]);
+    const uncapped = await req('POST', '/products/import', {
+        rows: Array.from({ length: 600 }, (_, i) => ({ name: `Uncapped ${RUN} ${i}`, price: '5' })),
+    }, admin);
+    check('a larger plan lifts the ceiling', uncapped.status === 200, `status ${uncapped.status}`);
 };
 
 run()

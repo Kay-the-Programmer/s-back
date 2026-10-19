@@ -1,6 +1,6 @@
 import db from '../db_client';
 import { MODULES } from './entitlements.service';
-import { PLAN_MODULES } from './plan-modules';
+import { PLAN_MODULES, ALL_MODULES } from './plan-modules';
 
 /**
  * Configurable commerce catalog — the single source of truth for add-on module
@@ -83,25 +83,28 @@ const SOCIAL_MARKETING_SEED = MODULE_SEED.find(m => m.id === MODULES.SOCIAL_MARK
 const PAYMENT_GATEWAY_SEED = MODULE_SEED.find(m => m.id === MODULES.PAYMENT_GATEWAY)!;
 
 const PLAN_SEED: CatalogPlan[] = [
+    // All three tiers include EVERY feature (see plan-modules.modulesForPlan).
+    // They differ on capacity only, and the feature lists below say so plainly
+    // rather than implying one tier can do things another cannot.
     {
-        id: 'plan_basic', name: 'Basic', description: 'Essential features for small businesses',
+        id: 'plan_basic', name: 'Basic', description: 'Everything included, sized for one till',
         price: 99, currency: 'ZMW', interval: 'month',
-        moduleIds: [...(PLAN_MODULES.plan_basic || [])],
-        features: ['Up to 100 Products', 'Basic Sales Reports', '1 User Account', 'Email Support'],
+        moduleIds: [...ALL_MODULES],
+        features: ['Every feature included', '1 shop', 'Owner + 1 staff login', 'Up to 500 products', '50 AI requests/month', 'Email support'],
         aiRequestsLimit: 50, isPopular: false, active: true, sortOrder: 1,
     },
     {
-        id: 'plan_pro', name: 'Pro', description: 'Advanced tools for growing stores',
+        id: 'plan_pro', name: 'Pro', description: 'Everything included, sized for a full shift',
         price: 249, currency: 'ZMW', interval: 'month',
-        moduleIds: [...(PLAN_MODULES.plan_pro || [])],
-        features: ['Unlimited Products', 'Advanced Analytics', 'Up to 5 User Accounts', '500 AI Requests/month', 'Inventory Alerts', 'Priority Support'],
+        moduleIds: [...ALL_MODULES],
+        features: ['Every feature included', '1 shop', 'Up to 6 staff logins', 'Unlimited products', '500 AI requests/month', 'Priority support'],
         aiRequestsLimit: 500, isPopular: true, active: true, sortOrder: 2,
     },
     {
-        id: 'plan_enterprise', name: 'Enterprise', description: 'Complete solution for large operations',
+        id: 'plan_enterprise', name: 'Enterprise', description: 'Everything included, no ceilings', 
         price: 599, currency: 'ZMW', interval: 'month',
-        moduleIds: [...(PLAN_MODULES.plan_enterprise || [])],
-        features: ['Unlimited Everything', 'Custom Reports', 'Unlimited AI Requests', 'Dedicated Account Manager', 'API Access', 'Multi-store Management'],
+        moduleIds: [...ALL_MODULES],
+        features: ['Every feature included', 'Unlimited shops', 'Unlimited staff logins', 'Unlimited products', 'Unlimited AI requests', 'Dedicated account manager'],
         aiRequestsLimit: -1, isPopular: false, active: true, sortOrder: 3,
     },
 ];
@@ -274,6 +277,46 @@ export const ensureCatalogSeeded = async (): Promise<void> => {
         console.log('[catalog] WhatsApp Messaging is now included free rather than sold.');
     }
 
+    // --- Paid-only packaging (one-time) -------------------------------------
+    // SalePilot is no longer free core plus à-la-carte add-ons: it is a paid
+    // product with a 7-day trial where every tier includes every feature, and
+    // the tiers differ on capacity (see plan-limits.ts). So nothing is sold
+    // per-feature any more — every add-on comes off sale, and every plan
+    // grants the full set.
+    //
+    // The module rows and the entitlement machinery stay: a subscribed store
+    // holds all of them, a lapsed one holds none, which is what keeps the
+    // per-feature gates meaningful and leaves the door open to re-tiering.
+    const PAID_ONLY_KEY = 'paid_only_all_features_v1';
+    const paidOnly = await db.query('SELECT 1 FROM catalog_meta WHERE key = $1', [PAID_ONLY_KEY]);
+    if (paidOnly.rowCount === 0) {
+        await db.query(
+            `UPDATE catalog_modules
+                SET active = FALSE, independently_purchasable = FALSE, updated_at = NOW()
+              WHERE active = TRUE OR independently_purchasable = TRUE`,
+        );
+        await db.query(
+            `UPDATE catalog_plans SET module_ids = $1::text[], updated_at = NOW()`,
+            [[...ALL_MODULES]],
+        );
+        // The tier copy has to move with the model. A catalogue seeded under
+        // the old packaging still says things like "Up to 100 Products" and
+        // "1 User Account" on Basic — both now false, and the second one reads
+        // as "no cashier", which is exactly the objection this pricing fixes.
+        // Only the three known tiers are rewritten; a tier the Super Admin
+        // added is left alone.
+        for (const seed of PLAN_SEED) {
+            await db.query(
+                `UPDATE catalog_plans
+                    SET description = $2, features = $3::text[], updated_at = NOW()
+                  WHERE id = $1`,
+                [seed.id, seed.description, seed.features],
+            );
+        }
+        await db.query('INSERT INTO catalog_meta (key) VALUES ($1) ON CONFLICT DO NOTHING', [PAID_ONLY_KEY]);
+        console.log('[catalog] paid-only packaging applied: add-ons off sale, every plan grants every feature.');
+    }
+
     const pCount = await db.query('SELECT COUNT(*)::int AS n FROM catalog_plans');
     if (pCount.rows[0].n === 0) {
         for (const p of PLAN_SEED) await writePlan(p);
@@ -361,12 +404,18 @@ export const getPlans = async (includeInactive = false): Promise<CatalogPlan[]> 
 export const getPlan = async (id: string): Promise<CatalogPlan | undefined> =>
     (await loadPlans()).find(p => p.id === id);
 
-/** Module ids a plan grants (falls back to the static preset map). */
+/**
+ * Module ids a plan grants. Every tier includes every feature now, so this is
+ * the full set for any plan a store could be on — the catalogue row is only
+ * consulted so a Super Admin who has deliberately narrowed a tier is honoured.
+ * Paying for something must never leave a store half-working, so an unknown or
+ * un-narrowed plan gets everything.
+ */
 export const modulesForPlan = async (planId?: string | null): Promise<string[]> => {
     if (!planId) return [];
     const plan = await getPlan(planId);
-    if (plan) return [...plan.moduleIds];
-    return [...(PLAN_MODULES[planId] || [])];
+    if (plan && plan.moduleIds.length > 0) return [...plan.moduleIds];
+    return [...ALL_MODULES];
 };
 
 /** Monthly AI request allowance for a plan (-1 unlimited; 0 when unknown). */

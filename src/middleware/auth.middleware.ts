@@ -4,6 +4,7 @@ import express from 'express';
 import { User } from '../types';
 import { authorize, requirePermission, roleHasPermission, Role } from '../auth/rbac';
 import { tokenFromRequest } from '../auth/session-cookie';
+import { GRACE_DAYS } from '../services/plan-modules';
 
 // Re-export the centralized RBAC helpers so routes can import everything
 // authorization-related from a single module if they prefer.
@@ -143,7 +144,17 @@ export const protect = async (req: express.Request, res: express.Response, next:
             // whose ACTIVE store is suspended could never switch to one of
             // their healthy businesses — the whole account would be bricked.
             const enforcePath = (req.originalUrl || req.url || '').toLowerCase();
-            const storeAgnostic = /^\/api\/(auth|stores)(\/|$|\?)/.test(enforcePath);
+            // Billing must stay reachable from inside the lock, or a store that
+            // has run out of trial can never pay its way back in — the same
+            // catch-22 the notification exemption below avoids. `subscriptions`
+            // carries the plans and the checkout (`/subscriptions/pay`), which
+            // is all that is needed.
+            //
+            // Deliberately NOT `/payments`: that is the Lenco charge the till
+            // and the storefront use to take money from a CUSTOMER, so
+            // exempting it would let a suspended or unpaid shop keep trading
+            // on mobile money with the rest of the app locked.
+            const storeAgnostic = /^\/api\/(auth|stores|subscriptions)(\/|$|\?)/.test(enforcePath);
             // Read-only notification polling stays reachable even when the store is
             // suspended/canceled: it's the only channel that can still deliver the
             // suspend/cancel notice explaining why access was cut off. Blocking it
@@ -152,7 +163,7 @@ export const protect = async (req: express.Request, res: express.Response, next:
                 req.method === 'GET' && /^\/api\/notifications(\/|$|\?)/.test(enforcePath);
             try {
                 if (!storeAgnostic && !isNotificationRead && user.currentStoreId && user.role !== 'superadmin' && user.role !== 'customer') {
-                    const storeRes = await db.query('SELECT status, subscription_status, status_reason FROM stores WHERE id = $1', [user.currentStoreId]);
+                    const storeRes = await db.query('SELECT status, subscription_status, subscription_ends_at, status_reason FROM stores WHERE id = $1', [user.currentStoreId]);
                     const store = storeRes.rows[0];
                     if (!store) {
                         return res.status(403).json({ message: 'Store not found or not accessible' });
@@ -165,11 +176,35 @@ export const protect = async (req: express.Request, res: express.Response, next:
                             storeStatus: store.status,
                         });
                     }
-                    if (store.subscription_status === 'past_due') {
-                        // Optionally allow grace; not blocking for past_due here.
-                    }
                     if (store.subscription_status === 'canceled') {
                         return res.status(403).json({ message: 'Subscription canceled. Store is not accessible.', code: 'SUBSCRIPTION_CANCELED' });
+                    }
+                    // SalePilot is a paid product: there is no free tier behind
+                    // the trial any more, so an unpaid store loses access. The
+                    // cut is deliberately NOT at the expiry date — GRACE_DAYS
+                    // of slack keep a till trading while a mobile-money payment
+                    // clears, and the client warns throughout. Past that, the
+                    // shop must pay to carry on.
+                    //
+                    // Computed from the dates rather than trusting the nightly
+                    // lifecycle job to have marked the row: if the job is late
+                    // or has not run, a lapsed store must still be locked, and
+                    // a store inside its grace must still be let through even
+                    // if the job marked it past_due early.
+                    const endsAt = store.subscription_ends_at ? new Date(store.subscription_ends_at) : null;
+                    const lockedAt = endsAt ? new Date(endsAt.getTime() + GRACE_DAYS * 86400000) : null;
+                    const lapsed = lockedAt ? Date.now() > lockedAt.getTime() : store.subscription_status === 'past_due';
+                    if (lapsed) {
+                        const wasTrial = store.subscription_status === 'trial';
+                        return res.status(402).json({
+                            message: wasTrial
+                                ? 'Your free trial has ended. Choose a plan to carry on using SalePilot.'
+                                : 'Your subscription has expired. Renew to carry on using SalePilot.',
+                            code: 'SUBSCRIPTION_REQUIRED',
+                            subscriptionStatus: store.subscription_status,
+                            endedAt: store.subscription_ends_at,
+                            action: 'upgrade',
+                        });
                     }
                 }
             } catch (e) {

@@ -8,6 +8,7 @@ import { sendStoreOTPVerificationEmail } from '../services/email.service';
 import { invalidateUserCache } from '../middleware/auth.middleware';
 import { setEnabledModules } from '../services/entitlements.service';
 import { TRIAL_MODULES, TRIAL_DAYS } from '../services/plan-modules';
+import { limitsForOwner, withinLimit, describeLimit } from '../services/plan-limits';
 import { NOT_CANCELLED, SALE_REVENUE } from '../utils/revenue';
 
 export const checkStoreName = async (req: express.Request, res: express.Response) => {
@@ -137,21 +138,41 @@ export const registerStore = async (req: express.Request, res: express.Response)
       return res.status(400).json({ message: 'A store with this name already exists. Please choose a different name.' });
     }
 
+    // How many shops this owner may run is a plan capacity. The first store is
+    // always allowed — a new account has no plan to read yet, and refusing it
+    // would make signing up impossible.
+    if (user.role !== 'superadmin') {
+      const ownedRes = await db.query(
+        `SELECT COUNT(*)::int AS c FROM stores WHERE owner_id = $1 AND status <> 'inactive'`,
+        [user.id],
+      );
+      const owned = ownedRes.rows[0]?.c ?? 0;
+      if (owned > 0) {
+        const { stores: storeLimit } = await limitsForOwner(user.id);
+        if (!withinLimit(owned, storeLimit)) {
+          return res.status(402).json({
+            message: `Your plan covers ${describeLimit(storeLimit)} shop${storeLimit === 1 ? '' : 's'}. Upgrade to run more than one business.`,
+            code: 'PLAN_LIMIT',
+            limit: 'stores',
+            allowed: storeLimit,
+            used: owned,
+          });
+        }
+      }
+    }
+
     const storeId = generateId('store');
     const plan = (await getEffectivePlan(planId)) || SUBSCRIPTION_PLANS[0];
 
     await db.query('BEGIN');
     try {
-      // 2. Insert store with selected plan and 'trial' status by default until payment.
+      // 2. Every new store starts on the trial. There is no free tier any
+      // more, so a zero-priced plan no longer means "active forever" — the
+      // only free period a shop gets is TRIAL_DAYS, after which it pays.
       // When the email was verified up front (hasOtp), the store is created already verified and
       // we skip the legacy "store OTP" email. Otherwise we keep the old verify-after-create flow.
-      const subscriptionStatus = plan.price === 0 ? 'active' : 'trial';
-      // Free intro trial of premium add-ons: paid plans start as a time-boxed
-      // trial so the user can taste premium before paying. Free plans (price 0)
-      // get core only and never expire (NULL ends_at).
-      const trialEndsAt = subscriptionStatus === 'trial'
-        ? (() => { const e = new Date(); e.setDate(e.getDate() + TRIAL_DAYS); return e; })()
-        : null;
+      const subscriptionStatus = 'trial';
+      const trialEndsAt = (() => { const e = new Date(); e.setDate(e.getDate() + TRIAL_DAYS); return e; })();
       // Store verification is about proving the owner's email. If the account
       // email is already verified (registration OTP or Google sign-in), the
       // store inherits it — no second OTP ceremony.

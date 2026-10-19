@@ -3,7 +3,7 @@ import db from '../db_client';
 import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { accountingService } from '../services/accounting.service';
-import { MODULES, FREE_PRODUCT_LIMIT, isModuleEnabled } from '../services/entitlements.service';
+import { limitsForStore } from '../services/plan-limits';
 
 /**
  * Bulk product import (CSV).
@@ -200,16 +200,20 @@ export const importProducts = async (req: express.Request, res: express.Response
             outcomes.push({ row: line, name: value.name, action: 'create' });
         });
 
-        // Freemium product cap — the same rule single creation enforces, applied
-        // to the whole batch so an import can't slip past it a row at a time.
-        if (toCreate.length > 0 && !(await isModuleEnabled(storeId, MODULES.UNLIMITED_PRODUCTS))) {
+        // Plan product capacity — the same rule single creation enforces,
+        // applied to the whole batch so an import can't slip past it a row at
+        // a time.
+        if (toCreate.length > 0) {
+            const { products: productLimit } = await limitsForStore(storeId);
             const current = existing.rowCount ?? 0;
-            if (current + toCreate.length > FREE_PRODUCT_LIMIT) {
+            if (productLimit !== -1 && current + toCreate.length > productLimit) {
                 return res.status(402).json({
-                    message: `Your free plan includes ${FREE_PRODUCT_LIMIT} products. This file would take you to `
-                        + `${current + toCreate.length}. Unlock Unlimited Products to import them all.`,
-                    code: 'MODULE_LOCKED',
-                    module: MODULES.UNLIMITED_PRODUCTS,
+                    message: `Your plan includes ${productLimit} products. This file would take you to `
+                        + `${current + toCreate.length}. Upgrade your plan to import them all.`,
+                    code: 'PLAN_LIMIT',
+                    limit: 'products',
+                    allowed: productLimit,
+                    used: current,
                     wouldCreate: toCreate.length,
                     currentCount: current,
                 });

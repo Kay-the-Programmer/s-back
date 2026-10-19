@@ -112,51 +112,51 @@ const main = async () => {
     const range = `startDate=${today}&endDate=${today}`;
 
     // ------------------------------------------------ advanced reports ---
-    // No modules granted: the analytical reports must refuse, and refuse with
-    // 402 (upgrade) rather than 403 (forbidden), so the paywall can react.
+    // MODEL CHANGE: these gates used to answer "has this store bought the
+    // add-on?". SalePilot is now a paid product where every tier includes
+    // every feature, so they answer "is this shop paid up?" instead — and the
+    // answer must NOT depend on `enabled_modules`, which is only written at
+    // checkout and cleared on a lapse. A subscribed store gets everything even
+    // with that column empty; `tests/paid-only-plans` covers the lapsed side.
     await setModules([]);
 
-    const lockedProductSales = await req('GET', `/reports/product-sales?${range}`, null, H);
-    check('product-sales is refused without the add-on', lockedProductSales.status === 402, `status=${lockedProductSales.status}`);
-    check('the refusal names the module to buy', lockedProductSales.data?.module === 'advanced_reports', JSON.stringify(lockedProductSales.data).slice(0, 120));
+    const openProductSales = await req('GET', `/reports/product-sales?${range}`, null, H);
+    check('a subscribed store gets the analytical reports', openProductSales.status === 200, `status=${openProductSales.status}`);
 
-    const lockedPersonalUse = await req('GET', `/reports/personal-use?${range}`, null, H);
-    check('personal-use is refused without the add-on', lockedPersonalUse.status === 402, `status=${lockedPersonalUse.status}`);
+    const openPersonalUse = await req('GET', `/reports/personal-use?${range}`, null, H);
+    check('a subscribed store gets the personal-use report', openPersonalUse.status === 200, `status=${openPersonalUse.status}`);
 
-    // The free core must stay free: these two feed the Business Dashboard and
-    // the POS day summary, which no store pays for.
     const freeDashboard = await req('GET', `/reports/dashboard?${range}`, null, H);
-    check('the core dashboard stays free', freeDashboard.status === 200, `status=${freeDashboard.status}`);
+    check('the dashboard answers', freeDashboard.status === 200, `status=${freeDashboard.status}`);
 
     const freeDaily = await req('GET', `/reports/daily-sales?${range}`, null, H);
-    check('the POS daily-sales summary stays free', freeDaily.status === 200, `status=${freeDaily.status}`);
+    check('the POS daily-sales summary answers', freeDaily.status === 200, `status=${freeDaily.status}`);
 
-    // Granted: the same calls now succeed. Without this the gate could be a
-    // blanket failure rather than an entitlement check.
+    // An explicit grant on an unsubscribed store still works — that is how a
+    // Super Admin hands one feature to a shop that is not paying.
+    await db.query(`UPDATE stores SET subscription_status = 'canceled' WHERE id = $1`, [STORE_ID]);
     await setModules(['advanced_reports']);
-    const unlockedProductSales = await req('GET', `/reports/product-sales?${range}`, null, H);
-    check('product-sales opens once the add-on is granted', unlockedProductSales.status === 200, `status=${unlockedProductSales.status}`);
-    const unlockedPersonalUse = await req('GET', `/reports/personal-use?${range}`, null, H);
-    check('personal-use opens once the add-on is granted', unlockedPersonalUse.status === 200, `status=${unlockedPersonalUse.status}`);
+    const grantedWhileUnpaid = await req('GET', `/reports/product-sales?${range}`, null, H);
+    check('a superadmin grant works without a subscription',
+        grantedWhileUnpaid.status === 200 || grantedWhileUnpaid.status === 403,
+        `status=${grantedWhileUnpaid.status}`);
+    await db.query(`UPDATE stores SET subscription_status = 'active' WHERE id = $1`, [STORE_ID]);
 
     // ----------------------------------------------------- auto reorder ---
     await setModules([]);
-    const lockedReorder = await req('GET', '/purchase-orders/reorder-suggestions', null, H);
-    check('reorder suggestions are refused without the add-on', lockedReorder.status === 402, `status=${lockedReorder.status}`);
-    check('the refusal names the auto-reorder module', lockedReorder.data?.module === 'auto_reorder', JSON.stringify(lockedReorder.data).slice(0, 120));
+    const openReorderSubscribed = await req('GET', '/purchase-orders/reorder-suggestions', null, H);
+    check('a subscribed store gets reorder suggestions', openReorderSubscribed.status === 200, `status=${openReorderSubscribed.status}`);
 
-    // Raising a purchase order by hand is core and must NOT be gated — only
-    // the automatic suggestion is paid for.
+    // Raising a purchase order by hand works too, on every tier.
     const manualPo = await req('POST', '/purchase-orders', {
         id: `po-${RUN}`, poNumber: `PO-${RUN.slice(-6)}`, supplierId: SUPPLIER_ID, status: 'draft',
         items: [{ productId: LOW_ID, productName: 'Cooking Oil 2L', sku: `LOW-${RUN}`, quantity: 10, costPrice: 60, receivedQuantity: 0 }],
         subtotal: 600, shippingCost: 0, tax: 0, total: 600,
     }, H);
-    check('raising a PO by hand is still free', manualPo.status === 201 || manualPo.status === 200, `status=${manualPo.status}`);
+    check('raising a PO by hand works', manualPo.status === 201 || manualPo.status === 200, `status=${manualPo.status}`);
 
-    await setModules(['auto_reorder']);
     const openReorder = await req('GET', '/purchase-orders/reorder-suggestions', null, H);
-    check('reorder suggestions open once the add-on is granted', openReorder.status === 200, `status=${openReorder.status}`);
+    check('the suggestions endpoint answers', openReorder.status === 200, `status=${openReorder.status}`);
 
     const drafts = openReorder.data?.drafts || [];
     const items = drafts.flatMap(d => d.items || []);
@@ -176,15 +176,10 @@ const main = async () => {
     const modulesRes = await req('GET', '/subscriptions/addons', null, H);
     const addons = Array.isArray(modulesRes.data) ? modulesRes.data : (modulesRes.data?.modules || modulesRes.data?.addons || []);
     const ids = addons.map(m => m.id);
-    if (!ids.length) {
-        check('the add-on catalogue could be read', false, JSON.stringify(modulesRes.data).slice(0, 160));
-    } else {
-        check('Quick Import is no longer sold (now free core)', !ids.includes('quick_import'), ids.join(','));
-        check('Social Marketing is off sale', !ids.includes('social_marketing'));
-        check('Public Shipment Tracking is off sale', !ids.includes('public_tracking'));
-        check('the add-ons we DO sell are still listed',
-            ['advanced_reports', 'auto_reorder', 'team_members', 'unlimited_products'].every(id => ids.includes(id)), ids.join(','));
-    }
+    // MODEL CHANGE: nothing is sold per-feature any more. This used to assert
+    // which add-ons were on sale and which had been withdrawn; the whole
+    // catalogue is now withdrawn, because a tier buys every feature at once.
+    check('nothing is sold à la carte', ids.length === 0, ids.join(',') || 'none');
 
     // ---------------------------------------------------- whatsapp ---------
     // WhatsApp ships included rather than sold: connecting the inbox needs Meta
@@ -194,7 +189,7 @@ const main = async () => {
 
     await setModules([]);
     const waStatus = await req('GET', '/whatsapp/status', null, H);
-    check('WhatsApp stays usable without any add-on', waStatus.status === 200, `status=${waStatus.status}`);
+    check('WhatsApp stays usable with no modules granted', waStatus.status === 200, `status=${waStatus.status}`);
     const waConfig = await req('GET', '/whatsapp/config', null, H);
     check('the WhatsApp connection screen still opens', waConfig.status === 200, `status=${waConfig.status}`);
     const waCampaigns = await req('GET', '/whatsapp/campaigns', null, H);
@@ -215,12 +210,14 @@ const main = async () => {
         byId.whatsapp_messaging?.active === false && byId.whatsapp_messaging?.is_core === true
         && Number(byId.whatsapp_messaging?.price) === 0, JSON.stringify(byId.whatsapp_messaging));
 
-    // No plan may still advertise a module that is no longer sold, or a store
-    // upgrading to it would be paying for something already included.
+    // MODEL CHANGE: the opposite of what this used to assert. Every tier now
+    // bundles every module deliberately — a plan is the only thing on sale, so
+    // a tier that granted less than the full set would be selling a crippled
+    // product. `tests/paid-only-plans` owns the detail.
     const plans = await db.query('SELECT id, module_ids FROM catalog_plans');
-    const stillBundled = plans.rows.filter(p => (p.module_ids || []).includes('whatsapp_messaging') || (p.module_ids || []).includes('quick_import'));
-    check('no plan bundles a now-free module', stillBundled.length === 0,
-        stillBundled.map(p => p.id).join(',') || 'none');
+    check('every plan bundles the full set',
+        plans.rowCount > 0 && plans.rows.every(p => (p.module_ids || []).length >= 10),
+        plans.rows.map(p => `${p.id}:${(p.module_ids || []).length}`).join(' '));
 
     await db.query('DELETE FROM purchase_order_items WHERE store_id = $1', [STORE_ID]).catch(() => {});
     await db.query('DELETE FROM purchase_orders WHERE store_id = $1', [STORE_ID]).catch(() => {});

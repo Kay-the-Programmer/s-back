@@ -29,7 +29,8 @@
     "test:loyalty": "node tests/loyalty-points.test.mjs",
     "test:sms": "npm run build && node tests/sms-branding.test.mjs",
     "test:sms-sender": "node tests/sms-sender-approval.test.mjs",
-    "test:entitlements": "node tests/entitlement-gates.test.mjs"
+    "test:entitlements": "node tests/entitlement-gates.test.mjs",
+    "test:paid-only": "node tests/paid-only-plans.test.mjs"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.19.0",
