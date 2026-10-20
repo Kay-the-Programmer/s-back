@@ -22,7 +22,7 @@ const normalize = (row: any) => {
 export const getOrderLists = async (req: express.Request, res: express.Response) => {
     try {
         const storeId = req.tenant?.storeId || req.user?.currentStoreId;
-        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+        if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
 
         const result = await db.query(
             'SELECT * FROM order_lists WHERE store_id = $1 ORDER BY created_at DESC',
@@ -42,7 +42,7 @@ export const getOrderLists = async (req: express.Request, res: express.Response)
 export const upsertOrderList = async (req: express.Request, res: express.Response) => {
     try {
         const storeId = req.tenant?.storeId || req.user?.currentStoreId;
-        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+        if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
 
         const { id, title, items, createdAt, importedAt } = req.body || {};
         const listId = (typeof id === 'string' && id) ? id : generateId('ql');
@@ -83,7 +83,7 @@ export const deleteOrderList = async (req: express.Request, res: express.Respons
     const { id } = req.params;
     try {
         const storeId = req.tenant?.storeId || req.user?.currentStoreId;
-        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+        if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
 
         const result = await db.query(
             'DELETE FROM order_lists WHERE id = $1 AND store_id = $2 RETURNING id',

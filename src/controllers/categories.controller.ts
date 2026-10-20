@@ -9,7 +9,7 @@ export const getCategories = async (req: express.Request, res: express.Response)
     try {
         const storeId = req.tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const result = await db.query('SELECT * FROM categories WHERE store_id = $1 ORDER BY name', [storeId]);
         res.status(200).json(toCamelCase(result.rows));
@@ -26,7 +26,7 @@ export const createCategory = async (req: express.Request, res: express.Response
     try {
         const storeId = req.tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const result = await db.query(
             'INSERT INTO categories (id, name, parent_id, attributes, revenue_account_id, cogs_account_id, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
@@ -47,7 +47,7 @@ export const updateCategory = async (req: express.Request, res: express.Response
     try {
         const storeId = req.tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const result = await db.query(
             'UPDATE categories SET name = $1, parent_id = $2, attributes = $3, revenue_account_id = $4, cogs_account_id = $5 WHERE id = $6 AND store_id = $7 RETURNING *',
@@ -90,7 +90,7 @@ export const deleteCategory = async (req: express.Request, res: express.Response
     try {
         const storeId = req.tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
 
         await client.query('BEGIN');

@@ -7,7 +7,7 @@ export const getSuppliers = async (req: express.Request, res: express.Response) 
     try {
         const storeId = req.tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const result = await db.query('SELECT * FROM suppliers WHERE store_id = $1 ORDER BY name', [storeId]);
         res.status(200).json(toCamelCase(result.rows));
@@ -21,7 +21,7 @@ export const getSupplierById = async (req: express.Request, res: express.Respons
     try {
         const storeId = req.tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const result = await db.query('SELECT * FROM suppliers WHERE id = $1 AND store_id = $2', [req.params.id, storeId]);
         if (result.rowCount === 0) {
@@ -40,7 +40,7 @@ export const createSupplier = async (req: express.Request, res: express.Response
     try {
         const storeId = req.tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const result = await db.query(
             'INSERT INTO suppliers (id, name, contact_person, phone, email, address, payment_terms, banking_details, notes, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *',
@@ -61,7 +61,7 @@ export const updateSupplier = async (req: express.Request, res: express.Response
     try {
         const storeId = req.tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const result = await db.query(
             'UPDATE suppliers SET name=$1, contact_person=$2, phone=$3, email=$4, address=$5, payment_terms=$6, banking_details=$7, notes=$8 WHERE id=$9 AND store_id = $10 RETURNING *',
@@ -85,7 +85,7 @@ export const deleteSupplier = async (req: express.Request, res: express.Response
     try {
         const storeId = req.tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         await db.query('UPDATE products SET supplier_id = NULL WHERE supplier_id = $1 AND store_id = $2', [id, storeId]);
 

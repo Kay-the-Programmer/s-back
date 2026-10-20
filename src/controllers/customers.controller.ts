@@ -8,7 +8,7 @@ export const getCustomers = async (req: express.Request, res: express.Response) 
     try {
         const storeId = req.tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const result = await db.query('SELECT * FROM customers WHERE store_id = $1 ORDER BY name', [storeId]);
         res.status(200).json(toCamelCase(result.rows));
@@ -22,7 +22,7 @@ export const getCustomerById = async (req: express.Request, res: express.Respons
     try {
         const storeId = req.tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const result = await db.query('SELECT * FROM customers WHERE id = $1 AND store_id = $2', [req.params.id, storeId]);
         if (result.rowCount === 0) {
@@ -43,7 +43,7 @@ export const createCustomer = async (req: express.Request, res: express.Response
     try {
         const storeId = req.tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         // A credit line set while ADDING a customer used to be dropped on the
         // floor (only updateCustomer honoured it); blank/absent = no limit.
@@ -70,7 +70,7 @@ export const updateCustomer = async (req: express.Request, res: express.Response
     try {
         const storeId = req.tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         // creditLimit: undefined keeps the stored value; '' / null clears the
         // credit line; a number sets/updates the cap on outstanding balance.
@@ -101,7 +101,7 @@ export const deleteCustomer = async (req: express.Request, res: express.Response
     try {
         const storeId = req.tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         // Prevent deleting customers who have sales history in the current store (tenant-scoped)
         const salesCheck = await db.query('SELECT 1 FROM sales WHERE customer_id = $1 AND store_id = $2 LIMIT 1', [id, storeId]);

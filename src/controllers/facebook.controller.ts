@@ -87,7 +87,7 @@ export const selectPage = async (req: express.Request, res: express.Response) =>
     const storeId = await requireEntitled(req, res);
     if (!storeId) return;
     const { pageId } = req.body as { pageId?: string };
-    if (!pageId) return res.status(400).json({ message: 'A pageId is required.' });
+    if (!pageId) return res.status(400).json({ message: 'Choose which Facebook page to use first.' });
 
     try {
         const config = await facebookService.getStoreConfig(storeId);

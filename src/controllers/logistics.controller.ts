@@ -8,7 +8,7 @@ const getStoreId = (req: Request) => req.tenant?.storeId || req.user?.currentSto
 export const createCourier = async (req: Request, res: Response) => {
     try {
         const storeId = getStoreId(req);
-        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+        if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         const { company_name, contact_details, receipt_details } = req.body;
         if (!company_name) return res.status(400).json({ message: 'Company name is required' });
 
@@ -23,7 +23,7 @@ export const createCourier = async (req: Request, res: Response) => {
 export const getCouriers = async (req: Request, res: Response) => {
     try {
         const storeId = getStoreId(req);
-        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+        if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
 
         const couriers = await LogisticsService.getCouriers(storeId);
         res.json(couriers);
@@ -36,7 +36,7 @@ export const getCouriers = async (req: Request, res: Response) => {
 export const updateCourier = async (req: Request, res: Response) => {
     try {
         const storeId = getStoreId(req);
-        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+        if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         const { id } = req.params;
         const data = req.body;
 
@@ -52,7 +52,7 @@ export const updateCourier = async (req: Request, res: Response) => {
 export const deleteCourier = async (req: Request, res: Response) => {
     try {
         const storeId = getStoreId(req);
-        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+        if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         const { id } = req.params;
 
         const deleted = await LogisticsService.deleteCourier(storeId, id);
@@ -67,7 +67,7 @@ export const deleteCourier = async (req: Request, res: Response) => {
 export const createBus = async (req: Request, res: Response) => {
     try {
         const storeId = getStoreId(req);
-        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+        if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         const { driver_name, vehicle_name, number_plate, contact_phone } = req.body;
         if (!driver_name || !number_plate) return res.status(400).json({ message: 'Driver name and Number plate are required' });
 
@@ -82,7 +82,7 @@ export const createBus = async (req: Request, res: Response) => {
 export const getBuses = async (req: Request, res: Response) => {
     try {
         const storeId = getStoreId(req);
-        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+        if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
 
         const buses = await LogisticsService.getBuses(storeId);
         res.json(buses);
@@ -95,7 +95,7 @@ export const getBuses = async (req: Request, res: Response) => {
 export const updateBus = async (req: Request, res: Response) => {
     try {
         const storeId = getStoreId(req);
-        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+        if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         const { id } = req.params;
         const data = req.body;
 
@@ -111,7 +111,7 @@ export const updateBus = async (req: Request, res: Response) => {
 export const deleteBus = async (req: Request, res: Response) => {
     try {
         const storeId = getStoreId(req);
-        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+        if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         const { id } = req.params;
 
         const deleted = await LogisticsService.deleteBus(storeId, id);
@@ -126,7 +126,7 @@ export const deleteBus = async (req: Request, res: Response) => {
 export const createShipment = async (req: Request, res: Response) => {
     try {
         const storeId = getStoreId(req);
-        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+        if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
 
         // Pass everything to service, validate key fields
         const data = req.body;
@@ -145,7 +145,7 @@ export const createShipment = async (req: Request, res: Response) => {
 export const getShipments = async (req: Request, res: Response) => {
     try {
         const storeId = getStoreId(req);
-        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+        if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
 
         const shipments = await LogisticsService.getShipments(storeId);
         res.json(shipments);
@@ -172,7 +172,7 @@ export const trackShipment = async (req: Request, res: Response) => {
 export const getShipmentById = async (req: Request, res: Response) => {
     try {
         const storeId = getStoreId(req);
-        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+        if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         const { id } = req.params;
 
         const shipment = await LogisticsService.getShipmentById(storeId, id);
@@ -187,7 +187,7 @@ export const getShipmentById = async (req: Request, res: Response) => {
 export const updateShipmentStatus = async (req: Request, res: Response) => {
     try {
         const storeId = getStoreId(req);
-        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+        if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         const { id } = req.params;
         const { status } = req.body;
         if (!status) return res.status(400).json({ message: 'Status is required' });
@@ -227,7 +227,7 @@ export const updateShipmentStatus = async (req: Request, res: Response) => {
 export const deleteShipment = async (req: Request, res: Response) => {
     try {
         const storeId = getStoreId(req);
-        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+        if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         const { id } = req.params;
 
         const deleted = await LogisticsService.deleteShipment(storeId, id);

@@ -6,7 +6,7 @@ export const checkAiLimit = async (req: Request, res: Response, next: NextFuncti
     try {
         const user = req.user;
         if (!user || !user.currentStoreId) {
-            return res.status(401).json({ message: 'Unauthorized. Store context missing.' });
+            return res.status(401).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
 
         const storeId = user.currentStoreId;

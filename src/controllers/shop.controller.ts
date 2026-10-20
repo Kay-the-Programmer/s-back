@@ -192,7 +192,7 @@ export const createShopOrder = async (req: express.Request, res: express.Respons
         return res.status(400).json({ message: 'Cart cannot be empty' });
     }
     if (cart.length > 100) {
-        return res.status(400).json({ message: 'Too many items in cart.' });
+        return res.status(400).json({ message: 'A single order can hold up to 100 different items. Please split it into two orders.' });
     }
 
     if (!customerDetails || !String(customerDetails.name || '').trim()) {

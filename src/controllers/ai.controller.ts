@@ -1687,7 +1687,7 @@ ${revenueContext.dailyTrend.map((d: any) => `- ${new Date(d.date).toLocaleDateSt
 
 export const getAiUsage = async (req: express.Request, res: express.Response) => {
     const storeId = req.user?.currentStoreId;
-    if (!storeId) return res.status(400).json({ message: 'Store context required' });
+    if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
 
     try {
         const storeRes = await db.query('SELECT subscription_plan FROM stores WHERE id = $1', [storeId]);

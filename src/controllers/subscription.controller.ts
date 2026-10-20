@@ -95,7 +95,7 @@ export const cancelPayment = async (req: Request, res: Response) => {
 export const getPlanAutoRenew = async (req: Request, res: Response) => {
     try {
         const storeId = req.user?.currentStoreId;
-        if (!storeId) return res.status(400).json({ error: 'Store context missing' });
+        if (!storeId) return res.status(400).json({ error: 'No shop is selected. Pick one from My Shops and try again.' });
         const autoRenew = await subscriptionService.getPlanAutoRenew(storeId);
         res.json({ autoRenew });
     } catch (error) {
@@ -109,7 +109,7 @@ export const updatePlanAutoRenew = async (req: Request, res: Response) => {
     try {
         const storeId = req.user?.currentStoreId;
         const { autoRenew } = req.body || {};
-        if (!storeId) return res.status(400).json({ error: 'Store context missing' });
+        if (!storeId) return res.status(400).json({ error: 'No shop is selected. Pick one from My Shops and try again.' });
         if (typeof autoRenew !== 'boolean') return res.status(400).json({ error: 'autoRenew must be a boolean' });
         await subscriptionService.setPlanAutoRenew(storeId, autoRenew);
         res.json({ ok: true, autoRenew });

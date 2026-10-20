@@ -474,7 +474,7 @@ export const recordSubscriptionPayment = async (req: express.Request, res: expre
   const { storeId, amount, currency, periodDays, paidAt, method, paymentMethod, reference, notes, planId } = req.body || {};
 
   if (!storeId || amount === undefined || amount === null || !currency) {
-    return res.status(400).json({ message: 'storeId, amount and currency are required' });
+    return res.status(400).json({ message: 'A shop, an amount and a currency are all needed to record a payment.' });
   }
   const numericAmount = Number(amount);
   if (!Number.isFinite(numericAmount) || numericAmount <= 0) {

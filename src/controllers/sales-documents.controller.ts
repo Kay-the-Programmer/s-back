@@ -213,7 +213,7 @@ const fetchDocument = async (id: string, storeId: string) => {
 export const listDocuments = async (req: express.Request, res: express.Response) => {
     try {
         const storeId = storeOf(req);
-        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+        if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
 
         const { type, status, customerId, search, limit, offset } = req.query as Record<string, string>;
         const where = ['store_id = $1'];
@@ -256,7 +256,7 @@ export const listDocuments = async (req: express.Request, res: express.Response)
 export const getDocument = async (req: express.Request, res: express.Response) => {
     try {
         const storeId = storeOf(req);
-        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+        if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         const doc = await fetchDocument(req.params.id, storeId);
         if (!doc) return res.status(404).json({ message: 'Document not found' });
         res.status(200).json(doc);
@@ -288,7 +288,7 @@ export const createDocument = async (req: express.Request, res: express.Response
     }
 
     const storeId = storeOf(req);
-    if (!storeId) return res.status(400).json({ message: 'Store context required' });
+    if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
 
     let totals;
     if (docType === 'receipt') {
@@ -403,7 +403,7 @@ export const updateDocument = async (req: express.Request, res: express.Response
     } = req.body as any;
 
     const storeId = storeOf(req);
-    if (!storeId) return res.status(400).json({ message: 'Store context required' });
+    if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
 
     const existing = await db.query(
         'SELECT * FROM sales_documents WHERE id = $1 AND store_id = $2',
@@ -501,7 +501,7 @@ export const updateStatus = async (req: express.Request, res: express.Response) 
     const { id } = req.params;
     const { status } = req.body as { status?: string };
     const storeId = storeOf(req);
-    if (!storeId) return res.status(400).json({ message: 'Store context required' });
+    if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
 
     try {
         const existing = await db.query(
@@ -546,7 +546,7 @@ export const convertToInvoice = async (req: express.Request, res: express.Respon
     const { id } = req.params;
     const { dueDate } = req.body as { dueDate?: string };
     const storeId = storeOf(req);
-    if (!storeId) return res.status(400).json({ message: 'Store context required' });
+    if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
 
     const client = await (db as any)._pool.connect();
     try {
@@ -631,7 +631,7 @@ export const linkSale = async (req: express.Request, res: express.Response) => {
     const { id } = req.params;
     const { saleId } = req.body as { saleId?: string };
     const storeId = storeOf(req);
-    if (!storeId) return res.status(400).json({ message: 'Store context required' });
+    if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
     if (!saleId) return res.status(400).json({ message: 'saleId is required.' });
 
     try {
@@ -676,7 +676,7 @@ export const linkSale = async (req: express.Request, res: express.Response) => {
 export const deleteDocument = async (req: express.Request, res: express.Response) => {
     const { id } = req.params;
     const storeId = storeOf(req);
-    if (!storeId) return res.status(400).json({ message: 'Store context required' });
+    if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
 
     try {
         const existing = await db.query(

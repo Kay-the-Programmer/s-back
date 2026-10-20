@@ -299,7 +299,7 @@ export const setCurrentStore = async (req: express.Request, res: express.Respons
     try {
         const { storeId } = req.body || {};
         if (!storeId || typeof storeId !== 'string') {
-            return res.status(400).json({ message: 'storeId is required' });
+            return res.status(400).json({ message: 'Choose which shop this person works in.' });
         }
         // Ensure the store exists
         const storeRes = await db.query('SELECT id, owner_id FROM stores WHERE id = $1', [storeId]);

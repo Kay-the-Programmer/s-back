@@ -50,7 +50,7 @@ export const getProducts = async (req: express.Request, res: express.Response) =
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const { name, sku, categoryId, supplierId, stockStatus } = req.query as any;
         const where: string[] = [];
@@ -85,7 +85,7 @@ export const getProductById = async (req: express.Request, res: express.Response
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const result = await db.query('SELECT * FROM products WHERE id = $1 AND store_id = $2', [req.params.id, storeId]);
         if (result.rowCount === 0) {
@@ -102,7 +102,7 @@ export const createProduct = async (req: express.Request, res: express.Response)
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
 
         // Catalogue size is a plan capacity now, not an add-on: every tier can
@@ -338,7 +338,7 @@ export const createProduct = async (req: express.Request, res: express.Response)
                     existingProduct: existing ? toCamelCase(existing) : null,
                 });
             }
-            return res.status(409).json({ message: 'Duplicate value violates a unique constraint.' });
+            return res.status(409).json({ message: 'Another item already uses that SKU or barcode. Change it and save again.' });
         }
 
         console.error('Error creating product:', error);
@@ -396,7 +396,7 @@ export const updateProduct = async (req: express.Request, res: express.Response)
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         // Fetch the FULL current row so we can fall back to existing values
         // for any column the caller didn't include in the request body.
@@ -603,7 +603,7 @@ export const updateProduct = async (req: express.Request, res: express.Response)
             if (constraint.includes('barcode')) {
                 return res.status(409).json({ message: 'A product with this barcode already exists.' });
             }
-            return res.status(409).json({ message: 'Duplicate value violates a unique constraint.' });
+            return res.status(409).json({ message: 'Another item already uses that SKU or barcode. Change it and save again.' });
         }
         console.error(`Error updating product ${id}:`, error);
         res.status(500).json({ message: 'Error updating product', error: (error as Error).message });
@@ -649,7 +649,7 @@ export const deleteProduct = async (req: express.Request, res: express.Response)
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const productInfoResult = await db.query('SELECT name, sku FROM products WHERE id = $1 AND store_id = $2', [id, storeId]);
         if (productInfoResult.rowCount === 0) {
@@ -681,7 +681,7 @@ export const archiveProduct = async (req: express.Request, res: express.Response
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const productResult = await db.query('SELECT status, name FROM products WHERE id = $1 AND store_id = $2', [id, storeId]);
         if (productResult.rowCount === 0) {
@@ -733,13 +733,13 @@ export const adjustStock = async (req: express.Request, res: express.Response) =
     const { id } = req.params;
 
     if (typeof newQuantity !== 'number' || isNaN(newQuantity) || !reason) {
-        return res.status(400).json({ message: 'newQuantity (number) and reason (string) are required.' });
+        return res.status(400).json({ message: 'Enter the new stock count and say why it changed.' });
     }
 
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const productResult = await db.query('SELECT * FROM products WHERE id = $1 AND store_id = $2', [id, storeId]);
         if (productResult.rowCount === 0) {
@@ -780,7 +780,7 @@ export const adjustStock = async (req: express.Request, res: express.Response) =
         }
 
         if (!Number.isFinite(finalStock)) {
-            return res.status(400).json({ message: 'Invalid resulting stock level.' });
+            return res.status(400).json({ message: 'That would leave an impossible stock count. Check the number and try again.' });
         }
 
         const updateResult = await db.query('UPDATE products SET stock = $1 WHERE id = $2 AND store_id = $3 RETURNING *', [finalStock, id, storeId]);
@@ -831,7 +831,7 @@ export const lookupExternalProduct = async (req: express.Request, res: express.R
         const productData = await externalProductService.lookupByBarcode(barcode);
 
         if (!productData) {
-            return res.status(404).json({ message: 'Product not found externally' });
+            return res.status(404).json({ message: 'We couldn’t find that barcode in the global catalogue. Enter the item’s details yourself.' });
         }
 
         res.status(200).json(productData);

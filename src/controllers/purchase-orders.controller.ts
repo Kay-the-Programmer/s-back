@@ -10,7 +10,7 @@ export const getPurchaseOrders = async (req: express.Request, res: express.Respo
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const result = await db.query(`
             SELECT po.*,
@@ -39,7 +39,7 @@ export const createPurchaseOrder = async (req: express.Request, res: express.Res
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
 
         // The supplier is optional — an order can be raised before the store has
@@ -132,7 +132,7 @@ export const updatePurchaseOrder = async (req: express.Request, res: express.Res
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         await client.query('BEGIN');
 
@@ -201,7 +201,7 @@ export const deletePurchaseOrder = async (req: express.Request, res: express.Res
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const poResult = await db.query("SELECT status, po_number FROM purchase_orders WHERE id = $1 AND store_id = $2", [id, storeId]);
         if (poResult.rowCount === 0) {
@@ -230,7 +230,7 @@ export const receiveItems = async (req: express.Request, res: express.Response) 
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         await client.query('BEGIN');
 
@@ -338,7 +338,7 @@ export const receiveItems = async (req: express.Request, res: express.Response) 
 export const getReorderSuggestions = async (req: express.Request, res: express.Response) => {
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
-        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+        if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
 
         const { rows } = await db.query(`
             SELECT p.id, p.name, p.sku, p.cost_price, p.stock, p.reorder_point, p.safety_stock,

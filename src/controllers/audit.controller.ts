@@ -7,7 +7,7 @@ export const getAuditLogs = async (req: express.Request, res: express.Response) 
 
     const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
     if (!storeId) {
-        return res.status(400).json({ message: 'Store context required' });
+        return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
     }
 
     let query = 'SELECT * FROM audit_logs';

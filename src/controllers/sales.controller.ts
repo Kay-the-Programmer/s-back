@@ -28,7 +28,7 @@ export const getSales = async (req: express.Request, res: express.Response) => {
     // Enforce tenant context
     const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
     if (!storeId) {
-        return res.status(400).json({ message: 'Store context required' });
+        return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
     }
 
     let baseQuery = `
@@ -175,7 +175,7 @@ export const createQuickSale = async (req: express.Request, res: express.Respons
     const client = await db._pool.connect();
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
-        if (!storeId) return res.status(400).json({ message: 'Store context required' });
+        if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
 
         const { items, paymentMethod } = req.body as {
             items: { name: string; amount: number; type: 'sale' | 'service'; quantity?: number }[];
@@ -309,7 +309,7 @@ export const createSale = async (req: express.Request, res: express.Response) =>
     const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
     if (!storeId) {
         client.release();
-        return res.status(400).json({ message: 'Store context required' });
+        return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
     }
 
     if (!Array.isArray(saleData.cart) || saleData.cart.length === 0) {
@@ -691,7 +691,7 @@ export const createSale = async (req: express.Request, res: express.Response) =>
         // was already recorded (e.g. a retry whose idempotency cache expired) —
         // signal "already there" rather than a retryable server failure.
         if (error?.code === '23505' && String(error?.constraint || '').startsWith('sales_')) {
-            return res.status(409).json({ message: 'A sale with this transactionId already exists.', transactionId });
+            return res.status(409).json({ message: 'This sale has already been recorded — it was not rung up twice.', transactionId });
         }
         console.error('Error creating sale:', error);
         res.status(500).json({ message: 'Failed to create sale' });
@@ -719,7 +719,7 @@ export const recordPayment = async (req: express.Request, res: express.Response)
     // Enforce tenant context
     const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
     if (!storeId) {
-        return res.status(400).json({ message: 'Store context required' });
+        return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
     }
 
     const client = await db._pool.connect();
@@ -803,7 +803,7 @@ export const updateSaleDate = async (req: express.Request, res: express.Response
 
     const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
     if (!storeId) {
-        return res.status(400).json({ message: 'Store context required' });
+        return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
     }
 
     // Same window the create path trusts: up to three years back for book
@@ -890,13 +890,13 @@ export const updateFulfillmentStatus = async (req: express.Request, res: express
 
     const validStatuses = ['pending', 'accepted', 'fulfilled', 'shipped', 'cancelled'];
     if (!validStatuses.includes(status)) {
-        return res.status(400).json({ message: 'Invalid fulfillment status' });
+        return res.status(400).json({ message: 'That isn’t a status an order can be set to.' });
     }
 
     // Enforce tenant context
     const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
     if (!storeId) {
-        return res.status(400).json({ message: 'Store context required' });
+        return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
     }
 
     try {

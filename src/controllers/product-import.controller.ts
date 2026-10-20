@@ -133,7 +133,7 @@ export const importProducts = async (req: express.Request, res: express.Response
     };
 
     const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
-    if (!storeId) return res.status(400).json({ message: 'Store context required' });
+    if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
 
     if (!Array.isArray(rows) || rows.length === 0) {
         return res.status(400).json({ message: 'No rows to import. Check the file has a header row and at least one product.' });

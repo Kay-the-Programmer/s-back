@@ -188,7 +188,7 @@ export const submitOffer = async (req: express.Request, res: express.Response) =
     // from the body, so one store cannot submit offers in another's name.
     const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
     if (!storeId) {
-        return res.status(400).json({ message: 'Store context required' });
+        return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
     }
 
     try {

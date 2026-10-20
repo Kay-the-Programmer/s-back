@@ -6,7 +6,7 @@ import { LINE_REVENUE, LINE_COST, LINE_QUANTITY, SALE_REVENUE, NOT_CANCELLED, pe
 export const getDashboardData = async (req: express.Request, res: express.Response) => {
     const { startDate, endDate, channel } = req.query as { startDate: string, endDate: string, channel?: string };
     if (!startDate || !endDate) {
-        return res.status(400).json({ message: 'startDate and endDate query parameters are required.' });
+        return res.status(400).json({ message: 'Choose the dates this report should cover.' });
     }
 
     const [periodStart, adjustedEndDate] = periodBounds(startDate, endDate);
@@ -14,7 +14,7 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         // --- Sales Calculations ---
         // Basis: ACCRUAL, matching the general ledger and /accounting/summary —
@@ -507,14 +507,14 @@ export const getDashboardData = async (req: express.Request, res: express.Respon
 export const getDailySalesWithProducts = async (req: express.Request, res: express.Response) => {
     const { startDate, endDate } = req.query as { startDate: string, endDate: string };
     if (!startDate || !endDate) {
-        return res.status(400).json({ message: 'startDate and endDate query parameters are required.' });
+        return res.status(400).json({ message: 'Choose the dates this report should cover.' });
     }
     const adjustedEndDate = new Date(new Date(endDate).getTime() + 24 * 60 * 60 * 1000 - 1).toISOString();
 
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const dailyItemsQuery = `
         SELECT
@@ -567,7 +567,7 @@ export const getDailySalesWithProducts = async (req: express.Request, res: expre
 export const getProductSales = async (req: express.Request, res: express.Response) => {
     const { startDate, endDate, channel } = req.query as { [key: string]: string };
     if (!startDate || !endDate) {
-        return res.status(400).json({ message: 'startDate and endDate query parameters are required.' });
+        return res.status(400).json({ message: 'Choose the dates this report should cover.' });
     }
     const [periodStart, adjustedEndDate] = periodBounds(startDate, endDate);
     const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
@@ -587,7 +587,7 @@ export const getProductSales = async (req: express.Request, res: express.Respons
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
 
         const params: any[] = [periodStart, adjustedEndDate, storeId];
@@ -723,14 +723,14 @@ export const getProductSales = async (req: express.Request, res: express.Respons
 export const getPersonalUseAdjustments = async (req: express.Request, res: express.Response) => {
     const { startDate, endDate } = req.query as { startDate: string, endDate: string };
     if (!startDate || !endDate) {
-        return res.status(400).json({ message: 'startDate and endDate query parameters are required.' });
+        return res.status(400).json({ message: 'Choose the dates this report should cover.' });
     }
     const adjustedEndDate = new Date(new Date(endDate).getTime() + 24 * 60 * 60 * 1000 - 1).toISOString();
 
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const q = `
             SELECT id, "timestamp", user_name, action, details

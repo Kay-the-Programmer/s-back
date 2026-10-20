@@ -19,7 +19,7 @@ const storeOf = (req: express.Request): string | undefined =>
 const requireStore = (req: express.Request, res: express.Response): string | null => {
     const storeId = storeOf(req);
     if (!storeId) {
-        res.status(400).json({ message: 'Store context required' });
+        res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         return null;
     }
     return storeId;
@@ -191,7 +191,7 @@ export const createRedemption = async (req: express.Request, res: express.Respon
     const storeId = requireStore(req, res);
     if (!storeId) return;
     const { customerId } = req.body as { customerId?: string };
-    if (!customerId) return res.status(400).json({ message: 'A customerId is required.' });
+    if (!customerId) return res.status(400).json({ message: 'Choose a customer first.' });
 
     const client = await (db as any)._pool.connect();
     try {

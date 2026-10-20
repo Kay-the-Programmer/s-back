@@ -18,7 +18,7 @@ export const getActiveStockTake = async (req: express.Request, res: express.Resp
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const session = await getActiveSessionWithItems(storeId);
         res.status(200).json(toCamelCase(session));
@@ -33,7 +33,7 @@ export const startStockTake = async (req: express.Request, res: express.Response
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const existing = await db.query("SELECT id FROM stock_takes WHERE status = 'active' AND store_id = $1 LIMIT 1", [storeId]);
         if ((existing.rowCount ?? 0) > 0) {
@@ -65,7 +65,7 @@ export const updateStockTakeItem = async (req: express.Request, res: express.Res
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const session = await db.query("SELECT id FROM stock_takes WHERE status = 'active' AND store_id = $1 LIMIT 1", [storeId]);
         if ((session.rowCount ?? 0) === 0) {
@@ -89,7 +89,7 @@ export const cancelStockTake = async (req: express.Request, res: express.Respons
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const sessionRes = await db.query("SELECT id FROM stock_takes WHERE status = 'active' AND store_id = $1 LIMIT 1", [storeId]);
         if ((sessionRes.rowCount ?? 0) === 0) {
@@ -110,7 +110,7 @@ export const cancelStockTake = async (req: express.Request, res: express.Respons
 export const finalizeStockTake = async (req: express.Request, res: express.Response) => {
     const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
     if (!storeId) {
-        return res.status(400).json({ message: 'Store context required' });
+        return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
     }
 
     const client = await (db as any)._pool.connect();

@@ -506,7 +506,7 @@ export const switchStore = async (req: express.Request, res: express.Response) =
   try {
     const userId = req.user!.id;
     const { storeId } = req.body || {};
-    if (!storeId) return res.status(400).json({ message: 'storeId is required' });
+    if (!storeId) return res.status(400).json({ message: 'Choose which shop this is for.' });
     const owns = await db.query('SELECT id FROM stores WHERE id = $1 AND owner_id = $2', [storeId, userId]);
     if ((owns.rowCount ?? 0) === 0) return res.status(403).json({ message: 'You do not have access to that business.' });
     await db.query('UPDATE users SET current_store_id = $1 WHERE id = $2', [storeId, userId]);

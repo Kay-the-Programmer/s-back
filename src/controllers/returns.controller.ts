@@ -18,7 +18,7 @@ export const getReturns = async (req: express.Request, res: express.Response) =>
     try {
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
-            return res.status(400).json({ message: 'Store context required' });
+            return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
         const result = await db.query(`
             SELECT r.*, COALESCE(json_agg(ri.*) FILTER (WHERE ri.id IS NOT NULL), '[]') as "returnedItems"
@@ -48,7 +48,7 @@ export const createReturn = async (req: express.Request, res: express.Response) 
 
     const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
     if (!storeId) {
-        return res.status(400).json({ message: 'Store context required' });
+        return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
     }
 
     // A large refund is where a till leaks money: goods that never came back,
@@ -251,10 +251,10 @@ export const setExchangeCreditApplied = async (req: express.Request, res: expres
 
     const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
     if (!storeId) {
-        return res.status(400).json({ message: 'Store context required' });
+        return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
     }
     if (!Number.isFinite(applied) || applied < 0) {
-        return res.status(400).json({ message: 'exchangeCreditApplied must be zero or more.' });
+        return res.status(400).json({ message: 'The exchange credit cannot be a negative amount.' });
     }
 
     try {
