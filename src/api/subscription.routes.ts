@@ -1,7 +1,5 @@
 import { Router } from 'express';
 import * as subscriptionController from '../controllers/subscription.controller';
-import { getPublicCampaigns } from '../controllers/upsell-campaign.controller';
-import { recordUpsellEvent } from '../controllers/upsell-analytics.controller';
 import { protect, requirePermission } from '../middleware/auth.middleware';
 
 const router = Router();
@@ -31,27 +29,6 @@ router.get('/page-modules', subscriptionController.getPageModules);
 
 /**
  * @openapi
- * /subscriptions/upsell-campaigns:
- *   get:
- *     tags: [Subscriptions]
- *     summary: Published upsell campaigns for the client engine (public)
- *     responses:
- *       200: { description: List of published upsell campaign DTOs }
- */
-router.get('/upsell-campaigns', getPublicCampaigns);
-
-/**
- * @openapi
- * /subscriptions/upsell-events:
- *   post:
- *     tags: [Subscriptions]
- *     summary: Record an upsell funnel event (impression/click/convert/dismiss)
- *     security: [{ bearerAuth: [] }]
- */
-router.post('/upsell-events', protect, recordUpsellEvent);
-
-/**
- * @openapi
  * /subscriptions/pay:
  *   post:
  *     tags: [Subscriptions]
@@ -72,14 +49,6 @@ router.post('/pay', protect, requirePermission('billing:manage'), subscriptionCo
 
 /**
  * @openapi
- * /subscriptions/addons:
- *   get:
- *     tags: [Subscriptions]
- *     summary: List à-la-carte add-ons the current store can buy
- *     security: [{ bearerAuth: [] }]
- */
-/**
- * @openapi
  * /subscriptions/auto-renew:
  *   get: { tags: [Subscriptions], summary: Whether the current store's plan auto-renews, security: [{ bearerAuth: [] }] }
  *   patch: { tags: [Subscriptions], summary: Toggle plan auto-renew, security: [{ bearerAuth: [] }] }
@@ -87,27 +56,13 @@ router.post('/pay', protect, requirePermission('billing:manage'), subscriptionCo
 router.get('/auto-renew', protect, requirePermission('billing:manage'), subscriptionController.getPlanAutoRenew);
 router.patch('/auto-renew', protect, requirePermission('billing:manage'), subscriptionController.updatePlanAutoRenew);
 
-router.get('/addons', protect, requirePermission('billing:manage'), subscriptionController.listAddons);
-
-/**
- * @openapi
- * /subscriptions/addons/pay:
- *   post:
- *     tags: [Subscriptions]
- *     summary: Initiate payment for one or more à-la-carte add-ons
- *     security: [{ bearerAuth: [] }]
+/*
+ * `/addons`, `/addons/pay` and `/addons/:moduleId/auto-renew` lived here.
+ * Nothing is sold per feature any more — the three tiers include every
+ * feature and differ on capacity — so the catalogue these served was empty
+ * and the charge endpoint refused every request it got. A subscription is the
+ * only thing to buy, and `/pay` above buys it.
  */
-router.post('/addons/pay', protect, requirePermission('billing:manage'), subscriptionController.buyAddons);
-
-/**
- * @openapi
- * /subscriptions/addons/{moduleId}/auto-renew:
- *   patch:
- *     tags: [Subscriptions]
- *     summary: Turn auto-renew on/off for an owned à-la-carte add-on
- *     security: [{ bearerAuth: [] }]
- */
-router.patch('/addons/:moduleId/auto-renew', protect, requirePermission('billing:manage'), subscriptionController.setAddonAutoRenew);
 
 /**
  * @openapi

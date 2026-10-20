@@ -7,6 +7,7 @@ import { SUBSCRIPTION_PLANS, getPlans } from '../services/subscription.service';
 import { planStoreDeletion, executeStoreDeletion, listArchives, deleteArchive, archiveRetentionDays } from '../services/store-deletion.service';
 import { storageService } from '../services/storage.service';
 import { sanitizeSenderId } from '../services/sms-branding';
+import { NOT_CANCELLED, SALE_REVENUE } from '../utils/revenue';
 
 // Monthly price per plan id (all current plans bill monthly), for MRR.
 const PLAN_MONTHLY_PRICE: Record<string, number> = Object.fromEntries(
@@ -572,11 +573,16 @@ export const getStoreDetails = async (req: express.Request, res: express.Respons
       db.query(`SELECT name, email, phone FROM users WHERE current_store_id = $1 AND role = 'admin' LIMIT 1`, [id]),
       // Usage stats (users, products, sales) in one round trip
       db.query(
+        // `sales_total` is the store's revenue, so it uses the platform
+        // definition like every other screen. It used to be SUM(total):
+        // tax-inclusive, refund-blind and counting cancelled sales, so a store
+        // read higher here than on its own dashboard, and the gap grew with
+        // every refund. `sales_count` stays a plain count of rows.
         `SELECT
             (SELECT COUNT(*) FROM users WHERE current_store_id = $1)::int AS users_count,
             (SELECT COUNT(*) FROM products WHERE store_id = $1)::int AS products_count,
             (SELECT COUNT(*) FROM sales WHERE store_id = $1)::int AS sales_count,
-            (SELECT COALESCE(SUM(total), 0) FROM sales WHERE store_id = $1)::float AS sales_total`,
+            (SELECT COALESCE(SUM(${SALE_REVENUE}), 0) FROM sales s WHERE s.store_id = $1 AND ${NOT_CANCELLED})::float AS sales_total`,
         [id]
       ),
       // Paid subscription revenue for this store

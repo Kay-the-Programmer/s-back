@@ -181,8 +181,6 @@ import { runStaleOrderCleanup } from './services/stale-order.service';
 import { runPlanRenewals } from './services/subscription.service';
 import { ensureCatalogSeeded } from './services/catalog.service';
 import { ensureEmailTemplatesSeeded } from './services/email-template.service';
-import { ensureUpsellCampaignsTable } from './services/upsell-campaign.service';
-import { ensureUpsellEventsTable } from './services/upsell-analytics.service';
 
 const startServer = async () => {
   try {
@@ -194,10 +192,6 @@ const startServer = async () => {
 
     // Seed the configurable email templates (superadmin-editable) if missing.
     await ensureEmailTemplatesSeeded().catch(err => console.error('[email-templates] seed failed:', err));
-
-    // Ensure the upsell-campaigns table exists (marketing console persistence).
-    await ensureUpsellCampaignsTable().catch(err => console.error('[upsell-campaigns] table init failed:', err));
-    await ensureUpsellEventsTable().catch(err => console.error('[upsell-events] table init failed:', err));
 
     // Process recurring expenses on startup
     runRecurringExpenses().then(count => {
