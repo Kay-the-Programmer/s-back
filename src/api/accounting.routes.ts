@@ -2,13 +2,23 @@ import express from 'express';
 import {
     getAccounts, createAccount, updateAccount, deleteAccount, adjustAccountBalance,
     getJournalEntries, createManualJournalEntry,
-    getSupplierInvoices, createSupplierInvoice, updateSupplierInvoice, recordSupplierPayment,
+    getSupplierInvoices, createSupplierInvoice, updateSupplierInvoice, recordSupplierPayment, paySupplier,
     getFinancialOverview
 } from '../controllers/accounting.controller';
 import { protect, adminOnly } from '../middleware/auth.middleware';
+import { getStatements, getTaxReport, getJournalPage, getTakings, getBooksHealth, getBooksLock, setBooksLock } from '../controllers/books.controller';
 
 const router = express.Router();
 router.use(protect, adminOnly);
+
+// Reports from the whole ledger (books.controller).
+router.get('/statements', getStatements);
+router.get('/tax-report', getTaxReport);
+router.get('/journal', getJournalPage);
+router.get('/takings', getTakings);
+router.get('/health', getBooksHealth);
+router.get('/lock', getBooksLock);
+router.put('/lock', setBooksLock);
 
 /**
  * @openapi
@@ -166,5 +176,6 @@ router.route('/supplier-invoices/:id')
  *           type: string
  */
 router.post('/supplier-invoices/:id/payments', recordSupplierPayment);
+router.post('/suppliers/:supplierId/payments', paySupplier);
 
 export default router;

@@ -11,8 +11,15 @@ const ensureCoreAccounts = async (storeId: string, client?: DBClient) => {
     // Define the standard chart of accounts we rely on
     const accounts: Array<{ number: string; name: string; type: Account['type']; sub: Account['subType']; debit: boolean; desc: string }> = [
         { number: '1010', name: 'Cash on Hand', type: 'asset', sub: 'cash', debit: true, desc: 'Physical cash and cash equivalents in the register.' },
+        // Money received other than notes and coins, kept apart so each balance
+        // can be checked against its own statement (the drawer, the MoMo
+        // statement, the bank statement).
+        { number: '1020', name: 'Mobile Money', type: 'asset', sub: 'mobile_money', debit: true, desc: 'MTN, Airtel and other mobile-money takings and payments.' },
+        { number: '1030', name: 'Bank', type: 'asset', sub: 'bank', debit: true, desc: 'Card payments and bank transfers.' },
         { number: '1100', name: 'Accounts Receivable', type: 'asset', sub: 'accounts_receivable', debit: true, desc: 'Money owed to the business by customers.' },
         { number: '1200', name: 'Inventory', type: 'asset', sub: 'inventory', debit: true, desc: 'Value of all products available for sale.' },
+        // VAT paid to suppliers, claimed back against VAT collected on sales.
+        { number: '1300', name: 'VAT Input (recoverable)', type: 'asset', sub: 'vat_input', debit: true, desc: 'VAT paid on purchases, deducted from VAT owed on sales.' },
         { number: '2010', name: 'Accounts Payable', type: 'liability', sub: 'accounts_payable', debit: false, desc: 'Money owed to suppliers for inventory.' },
         { number: '2150', name: 'Goods Received Not Invoiced', type: 'liability', sub: 'gr_ir', debit: false, desc: 'GR/IR clearing: stock received but not yet invoiced (or invoiced but not yet received). Nets to zero once both occur.' },
         { number: '2200', name: 'Sales Tax Payable', type: 'liability', sub: 'sales_tax_payable', debit: false, desc: 'Sales tax collected, to be remitted to the government.' },
@@ -23,7 +30,21 @@ const ensureCoreAccounts = async (storeId: string, client?: DBClient) => {
         { number: '5010', name: 'Cost of Goods Sold', type: 'expense', sub: 'cogs', debit: true, desc: 'Default account for the cost of goods sold.' },
         { number: '5020', name: 'Freight & Purchase Costs', type: 'expense', sub: 'freight_in', debit: true, desc: 'Shipping and tax on supplier purchases (not capitalised into inventory).' },
         { number: '6010', name: 'Rent Expense', type: 'expense', sub: undefined as any, debit: true, desc: 'Monthly rent for the store premises.' },
-        { number: '6020', name: 'Inventory Adjustment Expense', type: 'expense', sub: 'inventory_adjustment', debit: true, desc: 'Expense from inventory shrinkage, damage, or adjustments.' }
+        { number: '6020', name: 'Inventory Adjustment Expense', type: 'expense', sub: 'inventory_adjustment', debit: true, desc: 'Expense from inventory shrinkage, damage, or adjustments.' },
+        // Everyday running costs. The expense form's category buttons each post
+        // to one of these by number, so "Utilities" can never land in Rent or
+        // Cost of Goods Sold just because no better account existed.
+        // A deliberate change to what stock is worth (a cost price corrected on
+        // a product that already had one). Its own line, so it is never hidden
+        // inside stock write-offs.
+        { number: '6025', name: 'Stock Revaluation', type: 'expense', sub: 'stock_revaluation', debit: true, desc: 'Change in stock value from correcting a product cost price.' },
+        { number: '6030', name: 'Utilities', type: 'expense', sub: undefined as any, debit: true, desc: 'Electricity, water, internet and phone.' },
+        { number: '6040', name: 'Salaries & Wages', type: 'expense', sub: undefined as any, debit: true, desc: 'Pay for staff and casual workers.' },
+        { number: '6050', name: 'Transport & Fuel', type: 'expense', sub: undefined as any, debit: true, desc: 'Fuel, transport and delivery costs.' },
+        { number: '6060', name: 'Marketing & Advertising', type: 'expense', sub: undefined as any, debit: true, desc: 'Adverts, flyers, promotions and signage.' },
+        { number: '6070', name: 'Taxes & Licences', type: 'expense', sub: undefined as any, debit: true, desc: 'Council levies, trading licences and business taxes (not sales tax collected).' },
+        { number: '6080', name: 'Shop Supplies', type: 'expense', sub: undefined as any, debit: true, desc: 'Bags, cleaning materials, stationery and small items used in the shop.' },
+        { number: '6090', name: 'Other Expenses', type: 'expense', sub: undefined as any, debit: true, desc: 'Running costs that fit no other category.' },
     ];
 
     // Insert missing accounts for this store
@@ -52,9 +73,89 @@ const findAccount = async (subType: Account['subType'], storeId: string, client?
     return result.rows[0] as Account;
 };
 
+/**
+ * Which money account a payment method lands in. Notes and coins are Cash on
+ * Hand; MTN / Airtel / any mobile money is Mobile Money; card and bank
+ * transfer are Bank. Everything used to go to Cash on Hand, so the cash
+ * figure could not be checked against the drawer, nor mobile money against
+ * its statement. An unknown method stays in Cash, as before.
+ */
+export const moneySubTypeFor = (method?: string | null): 'cash' | 'mobile_money' | 'bank' => {
+    const m = String(method || '').toLowerCase();
+    if (/mtn|airtel|zamtel|mobile|momo|lenco|wallet/.test(m)) return 'mobile_money';
+    if (/card|visa|master|bank|transfer|eft|swipe|debit|credit card/.test(m)) return 'bank';
+    return 'cash';
+};
+
+/** The money account for a payment method (falls back to Cash on Hand). */
+const moneyAccountFor = async (method: string | null | undefined, storeId: string, dbClient: DBClient): Promise<Account | null> =>
+    (await findAccount(moneySubTypeFor(method), storeId, dbClient)) || (await findAccount('cash', storeId, dbClient));
+
+/**
+ * A sale's payments, grouped by the money account they belong in. Uses the
+ * payments on the sale object when present, else reads them from the
+ * payments table. Totals are scaled to `amountPaid` so the entry always
+ * balances; with no payment rows the whole amount is cash.
+ */
+const moneyLinesForSale = async (sale: any, amountPaid: number, storeId: string, dbClient: DBClient) => {
+    let pays: { amount: number; method: string }[] = Array.isArray(sale.payments) ? sale.payments : [];
+    if (pays.length === 0 && sale.transactionId) {
+        const r = await dbClient.query('SELECT amount, method FROM payments WHERE sale_id = $1 AND store_id = $2', [sale.transactionId, storeId]);
+        pays = r.rows;
+    }
+    const groups = new Map<string, number>();
+    const paidSum = pays.reduce((a, p) => a + (Number(p.amount) || 0), 0);
+    if (paidSum <= 0) {
+        groups.set('cash', amountPaid);
+    } else {
+        for (const p of pays) {
+            const key = moneySubTypeFor(p.method);
+            groups.set(key, (groups.get(key) || 0) + (Number(p.amount) || 0) * (amountPaid / paidSum));
+        }
+    }
+    const out: { account: Account; amount: number; sub: string }[] = [];
+    for (const [sub, amount] of groups) {
+        const account = (await findAccount(sub as any, storeId, dbClient)) || (await findAccount('cash', storeId, dbClient));
+        if (account && amount > 0.001) out.push({ account, amount: Math.round(amount * 100) / 100, sub });
+    }
+    // Rounding: make the lines add up to amountPaid exactly.
+    const drift = Math.round((amountPaid - out.reduce((a, l) => a + l.amount, 0)) * 100) / 100;
+    if (out.length && Math.abs(drift) >= 0.01) out[0].amount = Math.round((out[0].amount + drift) * 100) / 100;
+    return out;
+};
+
+/** Thrown when a posting falls in a closed period. `status` lets controllers answer 409. */
+export class BooksLockedError extends Error {
+    status = 409;
+    code = 'BOOKS_LOCKED';
+    constructor(public lockedUntil: string) {
+        super(`The books are closed up to ${lockedUntil}. Record this on a later date, or reopen the period in Books → Reports.`);
+    }
+}
+
+/** The date the books are closed up to (YYYY-MM-DD), or null when open. */
+export const booksLockedUntil = async (storeId: string, client?: DBClient): Promise<string | null> => {
+    const r = await (client || db).query('SELECT books_locked_until FROM store_settings WHERE store_id = $1', [storeId]);
+    const v = r.rows[0]?.books_locked_until;
+    if (!v) return null;
+    return typeof v === 'string' ? v.slice(0, 10) : new Date(v).toISOString().slice(0, 10);
+};
+
+/** Throw BooksLockedError when `date` is on or before the lock date. */
+export const assertOpenPeriod = async (storeId: string, date: string | Date | undefined | null, client?: DBClient) => {
+    const lock = await booksLockedUntil(storeId, client);
+    if (!lock) return;
+    const day = (date ? new Date(date) : new Date()).toISOString().slice(0, 10);
+    if (day <= lock) throw new BooksLockedError(lock);
+};
+
 const addJournalEntry = async (entry: Omit<JournalEntry, 'id'>, storeId: string, client?: DBClient) => {
     const dbClient = client || db;
     const entryId = generateId('je');
+
+    // Closed periods stay closed: every posting passes through here, so nothing
+    // can land in a month whose figures have been finalised.
+    await assertOpenPeriod(storeId, entry.date, dbClient);
 
     // Double-entry integrity: refuse to post an unbalanced entry. Throwing here
     // aborts the surrounding DB transaction so the books never drift out of balance.
@@ -200,12 +301,16 @@ const recordSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) 
     }
 
     if (amountPaid > 0) {
-        if (sale.cashReceived && sale.changeDue && sale.cashReceived > 0) {
-            // Explicitly record gross cash in and change out for better audit trail
-            journalLines.push({ accountId: cashAccount.id, accountName: cashAccount.name, type: 'debit', amount: sale.cashReceived });
-            journalLines.push({ accountId: cashAccount.id, accountName: cashAccount.name, type: 'credit', amount: sale.changeDue });
-        } else {
-            journalLines.push({ accountId: cashAccount.id, accountName: cashAccount.name, type: 'debit', amount: amountPaid });
+        // Each payment method to its own money account (cash / mobile money / bank).
+        const moneyLines = await moneyLinesForSale(sale, amountPaid, storeId, dbClient);
+        for (const ml of moneyLines) {
+            if (ml.sub === 'cash' && moneyLines.length === 1 && sale.cashReceived && sale.changeDue && sale.cashReceived > 0) {
+                // Explicitly record gross cash in and change out for better audit trail
+                journalLines.push({ accountId: ml.account.id, accountName: ml.account.name, type: 'debit', amount: sale.cashReceived });
+                journalLines.push({ accountId: ml.account.id, accountName: ml.account.name, type: 'credit', amount: sale.changeDue });
+            } else {
+                journalLines.push({ accountId: ml.account.id, accountName: ml.account.name, type: 'debit', amount: ml.amount });
+            }
         }
     }
     if (storeCreditUsed > 0 && storeCreditAccount) {
@@ -340,7 +445,10 @@ const voidSale = async (sale: Sale, client?: DBClient, storeIdParam?: string) =>
     }
 
     if (amountPaid > 0) {
-        journalLines.push({ accountId: cashAccount.id, accountName: cashAccount.name, type: 'credit', amount: amountPaid });
+        // Reverse each payment method from the money account it went into.
+        for (const ml of await moneyLinesForSale(sale, amountPaid, storeId, dbClient)) {
+            journalLines.push({ accountId: ml.account.id, accountName: ml.account.name, type: 'credit', amount: ml.amount });
+        }
     }
     if (storeCreditUsed > 0 && storeCreditAccount) {
         journalLines.push({ accountId: storeCreditAccount.id, accountName: storeCreditAccount.name, type: 'credit', amount: storeCreditUsed });
@@ -440,7 +548,19 @@ const recordStockAdjustment = async (product: Product, oldQuantity: number, reas
     }, storeId, dbClient);
 };
 
-const recordConsolidatedStockAdjustment = async (totalAdjustmentCost: number, description: string, client?: DBClient, storeId?: string) => {
+/**
+ * Post a change in stock value against the right contra account:
+ *   inventory_adjustment — counted gains/losses (stock takes, recounts);
+ *   owner_equity         — opening stock brought into the business (imports);
+ *   stock_revaluation    — a deliberate cost-price correction.
+ */
+const recordConsolidatedStockAdjustment = async (
+    totalAdjustmentCost: number,
+    description: string,
+    client?: DBClient,
+    storeId?: string,
+    contraSubType: 'inventory_adjustment' | 'owner_equity' | 'stock_revaluation' = 'inventory_adjustment',
+) => {
     const dbClient = client || db;
     if (!storeId) {
         console.warn('recordConsolidatedStockAdjustment: Missing store_id; aborting journal entry.');
@@ -451,7 +571,7 @@ const recordConsolidatedStockAdjustment = async (totalAdjustmentCost: number, de
     await ensureCoreAccounts(storeId, dbClient);
 
     const inventoryAccount = await findAccount('inventory', storeId, dbClient);
-    const adjustmentAccount = await findAccount('inventory_adjustment', storeId, dbClient);
+    const adjustmentAccount = (await findAccount(contraSubType, storeId, dbClient)) || (await findAccount('inventory_adjustment', storeId, dbClient));
 
     if (inventoryAccount && adjustmentAccount && Math.abs(totalAdjustmentCost) > 0.01) {
         await addJournalEntry({
@@ -512,7 +632,15 @@ const recordReturn = async (returnInfo: Return, originalSale: Sale, client?: DBC
     }
 
     // Determine primary asset/liability for refund
+    // Money goes back out of the account it came in through: "original method"
+    // uses the sale's first payment's method; a named method maps directly.
     let refundAssetAccount = cashAccount;
+    if (returnInfo.refundMethod === 'original_method') {
+        const firstPay = await dbClient.query('SELECT method FROM payments WHERE sale_id = $1 AND store_id = $2 ORDER BY date LIMIT 1', [originalSale.transactionId, storeId]);
+        refundAssetAccount = (await moneyAccountFor(firstPay.rows[0]?.method, storeId, dbClient)) || cashAccount;
+    } else if (returnInfo.refundMethod && !['accounts_receivable', 'on_account', 'store_credit'].includes(returnInfo.refundMethod)) {
+        refundAssetAccount = (await moneyAccountFor(returnInfo.refundMethod, storeId, dbClient)) || cashAccount;
+    }
     if (returnInfo.refundMethod === 'accounts_receivable' || returnInfo.refundMethod === 'on_account') {
         refundAssetAccount = arAccount;
     } else if (returnInfo.refundMethod === 'store_credit' && storeCreditAccount) {
@@ -695,7 +823,7 @@ const recordCustomerPayment = async (sale: Sale, payment: Payment, client?: DBCl
         return;
     }
 
-    let debitAccount = cashAccount;
+    let debitAccount = (await moneyAccountFor(payment.method, storeId, dbClient)) || cashAccount;
     if (payment.method === 'store_credit' && storeCreditAccount) {
         debitAccount = storeCreditAccount;
     }
@@ -727,8 +855,18 @@ const recordCustomerPayment = async (sale: Sale, payment: Payment, client?: DBCl
  * GR/IR was debited at the PO TOTAL and never netted to zero, and freight/tax
  * never reached the P&L. Invoices not linked to a PO are all goods.
  */
-const splitInvoiceForGl = async (invoice: SupplierInvoice, storeId: string, dbClient: DBClient): Promise<{ goods: number; other: number }> => {
+const round2Gl = (n: number) => Math.round(n * 100) / 100;
+
+const splitInvoiceForGl = async (invoice: SupplierInvoice, storeId: string, dbClient: DBClient): Promise<{ goods: number; other: number; tax?: number }> => {
     const amount = Number(invoice.amount) || 0;
+    // A purchase-order bill kept in step with deliveries records exactly what it
+    // posted; use that, so a reversal cancels it to the cent.
+    const postedGoods = (invoice as any).postedGoods ?? (invoice as any).posted_goods;
+    const postedOther = (invoice as any).postedOther ?? (invoice as any).posted_other;
+    if (postedGoods !== null && postedGoods !== undefined) {
+        const postedTax = Number((invoice as any).postedTax ?? (invoice as any).posted_tax) || 0;
+        return { goods: Number(postedGoods) || 0, other: round2Gl((Number(postedOther) || 0) - postedTax), tax: postedTax };
+    }
     const poId = (invoice as any).purchaseOrderId || (invoice as any).purchase_order_id;
     if (poId) {
         const poRes = await dbClient.query('SELECT subtotal FROM purchase_orders WHERE id = $1 AND store_id = $2', [poId, storeId]);
@@ -759,9 +897,10 @@ const recordSupplierInvoice = async (invoice: SupplierInvoice, client?: DBClient
         return;
     }
 
-    const { goods, other } = freightAccount
+    const { goods, other, tax = 0 } = freightAccount
         ? await splitInvoiceForGl(invoice, storeId, dbClient)
-        : { goods: Number(invoice.amount) || 0, other: 0 };
+        : { goods: Number(invoice.amount) || 0, other: 0, tax: 0 };
+    const vatInAcc = tax > 0 ? await findAccount('vat_input', storeId, dbClient) : null;
 
     const lines: JournalEntryLine[] = [
         // Invoice received: clear the GR/IR liability into Accounts Payable. The goods
@@ -771,6 +910,9 @@ const recordSupplierInvoice = async (invoice: SupplierInvoice, client?: DBClient
     ];
     if (other > 0 && freightAccount) {
         lines.push({ accountId: freightAccount.id, accountName: freightAccount.name, type: 'debit', amount: other });
+    }
+    if (tax > 0 && vatInAcc) {
+        lines.push({ accountId: vatInAcc.id, accountName: vatInAcc.name, type: 'debit', amount: tax });
     }
 
     await addJournalEntry({
@@ -801,9 +943,10 @@ const reverseSupplierInvoice = async (invoice: SupplierInvoice, client?: DBClien
     }
 
     // Mirror recordSupplierInvoice's split so the reversal cancels it exactly.
-    const { goods, other } = freightAccount
+    const { goods, other, tax = 0 } = freightAccount
         ? await splitInvoiceForGl(invoice, storeId, dbClient)
-        : { goods: Number(invoice.amount) || 0, other: 0 };
+        : { goods: Number(invoice.amount) || 0, other: 0, tax: 0 };
+    const vatInAcc = tax > 0 ? await findAccount('vat_input', storeId, dbClient) : null;
 
     const lines: JournalEntryLine[] = [
         { accountId: grirAccount.id, accountName: grirAccount.name, type: 'credit', amount: goods },
@@ -812,6 +955,9 @@ const reverseSupplierInvoice = async (invoice: SupplierInvoice, client?: DBClien
     if (other > 0 && freightAccount) {
         lines.push({ accountId: freightAccount.id, accountName: freightAccount.name, type: 'credit', amount: other });
     }
+    if (tax > 0 && vatInAcc) {
+        lines.push({ accountId: vatInAcc.id, accountName: vatInAcc.name, type: 'credit', amount: tax });
+    }
 
     await addJournalEntry({
         date: new Date().toISOString(),
@@ -819,6 +965,185 @@ const reverseSupplierInvoice = async (invoice: SupplierInvoice, client?: DBClien
         source: { type: 'purchase', id: invoice.id },
         lines,
     }, storeId, dbClient);
+};
+
+export interface BillSyncResult {
+    poNumber: string;
+    action: 'none' | 'created' | 'adjusted' | 'removed' | 'skipped';
+    /** Bill amount before and after (0 when there was / is no bill). */
+    before: number;
+    after: number;
+    reason?: string;
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+/**
+ * Keep a purchase order's supplier bill equal to what has actually arrived.
+ *
+ * A bill used to be raised for the FULL order the moment it was placed, so
+ * payables showed money owed for goods still on the road, or never coming,
+ * since cancelling an order left its bill behind. Now the bill is the value
+ * received: goods at order cost, plus that share of the order's tax and
+ * delivery (all of it once everything is in). Run after every change to an
+ * order (create, edit, cancel, receive), it posts only the difference from
+ * what the bill has already put through the ledger:
+ *     Dr GR/IR (goods) + Dr Freight & Purchase Costs (tax/delivery) / Cr A/P
+ * and the reverse when it goes down. Money already paid is never un-billed.
+ * A bill that falls to nothing, with nothing paid, is removed.
+ */
+const syncSupplierBillForPO = async (
+    poId: string,
+    storeId: string,
+    client?: DBClient,
+    opts: { dryRun?: boolean } = {},
+): Promise<BillSyncResult> => {
+    const dbClient = client || db;
+    const poRes = await dbClient.query(
+        'SELECT id, po_number, supplier_id, supplier_name, status, subtotal, total, tax FROM purchase_orders WHERE id = $1 AND store_id = $2',
+        [poId, storeId],
+    );
+    if (!poRes.rowCount) return { poNumber: poId, action: 'skipped', before: 0, after: 0, reason: 'order not found' };
+    const po = poRes.rows[0];
+    const items = (await dbClient.query(
+        'SELECT quantity, received_quantity, cost_price FROM purchase_order_items WHERE po_id = $1 AND store_id = $2',
+        [poId, storeId],
+    )).rows;
+
+    const subtotal = Number(po.subtotal) || 0;
+    const total = Number(po.total) || 0;
+    // Never bill beyond what was ordered: a line showing more received than
+    // ordered is a double-booked receipt (the bug fixed on 2026-11-16), not a
+    // bigger delivery. scripts/reconcile_po_bills reports those for a recount.
+    const receivedGoods = round2(items.reduce((s: number, i: any) =>
+        s + Math.min(Number(i.received_quantity) || 0, Number(i.quantity) || 0) * (Number(i.cost_price) || 0), 0));
+    const allReceived = items.length > 0
+        && items.every((i: any) => (Number(i.received_quantity) || 0) >= (Number(i.quantity) || 0) - 0.0001);
+    const extras = Math.max(0, round2(total - subtotal));
+    const targetOther = receivedGoods <= 0 ? 0
+        : allReceived ? extras
+            : subtotal > 0 ? round2(extras * receivedGoods / subtotal) : 0;
+    let targetGoods = receivedGoods;
+
+    // VAT on the bill is claimed back (VAT Input) when the store itself charges
+    // VAT; the rest of the extras (delivery) is a purchase cost (Freight). It
+    // used to all be expensed, so VAT paid on stock was never recovered.
+    const settingsRow = await dbClient.query('SELECT tax_rate FROM store_settings WHERE store_id = $1', [storeId]);
+    const vatRegistered = (Number(settingsRow.rows[0]?.tax_rate) || 0) > 0;
+    const poTax = Math.min(extras, Math.max(0, Number(po.tax) || 0));
+    const targetTax = !vatRegistered || receivedGoods <= 0 ? 0
+        : allReceived ? round2(poTax)
+            : subtotal > 0 ? round2(poTax * receivedGoods / subtotal) : 0;
+
+    const invRes = await dbClient.query(
+        'SELECT * FROM supplier_invoices WHERE purchase_order_id = $1 AND store_id = $2 ORDER BY created_at LIMIT 1 FOR UPDATE',
+        [poId, storeId],
+    );
+    const inv = invRes.rows[0];
+    const before = inv ? Number(inv.amount) || 0 : 0;
+
+    if (!inv && !po.supplier_id) {
+        return { poNumber: po.po_number, action: 'skipped', before: 0, after: 0, reason: 'no supplier named yet' };
+    }
+
+    const paid = inv ? Number(inv.amount_paid) || 0 : 0;
+    if (targetGoods + targetOther < paid) targetGoods = round2(paid - targetOther);
+    const after = round2(targetGoods + targetOther);
+
+    // What the bill has posted so far. Bills from before this change posted the
+    // whole amount with the old rule: goods up to the order subtotal, the rest
+    // to freight.
+    let oldGoods = 0;
+    let oldOther = 0;
+    // VAT part of what was posted (inside posted_other); none on older bills.
+    const oldTax = inv && inv.posted_tax !== null && inv.posted_tax !== undefined ? Number(inv.posted_tax) || 0 : 0;
+    if (inv) {
+        if (inv.posted_goods !== null && inv.posted_goods !== undefined) {
+            oldGoods = Number(inv.posted_goods) || 0;
+            oldOther = Number(inv.posted_other) || 0;
+        } else {
+            oldGoods = Math.min(before, subtotal);
+            oldOther = round2(before - oldGoods);
+        }
+    }
+
+    const dGoods = round2(targetGoods - oldGoods);
+    const dOther = round2(targetOther - oldOther);
+    const dTax = round2(targetTax - oldTax);
+    const dFreight = round2(dOther - dTax);
+
+    if (Math.abs(dGoods) < 0.005 && Math.abs(dOther) < 0.005 && Math.abs(dTax) < 0.005) {
+        if (inv && (inv.posted_goods === null || inv.posted_goods === undefined) && !opts.dryRun) {
+            await dbClient.query('UPDATE supplier_invoices SET posted_goods = $1, posted_other = $2, posted_tax = $3 WHERE id = $4 AND store_id = $5',
+                [oldGoods, oldOther, oldTax, inv.id, storeId]);
+        }
+        return { poNumber: po.po_number, action: 'none', before, after: before };
+    }
+
+    const action: BillSyncResult['action'] = !inv ? 'created' : (after <= 0.005 && paid <= 0.005 ? 'removed' : 'adjusted');
+    if (opts.dryRun) return { poNumber: po.po_number, action, before, after };
+
+    await ensureCoreAccounts(storeId, dbClient);
+    const grir = await findAccount('gr_ir', storeId, dbClient);
+    const ap = await findAccount('accounts_payable', storeId, dbClient);
+    const freight = await findAccount('freight_in', storeId, dbClient);
+    const vatIn = await findAccount('vat_input', storeId, dbClient);
+    if (!grir || !ap) throw new Error('Accounting Error: GR/IR or Accounts Payable is not configured for this store.');
+
+    const invoiceId = inv?.id || generateId('inv-sup');
+    const invoiceNumber = inv?.invoice_number || `INV-${po.po_number}`;
+    const supplierName = po.supplier_name || inv?.supplier_name || 'Supplier';
+
+    // Signed amounts to journal sides. With no freight account the extras ride on GR/IR.
+    // VAT goes to VAT Input; with no VAT account it rides with freight.
+    const vatSide = vatIn ? dTax : 0;
+    const freightPart = vatIn ? dFreight : dOther;
+    const goodsSide = freight ? dGoods : round2(dGoods + freightPart);
+    const otherSide = freight ? freightPart : 0;
+    const dTotal = round2(dGoods + dOther);
+    const lines: JournalEntryLine[] = [];
+    const push = (acc: Account, signedDebit: number) => {
+        if (Math.abs(signedDebit) < 0.005) return;
+        lines.push({ accountId: acc.id, accountName: acc.name, type: signedDebit > 0 ? 'debit' : 'credit', amount: Math.abs(signedDebit) });
+    };
+    push(grir, goodsSide);
+    if (freight) push(freight, otherSide);
+    if (vatIn) push(vatIn, vatSide);
+    push(ap, -dTotal);
+
+    if (lines.length > 0) {
+        await addJournalEntry({
+            date: new Date().toISOString(),
+            description: !inv
+                ? `Supplier Invoice ${invoiceNumber} from ${supplierName}`
+                : `Supplier Invoice ${invoiceNumber} adjusted to goods received (${before.toFixed(2)} -> ${after.toFixed(2)})`,
+            source: { type: 'purchase', id: invoiceId },
+            lines,
+        }, storeId, dbClient);
+    }
+
+    if (!inv) {
+        const today = new Date();
+        const due = new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000);
+        await dbClient.query(
+            `INSERT INTO supplier_invoices (id, invoice_number, supplier_id, supplier_name, purchase_order_id, po_number, invoice_date, due_date, amount, amount_paid, status, store_id, posted_goods, posted_other, posted_tax)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, 'unpaid', $10, $11, $12, $13)`,
+            [invoiceId, invoiceNumber, po.supplier_id, supplierName, po.id, po.po_number,
+                today.toISOString().split('T')[0], due.toISOString().split('T')[0], after, storeId, targetGoods, targetOther, targetTax],
+        );
+    } else if (action === 'removed') {
+        await dbClient.query('DELETE FROM supplier_invoices WHERE id = $1 AND store_id = $2', [inv.id, storeId]);
+    } else {
+        const status = paid >= after - 0.005 && after > 0 ? 'paid' : paid > 0.005 ? 'partially_paid' : 'unpaid';
+        await dbClient.query(
+            `UPDATE supplier_invoices SET amount = $1, posted_goods = $2, posted_other = $3, status = $4,
+                    supplier_id = COALESCE($5, supplier_id), supplier_name = $6, posted_tax = $9
+             WHERE id = $7 AND store_id = $8`,
+            [after, targetGoods, targetOther, status, po.supplier_id, supplierName, inv.id, storeId, targetTax],
+        );
+    }
+
+    return { poNumber: po.po_number, action, before, after };
 };
 
 const recordSupplierPayment = async (invoice: SupplierInvoice, payment: SupplierPayment, client?: DBClient, storeIdParam?: string) => {
@@ -839,13 +1164,15 @@ const recordSupplierPayment = async (invoice: SupplierInvoice, payment: Supplier
         return;
     }
 
+    // Paid out of the account the method belongs to (cash / mobile money / bank).
+    const paidFrom = (await moneyAccountFor(payment.method, storeId, dbClient)) || cashAccount;
     await addJournalEntry({
         date: payment.date,
         description: `Payment for supplier invoice ${invoice.invoiceNumber}`,
         source: { type: 'payment', id: invoice.id },
         lines: [
             { accountId: apAccount.id, accountName: apAccount.name, type: 'debit', amount: payment.amount },
-            { accountId: cashAccount.id, accountName: cashAccount.name, type: 'credit', amount: payment.amount },
+            { accountId: paidFrom.id, accountName: paidFrom.name, type: 'credit', amount: payment.amount },
         ]
     }, storeId, dbClient);
 
@@ -971,6 +1298,9 @@ const reverseExpense = async (expense: any, client?: DBClient, storeIdParam?: st
 
 
 export const accountingService = {
+    ensureCoreAccounts,
+    booksLockedUntil,
+    assertOpenPeriod,
     addJournalEntry,
     recordSale,
     recordStockAdjustment,
@@ -979,37 +1309,11 @@ export const accountingService = {
     recordPurchaseOrderReception,
     recordSupplierInvoice,
     reverseSupplierInvoice,
+    syncSupplierBillForPO: (poId: string, storeId: string, client?: DBClient, opts?: { dryRun?: boolean }) =>
+        syncSupplierBillForPO(poId, storeId, client, opts),
     recordCustomerPayment,
     recordSupplierPayment,
     voidSale,
     recordExpense,
-    reverseExpense,
-    ensureSupplierInvoiceForPO: async (po: PurchaseOrder, client?: DBClient, storeIdParam?: string) => {
-        const dbClient = client || db;
-        const storeId = storeIdParam || (po as any).store_id;
-        if (!storeId) return;
-
-        // Check if invoice already exists
-        const check = await dbClient.query('SELECT id FROM supplier_invoices WHERE purchase_order_id = $1 AND store_id = $2', [po.id, storeId]);
-        if (check.rowCount > 0) return;
-
-        const id = generateId('inv-sup');
-        const invoiceNumber = `INV-${po.poNumber}`;
-        const invoiceDate = po.orderedAt || new Date().toISOString().split('T')[0];
-        // Default due date to 30 days if not set
-        const dueDate = po.expectedAt || new Date(new Date().getTime() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-
-        await dbClient.query(
-            'INSERT INTO supplier_invoices (id, invoice_number, supplier_id, supplier_name, purchase_order_id, po_number, invoice_date, due_date, amount, amount_paid, status, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, \'unpaid\', $10)',
-            [id, invoiceNumber, po.supplierId, po.supplierName, po.id, po.poNumber, invoiceDate, dueDate, po.total, storeId]
-        );
-
-        // Post the invoice to the GL (Dr GR/IR, Cr A/P) so the auto-created payable is
-        // reflected in the ledger and reconciles with the A/P sub-ledger from day one.
-        await recordSupplierInvoice(
-            { id, invoiceNumber, supplierId: po.supplierId, supplierName: po.supplierName, purchaseOrderId: po.id, poNumber: po.poNumber, invoiceDate, dueDate, amount: po.total, amountPaid: 0, status: 'unpaid', payments: [] } as SupplierInvoice,
-            dbClient,
-            storeId,
-        );
-    }
+    reverseExpense
 };

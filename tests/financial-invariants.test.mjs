@@ -163,7 +163,12 @@ const main = async () => {
         returnedItems: [{ productId: PRODUCT_ID, productName: 'Invariant Widget', quantity: 1, reason: 'test', addToStock: true }],
         refundAmount: 500, refundMethod: 'cash',
     }, H);
-    check('over-refund rejected', overRefund.status === 400, `status=${overRefund.status}`);
+    // The server works out refunds itself (services/refund) and ignores the
+    // amount the till sends, so an inflated 500 cannot be paid out: returning
+    // the second widget refunds its true share of the discounted sale, 90.
+    check('an inflated refund amount is ignored (refunds the true 90, not 500)',
+        overRefund.status === 201 && Math.abs(Number(overRefund.data?.refundAmount) - 90) < 0.01,
+        `status=${overRefund.status} refund=${overRefund.data?.refundAmount}`);
 
     const overReturn = await req('POST', '/returns', {
         originalSaleId: s1id,
@@ -175,8 +180,9 @@ const main = async () => {
     const rep2 = await req('GET', `/reports/dashboard?${range}`, null, H);
     const dRev2 = +(rep2.data.sales.totalRevenue - b.totalRevenue).toFixed(2);
     const dCogs2 = +(rep2.data.sales.totalCogs - b.totalCogs).toFixed(2);
-    check('refund reduces revenue in return period (+290)', dRev2 === 290, `delta=${dRev2}`);
-    check('restock reverses COGS in return period (+180)', dCogs2 === 180, `delta=${dCogs2}`);
+    // Both widgets of the discounted sale are now back (two returns of 90).
+    check('refunds reduce revenue in return period (380 − 180 = +200)', dRev2 === 200, `delta=${dRev2}`);
+    check('restock reverses COGS in return period (240 − 120 = +120)', dCogs2 === 120, `delta=${dCogs2}`);
 
     // ---- 9. one source of truth ----
     const sum = await req('GET', `/accounting/summary?${range}`, null, H);
@@ -205,7 +211,7 @@ const main = async () => {
         `booked=${revLine.rows[0].rev}`);
 
     const stock = await db.query('SELECT stock FROM products WHERE id = $1', [PRODUCT_ID]);
-    check('stock reconciles (50 − 4 sold + 1 restocked = 47)', Math.abs(Number(stock.rows[0].stock) - 47) < 0.001,
+    check('stock reconciles (50 − 4 sold + 2 restocked = 48)', Math.abs(Number(stock.rows[0].stock) - 48) < 0.001,
         `stock=${stock.rows[0].stock}`);
 
     const fails = results.filter(r => !r.ok).length;

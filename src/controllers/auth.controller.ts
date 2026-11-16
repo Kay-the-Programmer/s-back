@@ -23,7 +23,7 @@ const JWT_SECRET = process.env.JWT_SECRET || 'CHANGE_ME_DEV_ONLY';
  * Callers must pass the CURRENT value. Signing a token right after revoking
  * sessions needs the post-bump number, or the new token is dead on arrival.
  */
-const generateToken = (id: string, tokenVersion: number = 0) => {
+export const generateToken = (id: string, tokenVersion: number = 0) => {
     return jwt.sign({ id, tv: tokenVersion }, JWT_SECRET, {
         expiresIn: '30d',
     });

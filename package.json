@@ -30,7 +30,15 @@
     "test:sms": "npm run build && node tests/sms-branding.test.mjs",
     "test:sms-sender": "node tests/sms-sender-approval.test.mjs",
     "test:entitlements": "node tests/entitlement-gates.test.mjs",
-    "test:paid-only": "node tests/paid-only-plans.test.mjs"
+    "test:paid-only": "node tests/paid-only-plans.test.mjs",
+    "test:reorder": "npm run build && node tests/reorder.test.mjs",
+    "test:po-receive": "node tests/po-receive.test.mjs",
+    "reconcile:po-bills": "ts-node src/scripts/reconcile_po_bills.ts",
+    "test:po-bills": "node tests/po-bills.test.mjs",
+    "test:refund": "npm run build && node tests/refund.test.mjs",
+    "test:simpler-flows": "node tests/simpler-flows.test.mjs",
+    "test:books": "node tests/books.test.mjs",
+    "test:process-flows": "node tests/process-flows.test.mjs"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.19.0",

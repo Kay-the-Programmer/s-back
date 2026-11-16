@@ -735,6 +735,7 @@ async function initializeDatabase() {
         // a customer waiting. It is a weaker factor, so it is bcrypt-hashed,
         // rate-limited, minimum six digits, and every use is recorded.
         await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS manager_pin_hash TEXT;`);
+        await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS till_pin_hash TEXT;`);
 
         // One authorisation, for one action, once. Single-use and short-lived
         // so a code cannot be reused for a second discount after the manager
@@ -1442,6 +1443,19 @@ async function initializeDatabase() {
             );
         `);
         await client.query(`CREATE INDEX IF NOT EXISTS idx_supplier_invoices_store_id ON supplier_invoices(store_id);`);
+        // What a purchase-order bill has posted to the ledger so far, split into
+        // goods (against GR/IR) and the rest (tax + delivery, to Freight). A PO
+        // bill now follows the goods actually received, so it is adjusted in
+        // steps; each step posts only the difference from these. NULL = a bill
+        // posted before this existed, read with the old full-amount rule.
+        await client.query(`ALTER TABLE supplier_invoices ADD COLUMN IF NOT EXISTS posted_goods DECIMAL(12, 2);`);
+        await client.query(`ALTER TABLE supplier_invoices ADD COLUMN IF NOT EXISTS posted_other DECIMAL(12, 2);`);
+        // The VAT part of a PO bill, posted to VAT Input (recoverable) rather
+        // than expensed. NULL on bills from before VAT was claimed back.
+        await client.query(`ALTER TABLE supplier_invoices ADD COLUMN IF NOT EXISTS posted_tax DECIMAL(12, 2);`);
+        // Books closed up to and including this date: nothing may be posted on
+        // or before it (backdated sales, expenses, manual journals). NULL = open.
+        await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS books_locked_until DATE;`);
 
         await client.query(`
             CREATE TABLE IF NOT EXISTS supplier_payments (

@@ -571,11 +571,20 @@ export const updateProduct = async (req: express.Request, res: express.Response)
             const valueDiff = newInventoryValue - oldInventoryValue;
 
             if (Math.abs(valueDiff) > 0.01) {
+                // Editing a product changes what its stock is worth only through
+                // its cost. A product that had no cost yet is being valued for
+                // the first time: that is opening stock, owner's equity. A cost
+                // that is corrected is a revaluation, on its own P&L line — it
+                // used to be buried in stock write-offs.
+                const firstValuation = oldCost <= 0.0001 && oldStock > 0;
                 await accountingService.recordConsolidatedStockAdjustment(
                     valueDiff,
-                    `Manual adjustment for ${updatedProduct.name}`,
+                    firstValuation
+                        ? `Opening stock valued: ${updatedProduct.name}`
+                        : `Cost price corrected: ${updatedProduct.name} (${oldCost.toFixed(2)} -> ${newCost.toFixed(2)})`,
                     client,
-                    storeId
+                    storeId,
+                    firstValuation ? 'owner_equity' : 'stock_revaluation',
                 );
             }
 

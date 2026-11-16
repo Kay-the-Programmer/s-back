@@ -6,6 +6,7 @@ import { auditService } from '../services/audit.service';
 import { accountingService } from '../services/accounting.service';
 import { findOpenSessionId } from '../services/cash-session.service';
 import { reversePointsForReturn } from '../services/loyalty.service';
+import { computeRefund } from '../services/refund';
 import { requiresOverride } from '../services/override-rules';
 import {
     OverrideError,
@@ -38,7 +39,8 @@ export const getReturns = async (req: express.Request, res: express.Response) =>
 
 export const createReturn = async (req: express.Request, res: express.Response) => {
     const returnData: Omit<Return, 'id' | 'timestamp'> = req.body;
-    const { originalSaleId, returnedItems, refundAmount, refundMethod } = returnData;
+    // refundAmount from the client is ignored: the server works it out below.
+    const { originalSaleId, returnedItems, refundMethod } = returnData;
     // On an exchange, part of the refund is settled in replacement goods rather
     // than money. Recording how much keeps 'cash paid out' derivable
     // (refund_amount - exchange_credit_applied) instead of guessed.
@@ -49,6 +51,57 @@ export const createReturn = async (req: express.Request, res: express.Response) 
     const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
     if (!storeId) {
         return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
+    }
+    if (!Array.isArray(returnedItems) || returnedItems.length === 0) {
+        return res.status(400).json({ message: 'Choose at least one item to return.' });
+    }
+
+    // How much to give back is the server's call, from the sale as it was
+    // charged (services/refund). The figure the till sends is not trusted: it
+    // used to add the store's flat tax rate to every line, over-refunding
+    // zero-rated, exempt and tax-inclusive goods.
+    let refundAmount: number;
+    let refundTax: number;
+    let refundSubtotal: number;
+    {
+        const saleRow = await db.query(
+            'SELECT total, subtotal, delivery_fee, tax_breakdown FROM sales WHERE transaction_id = $1 AND store_id = $2',
+            [originalSaleId, storeId],
+        );
+        if (!saleRow.rowCount) return res.status(404).json({ message: 'Original sale not found' });
+        const soldRows = await db.query(
+            'SELECT product_id, price_at_sale, quantity, returned_quantity, tax_class FROM sale_items WHERE sale_id = $1 AND store_id = $2',
+            [originalSaleId, storeId],
+        );
+        const prior = await db.query(
+            'SELECT COALESCE(SUM(refund_amount), 0) AS refunded FROM returns WHERE original_sale_id = $1 AND store_id = $2',
+            [originalSaleId, storeId],
+        );
+        const rate = await db.query('SELECT tax_rate FROM store_settings WHERE store_id = $1', [storeId]);
+        const s = saleRow.rows[0];
+        let breakdown = s.tax_breakdown;
+        if (typeof breakdown === 'string') { try { breakdown = JSON.parse(breakdown); } catch { breakdown = null; } }
+        const refund = computeRefund(
+            soldRows.rows.map((r: any) => ({
+                productId: r.product_id,
+                price: Number(r.price_at_sale) || 0,
+                quantity: Number(r.quantity) || 0,
+                returned: Number(r.returned_quantity) || 0,
+                taxClass: r.tax_class,
+            })),
+            returnedItems.map(i => ({ productId: i.productId, quantity: Number(i.quantity) || 0 })),
+            {
+                subtotal: Number(s.subtotal) || 0,
+                total: Number(s.total) || 0,
+                deliveryFee: Number(s.delivery_fee) || 0,
+                taxBreakdown: Array.isArray(breakdown) ? breakdown : null,
+                alreadyRefunded: Number(prior.rows[0]?.refunded) || 0,
+            },
+            Number(rate.rows[0]?.tax_rate) || 0,
+        );
+        refundAmount = refund.amount;
+        refundTax = refund.tax;
+        refundSubtotal = refund.net;
     }
 
     // A large refund is where a till leaks money: goods that never came back,
@@ -123,10 +176,7 @@ export const createReturn = async (req: express.Request, res: express.Response) 
             });
         }
 
-        // 1. Create the return record
-        const taxRatio = originalSale.total > 0 ? (Number(originalSale.tax) / Number(originalSale.total)) : 0;
-        const refundTax = refundAmount * taxRatio;
-        const refundSubtotal = refundAmount - refundTax;
+        // 1. Create the return record (amount, tax and net computed above).
 
         // Attribute the refund to the till it was paid out of, so a cash
         // refund shows up as money that left the drawer rather than as a
@@ -211,23 +261,27 @@ export const createReturn = async (req: express.Request, res: express.Response) 
 
         await client.query('COMMIT');
 
-        // --- Push Notification for Return ---
-        try {
-            const { pushService } = await import('../services/push.service');
-            await pushService.sendToStore(storeId, {
-                title: 'Return Processed 🔙',
-                body: `Return of ${refundAmount.toFixed(2)} for Sale ID ${originalSaleId}.`,
-                url: `/returns`
-            });
-        } catch (pushErr) {
-            console.error('Push failed for return:', pushErr);
-        }
+        // Answer first; the till shows the confirmed amount from this reply.
+        res.status(201).json({ ...newReturn, refundAmount, returnedItems });
 
-        res.status(201).json({ ...newReturn, returnedItems });
+        // --- Push Notification for Return (fire-and-forget) ---
+        void (async () => {
+            try {
+                const { pushService } = await import('../services/push.service');
+                await pushService.sendToStore(storeId, {
+                    title: 'Return Processed 🔙',
+                    body: `Return of ${refundAmount.toFixed(2)} for Sale ID ${originalSaleId}.`,
+                    url: `/returns`
+                });
+            } catch (pushErr) {
+                console.error('Push failed for return:', pushErr);
+            }
+        })();
 
     } catch (error) {
         await client.query('ROLLBACK');
         console.error('Error creating return:', error);
+        if ((error as any)?.code === 'BOOKS_LOCKED') return res.status(409).json({ message: (error as any).message, booksLockedUntil: (error as any).lockedUntil });
         res.status(500).json({ message: 'Error processing return' });
     } finally {
         client.release();

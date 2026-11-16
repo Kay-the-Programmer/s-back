@@ -5,6 +5,7 @@ import { generateId, toCamelCase } from '../utils/helpers';
 import { auditService } from '../services/audit.service';
 import { accountingService } from '../services/accounting.service';
 import { adminDb } from '../firebase';
+import { isLow, reorderQuantity, thresholdFor } from '../services/reorder';
 
 export const getPurchaseOrders = async (req: express.Request, res: express.Response) => {
     try {
@@ -74,10 +75,10 @@ export const createPurchaseOrder = async (req: express.Request, res: express.Res
             );
         }
 
-        // Automatic Invoice creation if status is ordered
-        if (newPO.status === 'ordered') {
-            await accountingService.ensureSupplierInvoiceForPO(newPO, client, storeId);
-        }
+        // The supplier bill follows goods received, not goods ordered: a new
+        // order normally has no bill yet. One recorded as already received
+        // (the Inventory "record as purchase" flow) gets its bill right away.
+        await accountingService.syncSupplierBillForPO(id, storeId, client);
 
         await client.query('COMMIT');
 
@@ -162,10 +163,9 @@ export const updatePurchaseOrder = async (req: express.Request, res: express.Res
             );
         }
 
-        // Automatic Invoice creation if status changed to ordered or is ordered
-        if (updatedPO.status === 'ordered') {
-            await accountingService.ensureSupplierInvoiceForPO(updatedPO, client, storeId);
-        }
+        // Keep the bill at the value received — an edit, a supplier change or a
+        // cancellation can all move it (cancelling drops the undelivered part).
+        await accountingService.syncSupplierBillForPO(id, storeId, client);
 
         await client.query('COMMIT');
 
@@ -224,7 +224,7 @@ export const deletePurchaseOrder = async (req: express.Request, res: express.Res
 
 export const receiveItems = async (req: express.Request, res: express.Response) => {
     const { id } = req.params;
-    const receivedItems: { productId: string, quantity: number }[] = req.body;
+    const rawItems: { productId: string, quantity: number }[] = req.body;
     const client = await (db as any)._pool.connect();
 
     try {
@@ -232,17 +232,64 @@ export const receiveItems = async (req: express.Request, res: express.Response) 
         if (!storeId) {
             return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
+        if (!Array.isArray(rawItems)) {
+            return res.status(400).json({ message: 'Send the items received as a list.' });
+        }
         await client.query('BEGIN');
 
-        // Ensure PO belongs to store
-        const poCheck = await client.query('SELECT id FROM purchase_orders WHERE id = $1 AND store_id = $2', [id, storeId]);
+        // Lock the order for the rest of this transaction. Two receipts of the
+        // same delivery (a double tap, a retry, two devices) now run one after
+        // the other, and the second sees what the first already booked.
+        const poCheck = await client.query(
+            'SELECT id, status FROM purchase_orders WHERE id = $1 AND store_id = $2 FOR UPDATE',
+            [id, storeId],
+        );
         if (poCheck.rowCount === 0) {
             await client.query('ROLLBACK');
             return res.status(404).json({ message: 'Purchase Order not found' });
         }
+        const poStatus = poCheck.rows[0].status;
+        if (poStatus === 'received' || poStatus === 'canceled') {
+            await client.query('ROLLBACK');
+            return res.status(409).json({
+                message: poStatus === 'received'
+                    ? 'This order has already been fully received — nothing was added again.'
+                    : 'This order was cancelled, so stock cannot be received against it.',
+            });
+        }
 
-        const poItemsResult = await client.query('SELECT product_id, cost_price FROM purchase_order_items WHERE po_id = $1 AND store_id = $2', [id, storeId]);
+        const poItemsResult = await client.query(
+            'SELECT product_id, cost_price, quantity, received_quantity FROM purchase_order_items WHERE po_id = $1 AND store_id = $2 FOR UPDATE',
+            [id, storeId],
+        );
         const poItemsMap = new Map<string, number>(poItemsResult.rows.map((row: any) => [row.product_id, parseFloat(row.cost_price)]));
+        const outstanding = new Map<string, number>(poItemsResult.rows.map((row: any) => [
+            row.product_id,
+            Math.max(0, Math.round(((Number(row.quantity) || 0) - (Number(row.received_quantity) || 0)) * 100) / 100),
+        ]));
+
+        // Merge repeated lines, drop non-positive amounts, and never book more
+        // than is still outstanding on the order — the excess of a duplicate
+        // submit is exactly what used to be counted twice.
+        const requested = new Map<string, number>();
+        for (const it of rawItems) {
+            const q = Math.round((parseFloat(String(it?.quantity)) || 0) * 100) / 100;
+            if (!it?.productId || !(q > 0)) continue;
+            requested.set(it.productId, (requested.get(it.productId) || 0) + q);
+        }
+        const receivedItems: { productId: string, quantity: number }[] = [];
+        let capped = false;
+        for (const [productId, q] of requested) {
+            if (!outstanding.has(productId)) continue; // not on this order
+            const left = outstanding.get(productId)!;
+            const take = Math.min(q, left);
+            if (take < q) capped = true;
+            if (take > 0) receivedItems.push({ productId, quantity: take });
+        }
+        if (receivedItems.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({ message: 'Nothing is left to receive on this order — it may already have been received.' });
+        }
 
         for (const item of receivedItems) {
             // 1. Update received quantity on PO
@@ -299,23 +346,33 @@ export const receiveItems = async (req: express.Request, res: express.Response) 
             storeId
         );
 
+        // The supplier bill grows with what has arrived (it is no longer raised
+        // in full when the order is placed).
+        await accountingService.syncSupplierBillForPO(id, storeId, client);
+
         await client.query('COMMIT');
 
         auditService.log(req.user!, 'PO Stock Received', `PO ID: ${id} | ${receivedItems.length} item types.`);
 
-        // --- Push Notification for Stock Reception ---
-        try {
-            const { pushService } = await import('../services/push.service');
-            await pushService.sendToStore(storeId, {
-                title: 'Stock Received! 📥',
-                body: `Stock for PO ${updatedPO.poNumber} has been ${updatedPO.status === 'received' ? 'fully' : 'partially'} received.`,
-                url: `/purchase-orders/${id}`
-            });
-        } catch (pushErr) {
-            console.error('Push failed for PO reception:', pushErr);
-        }
+        // Answer first: the stock is booked. The notification (push, and any
+        // email behind it) used to be awaited before replying, which held the
+        // screen on a stale "open" order for seconds — long enough to receive
+        // the same delivery again.
+        res.status(200).json({ ...updatedPO, receivedItems, capped });
 
-        res.status(200).json(updatedPO);
+        // --- Push Notification for Stock Reception (fire-and-forget) ---
+        void (async () => {
+            try {
+                const { pushService } = await import('../services/push.service');
+                await pushService.sendToStore(storeId, {
+                    title: 'Stock Received! 📥',
+                    body: `Stock for PO ${updatedPO.poNumber} has been ${updatedPO.status === 'received' ? 'fully' : 'partially'} received.`,
+                    url: `/purchase-orders/${id}`
+                });
+            } catch (pushErr) {
+                console.error('Push failed for PO reception:', pushErr);
+            }
+        })();
     } catch (error) {
         await client.query('ROLLBACK');
         console.error(`Error receiving items for PO ${id}:`, error);
@@ -340,34 +397,51 @@ export const getReorderSuggestions = async (req: express.Request, res: express.R
         const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
 
-        const { rows } = await db.query(`
+        const settings = await db.query('SELECT tax_rate, low_stock_threshold FROM store_settings WHERE store_id = $1', [storeId]);
+        const taxRate = Number(settings.rows[0]?.tax_rate) || 0;
+        const storeThreshold = settings.rows[0]?.low_stock_threshold;
+
+        // Every active product is a candidate; the shared rule (services/reorder)
+        // decides which are low, so this agrees with the low-stock alert. A
+        // product with no supplier (or one pointing at a deleted supplier) is
+        // still suggested, under supplierId null, for the buyer to assign.
+        const { rows: candidates } = await db.query(`
             SELECT p.id, p.name, p.sku, p.cost_price, p.stock, p.reorder_point, p.safety_stock,
-                   p.supplier_id, s.name AS supplier_name
+                   p.unit_of_measure, p.units_per_carton,
+                   s.id AS supplier_id, s.name AS supplier_name
             FROM products p
-                     JOIN suppliers s ON s.id = p.supplier_id AND s.store_id = p.store_id
+                     LEFT JOIN suppliers s ON s.id = p.supplier_id AND s.store_id = p.store_id
             WHERE p.store_id = $1
               AND p.status = 'active'
-              AND p.reorder_point IS NOT NULL
-              AND p.reorder_point > 0
-              AND p.stock <= p.reorder_point
-            ORDER BY s.name, p.name
+            ORDER BY s.name NULLS LAST, p.name
         `, [storeId]);
 
-        const settings = await db.query('SELECT tax_rate FROM store_settings WHERE store_id = $1', [storeId]);
-        const taxRate = Number(settings.rows[0]?.tax_rate) || 0;
+        const rows = candidates.filter(r => isLow({ stock: r.stock, reorderPoint: r.reorder_point }, storeThreshold));
 
-        type DraftItem = { productId: string; productName: string; sku: string; quantity: number; costPrice: number; receivedQuantity: number };
-        type Draft = { supplierId: string; supplierName: string; items: DraftItem[] };
+        type DraftItem = {
+            productId: string; productName: string; sku: string; quantity: number; costPrice: number; receivedQuantity: number;
+            stock: number; threshold: number; unitOfMeasure: string; unitsPerCarton: number | null;
+        };
+        type Draft = { supplierId: string | null; supplierName: string | null; items: DraftItem[] };
         const bySupplier = new Map<string, Draft>();
         for (const r of rows) {
-            const quantity = Math.max(1, (Number(r.reorder_point) || 0) + (Number(r.safety_stock) || 0) - (Number(r.stock) || 0));
-            const draft: Draft = bySupplier.get(r.supplier_id)
-                || { supplierId: r.supplier_id, supplierName: r.supplier_name || 'Supplier', items: [] };
+            const input = {
+                stock: r.stock, reorderPoint: r.reorder_point, safetyStock: r.safety_stock,
+                unitsPerCarton: r.units_per_carton, unitOfMeasure: r.unit_of_measure,
+            };
+            const key = r.supplier_id || '';
+            const draft: Draft = bySupplier.get(key)
+                || { supplierId: r.supplier_id || null, supplierName: r.supplier_id ? (r.supplier_name || 'Supplier') : null, items: [] };
             draft.items.push({
                 productId: r.id, productName: r.name, sku: r.sku,
-                quantity, costPrice: Number(r.cost_price) || 0, receivedQuantity: 0,
+                quantity: reorderQuantity(input, storeThreshold),
+                costPrice: Number(r.cost_price) || 0, receivedQuantity: 0,
+                stock: Number(r.stock) || 0,
+                threshold: thresholdFor(r.reorder_point, storeThreshold),
+                unitOfMeasure: r.unit_of_measure === 'kg' ? 'kg' : 'unit',
+                unitsPerCarton: r.units_per_carton ? Number(r.units_per_carton) : null,
             });
-            bySupplier.set(r.supplier_id, draft);
+            bySupplier.set(key, draft);
         }
 
         const drafts = Array.from(bySupplier.values()).map(d => {
@@ -375,7 +449,8 @@ export const getReorderSuggestions = async (req: express.Request, res: express.R
             const units = d.items.reduce((s, it) => s + it.quantity, 0);
             const tax = subtotal * (taxRate / 100);
             return { ...d, units, subtotal, tax, total: subtotal + tax };
-        }).sort((a, b) => b.total - a.total);
+        // Biggest orders first; the "no supplier yet" group always last.
+        }).sort((a, b) => (a.supplierId ? 0 : 1) - (b.supplierId ? 0 : 1) || b.total - a.total);
 
         res.status(200).json({ drafts });
     } catch (error) {

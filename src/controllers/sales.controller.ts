@@ -693,6 +693,7 @@ export const createSale = async (req: express.Request, res: express.Response) =>
         if (error?.code === '23505' && String(error?.constraint || '').startsWith('sales_')) {
             return res.status(409).json({ message: 'This sale has already been recorded — it was not rung up twice.', transactionId });
         }
+        if ((error as any)?.code === 'BOOKS_LOCKED') return res.status(409).json({ message: (error as any).message, booksLockedUntil: (error as any).lockedUntil });
         console.error('Error creating sale:', error);
         res.status(500).json({ message: 'Failed to create sale' });
     } finally {
@@ -700,6 +701,113 @@ export const createSale = async (req: express.Request, res: express.Response) =>
     }
 };
 
+
+/**
+ * Book a payment against one invoice, inside the caller's transaction.
+ *
+ * The one place that does it — a single invoice payment (recordPayment) and a
+ * customer paying several invoices at once (receiveCustomerPayment) post
+ * exactly the same rows and journal. `sale` must be a row read FOR UPDATE.
+ * Returns the updated sale row.
+ */
+export const applyInvoicePayment = async (
+    client: any,
+    storeId: string,
+    sale: any,
+    payment: { amount: number; date: string; method?: string; reference?: string },
+    user: any,
+) => {
+    const totalCents = Math.round(Number(sale.total) * 100);
+    const newAmountPaid = Math.round((Number(sale.amount_paid) + Number(payment.amount)) * 100) / 100;
+    const newPaymentStatus = Math.round(newAmountPaid * 100) >= totalCents ? 'paid' : 'partially_paid';
+
+    await client.query(
+        'INSERT INTO payments(id, sale_id, date, amount, method, reference, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+        [generateId('pay'), sale.transaction_id, payment.date, payment.amount, payment.method, payment.reference, storeId]
+    );
+    const updated = await client.query(
+        'UPDATE sales SET amount_paid = $1, payment_status = $2 WHERE transaction_id = $3 AND store_id = $4 RETURNING *',
+        [newAmountPaid, newPaymentStatus, sale.transaction_id, storeId]
+    );
+    if (sale.customer_id) {
+        await client.query(
+            'UPDATE customers SET account_balance = account_balance - $1 WHERE id = $2 AND store_id = $3',
+            [payment.amount, sale.customer_id, storeId]
+        );
+    }
+    await auditService.log(user, 'Payment Recorded', `For Invoice ${sale.transaction_id}, Amount: ${Number(payment.amount).toFixed(2)}`, client);
+    await accountingService.recordCustomerPayment(toCamelCase(sale), { ...payment, id: '' } as any, client, storeId);
+    return updated.rows[0];
+};
+
+/**
+ * A customer pays an amount toward everything they owe; it settles their
+ * oldest invoices first (earliest due date, then earliest sale).
+ *
+ * Before this, a customer with five open invoices paying one lump sum meant
+ * five separate "Record payment" rounds with the money split by hand.
+ * All-or-nothing: one transaction, every invoice locked while it is applied.
+ */
+export const receiveCustomerPayment = async (req: express.Request, res: express.Response) => {
+    const { id: customerId } = req.params;
+    const amount = Math.round((Number(req.body?.amount) || 0) * 100) / 100;
+    const date = req.body?.date || new Date().toISOString();
+    const method = req.body?.method;
+    const reference = req.body?.reference;
+    if (!(amount > 0)) return res.status(400).json({ message: 'A payment amount greater than zero is required.' });
+
+    const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
+    if (!storeId) return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
+
+    const client = await db._pool.connect();
+    try {
+        await client.query('BEGIN');
+        const cust = await client.query('SELECT id, name FROM customers WHERE id = $1 AND store_id = $2', [customerId, storeId]);
+        if (!cust.rowCount) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ message: 'Customer not found' });
+        }
+        const open = await client.query(
+            `SELECT * FROM sales
+              WHERE customer_id = $1 AND store_id = $2 AND payment_status <> 'paid'
+                AND total - amount_paid > 0.004
+              ORDER BY due_date NULLS LAST, "timestamp"
+              FOR UPDATE`,
+            [customerId, storeId],
+        );
+        const owed = Math.round(open.rows.reduce((a: number, s: any) => a + (Number(s.total) - Number(s.amount_paid)), 0) * 100) / 100;
+        if (owed <= 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ message: `${cust.rows[0].name} has no unpaid invoices.` });
+        }
+        if (amount > owed + 0.005) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ message: `That is more than ${cust.rows[0].name} owes (${owed.toFixed(2)}).` });
+        }
+
+        let left = amount;
+        const applied: { saleId: string; amount: number; fullyPaid: boolean }[] = [];
+        for (const sale of open.rows) {
+            if (left <= 0.004) break;
+            const due = Math.round((Number(sale.total) - Number(sale.amount_paid)) * 100) / 100;
+            const take = Math.min(due, Math.round(left * 100) / 100);
+            if (take <= 0) continue;
+            const updated = await applyInvoicePayment(client, storeId, sale, { amount: take, date, method, reference }, req.user!);
+            applied.push({ saleId: sale.transaction_id, amount: take, fullyPaid: updated.payment_status === 'paid' });
+            left = Math.round((left - take) * 100) / 100;
+        }
+
+        await client.query('COMMIT');
+        res.status(200).json({ applied, remainingOwed: Math.round((owed - amount) * 100) / 100 });
+    } catch (error: any) {
+        await client.query('ROLLBACK');
+        console.error('Error receiving customer payment:', error);
+        if ((error as any)?.code === 'BOOKS_LOCKED') return res.status(409).json({ message: (error as any).message, booksLockedUntil: (error as any).lockedUntil });
+        res.status(500).json({ message: 'Failed to record payment', error: error.message });
+    } finally {
+        client.release();
+    }
+};
 
 export const recordPayment = async (req: express.Request, res: express.Response) => {
     const { id } = req.params;
@@ -726,7 +834,9 @@ export const recordPayment = async (req: express.Request, res: express.Response)
     try {
         await client.query('BEGIN');
 
-        const saleResult = await client.query('SELECT * FROM sales WHERE transaction_id = $1 AND store_id = $2', [id, storeId]);
+        // Locked, so two payments on the same invoice cannot both pass the
+        // remaining-balance check below.
+        const saleResult = await client.query('SELECT * FROM sales WHERE transaction_id = $1 AND store_id = $2 FOR UPDATE', [id, storeId]);
         if (saleResult.rowCount === 0) {
             await client.query('ROLLBACK');
             return res.status(404).json({ message: 'Sale not found' });
@@ -749,36 +859,20 @@ export const recordPayment = async (req: express.Request, res: express.Response)
             return res.status(400).json({ message: `Payment exceeds remaining balance. Remaining due is ${(remainingCents / 100).toFixed(2)}.` });
         }
 
-        const newAmountPaid = Number(sale.amount_paid) + Number(paymentData.amount);
-        const paidCents = Math.round(newAmountPaid * 100);
-        const newPaymentStatus = paidCents >= totalCents ? 'paid' : 'partially_paid';
-
-        await client.query(
-            'INSERT INTO payments(id, sale_id, date, amount, method, reference, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-            [generateId('pay'), id, paymentData.date, paymentData.amount, paymentData.method, paymentData.reference, storeId]
-        );
-
-        const updatedSaleResult = await client.query(
-            'UPDATE sales SET amount_paid = $1, payment_status = $2 WHERE transaction_id = $3 AND store_id = $4 RETURNING *',
-            [newAmountPaid, newPaymentStatus, id, storeId]
-        );
-
-        if (sale.customer_id) {
-            await client.query(
-                'UPDATE customers SET account_balance = account_balance - $1 WHERE id = $2 AND store_id = $3',
-                [paymentData.amount, sale.customer_id, storeId]
-            );
-        }
-
-        await auditService.log(req.user!, 'Payment Recorded', `For Invoice ${id}, Amount: ${Number(paymentData.amount).toFixed(2)}`, client);
-        await accountingService.recordCustomerPayment(toCamelCase(sale), { ...paymentData, id: '' }, client, storeId);
+        const updatedSale = await applyInvoicePayment(client, storeId, sale, {
+            amount: Number(paymentData.amount),
+            date: paymentData.date,
+            method: paymentData.method,
+            reference: paymentData.reference,
+        }, req.user!);
 
         await client.query('COMMIT');
-        res.status(200).json(toCamelCase(updatedSaleResult.rows[0]));
+        res.status(200).json(toCamelCase(updatedSale));
 
     } catch (error: any) {
         await client.query('ROLLBACK');
         console.error('Error recording payment:', error);
+        if ((error as any)?.code === 'BOOKS_LOCKED') return res.status(409).json({ message: (error as any).message, booksLockedUntil: (error as any).lockedUntil });
         res.status(500).json({ message: 'Failed to record payment', error: error.message });
     } finally {
         client.release();
@@ -877,6 +971,7 @@ export const updateSaleDate = async (req: express.Request, res: express.Response
         return res.status(200).json(toCamelCase(updated.rows[0]));
     } catch (error) {
         await client.query('ROLLBACK');
+        if ((error as any)?.code === 'BOOKS_LOCKED') return res.status(409).json({ message: (error as any).message, booksLockedUntil: (error as any).lockedUntil });
         console.error(`Error updating date for sale ${id}:`, error);
         return res.status(500).json({ message: 'Error updating the sale date' });
     } finally {

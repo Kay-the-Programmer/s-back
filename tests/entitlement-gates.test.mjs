@@ -163,10 +163,10 @@ const main = async () => {
     check('the low-stock product is suggested', items.some(i => i.productId === LOW_ID), `items=${items.length}`);
     check('a well-stocked product is not suggested', !items.some(i => i.productId === OK_ID));
     const oil = items.find(i => i.productId === LOW_ID);
-    // reorderPoint 10 + safetyStock 5 − stock 2 = 13
-    check('the suggested quantity tops stock back up', oil?.quantity === 13, `qty=${oil?.quantity}`);
+    // services/reorder: up to max(2 × reorderPoint 10, 10 + safetyStock 5) = 20, minus stock 2 = 18
+    check('the suggested quantity tops stock back up', oil?.quantity === 18, `qty=${oil?.quantity}`);
     check('the draft is grouped under its supplier', drafts[0]?.supplierId === SUPPLIER_ID, `supplier=${drafts[0]?.supplierName}`);
-    check('draft money adds up (13 x 60 = 780)', Math.abs(Number(drafts[0]?.subtotal) - 780) < 0.011, `subtotal=${drafts[0]?.subtotal}`);
+    check('draft money adds up (18 x 60 = 1080)', Math.abs(Number(drafts[0]?.subtotal) - 1080) < 0.011, `subtotal=${drafts[0]?.subtotal}`);
 
     // Another store's products must never leak into these suggestions.
     check('every suggested item belongs to this store',

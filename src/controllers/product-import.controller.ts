@@ -267,6 +267,11 @@ export const importProducts = async (req: express.Request, res: express.Response
         // the GL stayed put, and the accounting hub's inventoryMatch check
         // failed permanently for any store that built its catalogue by import.
         let importValueDelta = 0;
+        // Opening stock on NEW products is the owner bringing goods into the
+        // business: it goes to Owner's Equity, exactly as the add-product form
+        // does. It used to be credited to Inventory Adjustment Expense, which
+        // showed the whole imported stock value as that day's profit.
+        let openingValue = 0;
 
         const created: any[] = [];
         for (const [index, value] of toCreate.entries()) {
@@ -288,7 +293,7 @@ export const importProducts = async (req: express.Request, res: express.Response
                 ],
             );
             created.push(inserted.rows[0]);
-            importValueDelta += (Number(value.stock) || 0) * (Number(value.costPrice) || 0);
+            openingValue += (Number(value.stock) || 0) * (Number(value.costPrice) || 0);
         }
 
         for (const { id, value } of toUpdate) {
@@ -327,10 +332,20 @@ export const importProducts = async (req: express.Request, res: express.Response
             importValueDelta += newValue - oldValue;
         }
 
+        if (Math.abs(openingValue) > 0.01) {
+            await accountingService.recordConsolidatedStockAdjustment(
+                openingValue,
+                `Opening stock from product import (${summary.created} new product${summary.created === 1 ? '' : 's'})`,
+                client,
+                storeId,
+                'owner_equity',
+            );
+        }
+        // Changed stock on EXISTING products is a recount: a stock adjustment.
         if (Math.abs(importValueDelta) > 0.01) {
             await accountingService.recordConsolidatedStockAdjustment(
                 importValueDelta,
-                `Product import (${summary.created} created, ${summary.updated} updated)`,
+                `Stock recount from product import (${summary.updated} updated)`,
                 client,
                 storeId,
             );

@@ -7,6 +7,13 @@ import { accountingService } from '../services/accounting.service';
 import { roleHasPermission, Role } from '../auth/rbac';
 
 /**
+ * Expense accounts the system posts to itself: cost of goods sold from sales,
+ * and stock write-offs from adjustments. A manual expense charged there would
+ * quietly distort the gross margin, so they are not offered and not accepted.
+ */
+const SYSTEM_EXPENSE_SUB_TYPES = ['cogs', 'inventory_adjustment'];
+
+/**
  * Callers holding `expenses:manage` (admin) see the whole store's expenses.
  * Everyone else who may reach these routes holds only `expenses:record`, and
  * sees exactly the expenses they recorded — enforced here, in the queries, so
@@ -16,7 +23,8 @@ import { roleHasPermission, Role } from '../auth/rbac';
  * Accounts an expense can be paid from — mirrors the web expense form
  * (components/accounting/ExpenseFormModal.tsx): cash, or on account.
  */
-const PAYMENT_SUB_TYPES = ['cash', 'accounts_payable'];
+// Ways an expense can be paid: cash, mobile money, bank, or a bill for later.
+const PAYMENT_SUB_TYPES = ['cash', 'mobile_money', 'bank', 'accounts_payable'];
 
 const ownExpensesOnly = (req: express.Request): string | null =>
     roleHasPermission(req.user?.role as Role | undefined, 'expenses:manage')
@@ -165,6 +173,8 @@ export const getExpenseAccountOptions = async (req: express.Request, res: expres
         const storeId = (req as any).tenant?.storeId;
         if (!storeId) return res.status(400).json({ message: 'No active store selected.' });
 
+        // The everyday categories (Utilities, Salaries, ...) must exist to be picked.
+        await accountingService.ensureCoreAccounts(storeId);
         const result = await db.query(
             `SELECT id, name, number, type, sub_type FROM accounts
              WHERE store_id = $1 AND (type = 'expense' OR sub_type = ANY($2::text[]))
@@ -174,7 +184,7 @@ export const getExpenseAccountOptions = async (req: express.Request, res: expres
         const rows = toCamelCase(result.rows) as
             { id: string; name: string; number: string; type: string; subType: string | null }[];
         res.status(200).json({
-            expenseAccounts: rows.filter(a => a.type === 'expense'),
+            expenseAccounts: rows.filter(a => a.type === 'expense' && !(a.subType && SYSTEM_EXPENSE_SUB_TYPES.includes(a.subType))),
             // Same set the web expense form offers: pay in cash, or put it on
             // account. Receivables and inventory are assets but not ways to pay.
             paymentAccounts: rows.filter(a => a.subType && PAYMENT_SUB_TYPES.includes(a.subType)),
@@ -227,6 +237,11 @@ export const createExpense = async (req: express.Request, res: express.Response)
         if (!expenseAccount || expenseAccount.type !== 'expense') {
             return res.status(400).json({ message: 'Unknown or invalid expense account.' });
         }
+        if (expenseAccount.sub_type && SYSTEM_EXPENSE_SUB_TYPES.includes(expenseAccount.sub_type)) {
+            return res.status(400).json({
+                message: `${expenseAccount.name} is filled in automatically from sales and stock changes. Pick the category this cost belongs to, e.g. Utilities or Shop Supplies.`,
+            });
+        }
         if (!paymentAccount || !paymentAccount.sub_type || !PAYMENT_SUB_TYPES.includes(paymentAccount.sub_type)) {
             return res.status(400).json({ message: 'Unknown or invalid payment account.' });
         }
@@ -267,6 +282,7 @@ export const createExpense = async (req: express.Request, res: express.Response)
     } catch (error) {
         await client.query('ROLLBACK');
         console.error('Error creating expense:', error);
+        if ((error as any)?.code === 'BOOKS_LOCKED') return res.status(409).json({ message: (error as any).message, booksLockedUntil: (error as any).lockedUntil });
         res.status(500).json({ message: 'Error creating expense' });
     } finally {
         client.release();

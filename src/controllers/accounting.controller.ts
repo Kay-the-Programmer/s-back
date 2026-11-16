@@ -11,6 +11,10 @@ export const getAccounts = async (req: express.Request, res: express.Response) =
     try {
         const storeId = (req as any).tenant?.storeId;
         if (!storeId) return res.status(400).json({ message: 'No active store selected.' });
+        // Make sure the standard chart exists before showing it — otherwise a new
+        // store (or one created before an account was added) sees gaps, e.g. no
+        // Utilities account for the expense form to post to.
+        await accountingService.ensureCoreAccounts(storeId);
         const result = await db.query('SELECT * FROM accounts WHERE store_id = $1 ORDER BY number', [storeId]);
         res.status(200).json(toCamelCase(result.rows));
     } catch (error) {
@@ -65,6 +69,33 @@ export const deleteAccount = async (req: express.Request, res: express.Response)
     }
 };
 
+/**
+ * Accounts a manual entry must not touch, because each is kept in step with
+ * its own records: customer balances (Receivables), supplier bills (Payables),
+ * stock on hand (Inventory) and customers' store credit. A manual posting to
+ * any of them makes the books disagree with those records with no trace of
+ * why. Use the invoice, bill, stock or customer screens instead.
+ */
+const CONTROL_SUB_TYPES: Record<string, string> = {
+    accounts_receivable: 'record a customer payment or refund instead',
+    accounts_payable: 'record or edit the supplier bill instead',
+    inventory: 'use a stock adjustment or stock take instead',
+    store_credit_payable: 'change the customer’s store credit instead',
+};
+
+/** Why a manual posting to these accounts is refused, or null when it is fine. */
+const refuseManualPosting = async (storeId: string, accountIds: string[]): Promise<string | null> => {
+    const ids = [...new Set(accountIds.filter(Boolean))];
+    if (ids.length === 0) return 'Pick an account for every line.';
+    const { rows } = await db.query('SELECT id, name, sub_type FROM accounts WHERE store_id = $1 AND id = ANY($2::text[])', [storeId, ids]);
+    if (rows.length !== ids.length) return 'One of those accounts does not belong to this shop.';
+    for (const r of rows) {
+        const why = r.sub_type && CONTROL_SUB_TYPES[r.sub_type];
+        if (why) return `${r.name} can't be changed by a manual entry — ${why}, so it stays in step with its records.`;
+    }
+    return null;
+};
+
 export const adjustAccountBalance = async (req: express.Request, res: express.Response) => {
     const { id } = req.params;
     const { adjustmentAmount, offsetAccountId, offsetAccountName, description } = req.body;
@@ -78,6 +109,10 @@ export const adjustAccountBalance = async (req: express.Request, res: express.Re
     try {
         const storeId = (req as any).tenant?.storeId;
         if (!storeId) return res.status(400).json({ message: 'No active store selected.' });
+
+        // Both sides must be this shop's accounts, and neither a control account.
+        const refusal = await refuseManualPosting(storeId, [id, offsetAccountId]);
+        if (refusal) return res.status(400).json({ message: refusal }); // finally releases the client
 
         await client.query('BEGIN');
 
@@ -312,6 +347,9 @@ export const createManualJournalEntry = async (req: express.Request, res: expres
         const storeId = (req as any).tenant?.storeId;
         if (!storeId) return res.status(400).json({ message: 'No active store selected.' });
 
+        const refusal = await refuseManualPosting(storeId, (entryData.lines || []).map(l => l.accountId));
+        if (refusal) return res.status(400).json({ message: refusal });
+
         // Route through the single journal engine so the entry is balance-checked
         // AND account balances are updated — inserting lines directly left the
         // ledger and the account balances permanently out of sync.
@@ -329,6 +367,7 @@ export const createManualJournalEntry = async (req: express.Request, res: expres
     } catch (error) {
         await client.query('ROLLBACK');
         console.error('Error creating manual entry:', error);
+        if ((error as any)?.code === 'BOOKS_LOCKED') return res.status(409).json({ message: (error as any).message, booksLockedUntil: (error as any).lockedUntil });
         res.status(500).json({ message: 'Error creating manual entry' });
     } finally {
         client.release();
@@ -411,7 +450,7 @@ export const updateSupplierInvoice = async (req: express.Request, res: express.R
         await accountingService.reverseSupplierInvoice(toCamelCase(oldInvoiceRes.rows[0]), client, storeId);
 
         const result = await client.query(
-            'UPDATE supplier_invoices SET invoice_number=$1, supplier_id=$2, supplier_name=$3, purchase_order_id=$4, po_number=$5, invoice_date=$6, due_date=$7, amount=$8 WHERE id=$9 AND store_id=$10 RETURNING *',
+            'UPDATE supplier_invoices SET invoice_number=$1, supplier_id=$2, supplier_name=$3, purchase_order_id=$4, po_number=$5, invoice_date=$6, due_date=$7, amount=$8, posted_goods=NULL, posted_other=NULL WHERE id=$9 AND store_id=$10 RETURNING *',
             [invoiceNumber, supplierId, supplierName, purchaseOrderId, poNumber, invoiceDate, dueDate, amount, id, storeId]
         );
         const updatedInvoice = toCamelCase(result.rows[0]);
@@ -489,7 +528,73 @@ export const recordSupplierPayment = async (req: express.Request, res: express.R
         res.status(200).json({ ...invoice, amountPaid: newAmountPaid, status: newStatus });
     } catch (error) {
         await client.query('ROLLBACK');
+        if ((error as any)?.code === 'BOOKS_LOCKED') return res.status(409).json({ message: (error as any).message, booksLockedUntil: (error as any).lockedUntil });
         console.error('Error recording supplier payment:', error);
+        res.status(500).json({ message: 'Error recording supplier payment' });
+    } finally {
+        client.release();
+    }
+};
+/**
+ * POST /accounting/suppliers/:supplierId/payments { amount, method, date?, reference? }
+ *
+ * One payment to a supplier, spread over their unpaid bills oldest-due first
+ * (the way suppliers apply it), so the shop doesn't have to split it by hand.
+ * Each bill touched gets its own payment row and journal entry.
+ */
+export const paySupplier = async (req: express.Request, res: express.Response) => {
+    const { supplierId } = req.params;
+    const amount = Math.round(Number(req.body?.amount) * 100);
+    const method = String(req.body?.method || 'Cash');
+    const date = req.body?.date || new Date().toISOString();
+    const reference = req.body?.reference || null;
+    if (!(amount > 0)) return res.status(400).json({ message: 'Enter an amount to pay.' });
+
+    const storeId = (req as any).tenant?.storeId || req.user?.currentStoreId;
+    if (!storeId) return res.status(400).json({ message: 'No active store selected.' });
+    const client = await (db as any)._pool.connect();
+    try {
+        await client.query('BEGIN');
+        const bills = (await client.query(
+            `SELECT * FROM supplier_invoices
+              WHERE store_id = $1 AND supplier_id = $2 AND amount - COALESCE(amount_paid, 0) > 0.004
+              ORDER BY due_date NULLS LAST, invoice_date, id
+              FOR UPDATE`,
+            [storeId, supplierId],
+        )).rows.map(toCamelCase);
+        const owedCents = bills.reduce((s: number, b: any) => s + Math.round(Number(b.amount) * 100) - Math.round(Number(b.amountPaid || 0) * 100), 0);
+        if (!bills.length) { await client.query('ROLLBACK'); return res.status(400).json({ message: 'Nothing is owed to this supplier.' }); }
+        if (amount > owedCents) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ message: `That is more than you owe this supplier (${(owedCents / 100).toFixed(2)}).` });
+        }
+
+        let left = amount;
+        const applied: { invoiceId: string; invoiceNumber: string; amount: number; status: string }[] = [];
+        for (const bill of bills) {
+            if (left <= 0) break;
+            const total = Math.round(Number(bill.amount) * 100);
+            const paid = Math.round(Number(bill.amountPaid || 0) * 100);
+            const take = Math.min(left, total - paid);
+            left -= take;
+            const newPaid = paid + take;
+            const status = newPaid >= total ? 'paid' : 'partially_paid';
+            const paymentId = generateId('spay');
+            await client.query(
+                'INSERT INTO supplier_payments (id, supplier_invoice_id, date, amount, method, reference, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+                [paymentId, bill.id, date, take / 100, method, reference, storeId],
+            );
+            await client.query('UPDATE supplier_invoices SET amount_paid = $1, status = $2 WHERE id = $3 AND store_id = $4', [newPaid / 100, status, bill.id, storeId]);
+            await accountingService.recordSupplierPayment(bill, { id: paymentId, supplierInvoiceId: bill.id, date, amount: take / 100, method, reference } as any, client, storeId);
+            applied.push({ invoiceId: bill.id, invoiceNumber: bill.invoiceNumber, amount: take / 100, status });
+        }
+        await client.query('COMMIT');
+        auditService.log(req.user!, 'Supplier Payment Recorded', `Supplier ${supplierId}: ${(amount / 100).toFixed(2)} over ${applied.length} bill(s)`);
+        res.json({ paid: amount / 100, applied, remainingOwed: (owedCents - amount) / 100 });
+    } catch (error) {
+        await client.query('ROLLBACK');
+        if ((error as any)?.code === 'BOOKS_LOCKED') return res.status(409).json({ message: (error as any).message, booksLockedUntil: (error as any).lockedUntil });
+        console.error('Error paying supplier:', error);
         res.status(500).json({ message: 'Error recording supplier payment' });
     } finally {
         client.release();

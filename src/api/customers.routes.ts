@@ -1,6 +1,7 @@
 import express from 'express';
 import { getCustomers, createCustomer, updateCustomer, deleteCustomer, getCustomerById } from '../controllers/customers.controller';
-import { protect, requirePermission } from '../middleware/auth.middleware';
+import { protect, requirePermission, canPerformSales } from '../middleware/auth.middleware';
+import { receiveCustomerPayment } from '../controllers/sales.controller';
 
 const router = express.Router();
 
@@ -63,5 +64,11 @@ router.route('/:id')
     .get(protect, requirePermission('customers:read'), getCustomerById)
     .put(protect, requirePermission('customers:manage'), updateCustomer)
     .delete(protect, requirePermission('customers:manage'), deleteCustomer);
+
+/**
+ * A customer pays toward everything they owe; the server settles their oldest
+ * invoices first. Same permission as paying one invoice (sales).
+ */
+router.post('/:id/payments', protect, canPerformSales, receiveCustomerPayment);
 
 export default router;

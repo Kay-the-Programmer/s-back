@@ -17,6 +17,7 @@ import {
     logout
 } from '../controllers/auth.controller';
 import { protect } from '../middleware/auth.middleware';
+import { setTillPin, getTillPin, switchCashier } from '../controllers/till-pin.controller';
 
 const router = express.Router();
 
@@ -103,5 +104,8 @@ router.post('/sign-out-everywhere', protect, signOutEverywhere);
 // Unauthenticated: clearing your own cookie proves nothing and needs nothing.
 router.post('/logout', logout);
 router.post('/change-password', protect, changePassword);
+router.get('/till-pin', protect, getTillPin);
+router.put('/till-pin', protect, setTillPin);
+router.post('/till-switch', protect, switchCashier);
 
 export default router;
