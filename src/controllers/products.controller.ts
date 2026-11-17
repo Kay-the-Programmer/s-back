@@ -11,24 +11,22 @@ import path from "path";
 import fs from "fs";
 
 /**
- * Normalize wholesale quantity-break tiers into canonical JSON (or null).
- * Accepts a JSON string (multipart) or an array (JSON clients); keeps at most
- * 5 valid entries {minQty>=2 int, price>0}, sorted ascending by minQty.
+ * Does this item hold stock?
+ *
+ * Restaurants sell food that is made to order, so there is nothing to count and
+ * the till must never refuse the sale. Drinks still count normally.
+ *
+ * Tracking is ON unless something explicitly says otherwise: the product form
+ * posts multipart, so the value arrives as the string "false", and treating an
+ * unrecognised value as "don't track" would quietly switch stock control off
+ * for a shop that never asked.
  */
-export const normalizePriceTiers = (raw: any): string | null => {
-    if (raw === undefined || raw === null || raw === '') return null;
-    try {
-        const arr = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (!Array.isArray(arr)) return null;
-        const tiers = arr
-            .map((t: any) => ({ minQty: parseInt(String(t.minQty), 10), price: parseFloat(String(t.price)) }))
-            .filter(t => Number.isInteger(t.minQty) && t.minQty >= 2 && Number.isFinite(t.price) && t.price > 0)
-            .sort((a, b) => a.minQty - b.minQty)
-            .slice(0, 5);
-        return tiers.length > 0 ? JSON.stringify(tiers) : null;
-    } catch {
-        return null;
-    }
+export const parseTrackStock = (raw: unknown): boolean => {
+    if (raw === undefined || raw === null || raw === '') return true;
+    if (typeof raw === 'boolean') return raw;
+    const s = String(raw).trim().toLowerCase();
+    if (s === 'false' || s === '0' || s === 'no' || s === 'off') return false;
+    return true;
 };
 
 // Helper function to handle file uploads and existing images
@@ -141,9 +139,6 @@ export const createProduct = async (req: express.Request, res: express.Response)
         const carton_price = req.body.carton_price ?? req.body.cartonPrice;
         const units_per_carton = req.body.units_per_carton ?? req.body.unitsPerCarton;
         const cartons_received = req.body.cartons_received ?? req.body.cartonsReceived;
-        const wholesale_price = req.body.wholesale_price ?? req.body.wholesalePrice;
-        const min_order_quantity = req.body.min_order_quantity ?? req.body.minOrderQuantity;
-        const price_tiers = req.body.price_tiers ?? req.body.priceTiers;
 
         const files = req.files as Express.Multer.File[];
         const id = generateId('prod');
@@ -197,10 +192,6 @@ export const createProduct = async (req: express.Request, res: express.Response)
             cartonPrice: carton_price && carton_price.toString().trim() ? parseFloat(carton_price.toString()) : null,
             unitsPerCarton: units_per_carton && units_per_carton.toString().trim() ? parseInt(units_per_carton.toString(), 10) : null,
             cartonsReceived: cartons_received && cartons_received.toString().trim() ? parseInt(cartons_received.toString(), 10) : null,
-            // B2B wholesale marketplace pricing
-            wholesalePrice: wholesale_price && wholesale_price.toString().trim() ? parseFloat(wholesale_price.toString()) : null,
-            minOrderQuantity: min_order_quantity && min_order_quantity.toString().trim() ? parseInt(min_order_quantity.toString(), 10) : null,
-            priceTiers: normalizePriceTiers(price_tiers),
         };
 
         // Additional validation
@@ -213,8 +204,8 @@ export const createProduct = async (req: express.Request, res: express.Response)
         }
 
         const queryText = `
-            INSERT INTO products(id, name, description, sku, barcode, category_id, supplier_id, price, cost_price, stock, unit_of_measure, image_urls, brand, status, reorder_point, weight, dimensions, safety_stock, variants, custom_attributes, store_id, carton_price, units_per_carton, cartons_received, wholesale_price, min_order_quantity, price_tiers, tax_class)
-            VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+            INSERT INTO products(id, name, description, sku, barcode, category_id, supplier_id, price, cost_price, stock, unit_of_measure, image_urls, brand, status, reorder_point, weight, dimensions, safety_stock, variants, custom_attributes, store_id, carton_price, units_per_carton, cartons_received, tax_class, track_stock)
+            VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
             RETURNING *;
         `;
         const values = [
@@ -242,12 +233,14 @@ export const createProduct = async (req: express.Request, res: express.Response)
             processedValues.cartonPrice,
             processedValues.unitsPerCarton,
             processedValues.cartonsReceived,
-            processedValues.wholesalePrice,
-            processedValues.minOrderQuantity,
-            processedValues.priceTiers,
             // Unset means standard-rated. Charging tax and being corrected is
             // recoverable; silently under-declaring a sale is not.
             toTaxClass((req.body as any)?.taxClass ?? (req.body as any)?.tax_class),
+            // Made-to-order items (a steak, a cappuccino) hold no stock, so the
+            // till must not refuse to sell them. Tracking stays ON unless the
+            // caller says otherwise, which is what every product did before the
+            // field existed. Sent as a string by the multipart product form.
+            parseTrackStock((req.body as any)?.trackStock ?? (req.body as any)?.track_stock),
         ];
 
         console.log('Executing query with values:', values);
@@ -385,11 +378,8 @@ export const updateProduct = async (req: express.Request, res: express.Response)
     const carton_price = body.carton_price || body.cartonPrice;
     const units_per_carton = body.units_per_carton || body.unitsPerCarton;
     const cartons_received = body.cartons_received || body.cartonsReceived;
-    // ?? not || — an explicit empty string means "clear this wholesale field".
-    const wholesale_price = body.wholesale_price ?? body.wholesalePrice;
-    const min_order_quantity = body.min_order_quantity ?? body.minOrderQuantity;
-    const price_tiers = body.price_tiers ?? body.priceTiers;
     const tax_class = body.tax_class ?? body.taxClass;
+    const track_stock = body.track_stock ?? body.trackStock;
 
     const files = (req.files as Express.Multer.File[]) || [];
 
@@ -466,9 +456,8 @@ export const updateProduct = async (req: express.Request, res: express.Response)
                 cost_price = $8, stock = $9, unit_of_measure = $10, image_urls = $11, brand = $12, status = $13, reorder_point = $14,
                 custom_attributes = $15, weight = $16, dimensions = $17, safety_stock = $18, variants = $19,
                 carton_price = $20, units_per_carton = $21, cartons_received = $22,
-                wholesale_price = $23, min_order_quantity = $24, price_tiers = $25,
-                tax_class = $26
-            WHERE id = $27 AND store_id = $28
+                tax_class = $23, track_stock = $26
+            WHERE id = $24 AND store_id = $25
             RETURNING *;
         `;
 
@@ -535,24 +524,18 @@ export const updateProduct = async (req: express.Request, res: express.Response)
             pick(carton_price, currentRow.carton_price, (v) => parseFloat(v.toString())),
             pick(units_per_carton, currentRow.units_per_carton, (v) => parseInt(v.toString(), 10)),
             pick(cartons_received, currentRow.cartons_received, (v) => parseInt(v.toString(), 10)),
-            // Wholesale fields: '' explicitly clears (unlike pick) so a supplier
-            // can remove a wholesale price / MOQ again.
-            wholesale_price === undefined || wholesale_price === null
-                ? currentRow.wholesale_price
-                : (String(wholesale_price).trim() === '' ? null : parseFloat(String(wholesale_price))),
-            min_order_quantity === undefined || min_order_quantity === null
-                ? currentRow.min_order_quantity
-                : (String(min_order_quantity).trim() === '' ? null : parseInt(String(min_order_quantity), 10)),
-            // undefined keeps stored tiers; anything else re-normalizes ('' / [] clear).
-            price_tiers === undefined
-                ? (currentRow.price_tiers == null ? null : JSON.stringify(currentRow.price_tiers))
-                : normalizePriceTiers(price_tiers),
             // Omitted leaves the product classified as it already is.
             tax_class === undefined || tax_class === null || tax_class === ""
                 ? currentRow.tax_class
                 : toTaxClass(tax_class),
             id,
             storeId,
+            // Omitted leaves tracking as it is: a partial update from the
+            // desktop client or a price edit must not silently switch stock
+            // control back on for a menu of made-to-order food.
+            track_stock === undefined || track_stock === null || track_stock === ''
+                ? currentRow.track_stock !== false
+                : parseTrackStock(track_stock),
         ];
 
         const client = await (db as any)._pool.connect();

@@ -286,12 +286,30 @@ export const BUSINESS_TYPES: BusinessType[] = [
     },
     {
         id: 'food_beverage',
-        label: 'Restaurant / Cafe',
-        description: 'Prepared food, drinks, hospitality',
+        label: 'Restaurant',
+        description: 'Sit-down meals, takeaway, table service',
         categories: [
             "Food & Beverages",
             "Hospitality & Events",
             "Services (Non-Inventory)"
+        ]
+    },
+    {
+        id: 'cafe',
+        label: 'Cafe / Coffee Shop',
+        description: 'Coffee, light bites, pastries',
+        categories: [
+            "Food & Beverages",
+            "Services (Non-Inventory)"
+        ]
+    },
+    {
+        id: 'bar_pub',
+        label: 'Bar / Pub',
+        description: 'Drinks, cocktails, bar snacks',
+        categories: [
+            "Food & Beverages",
+            "Hospitality & Events"
         ]
     },
     {
@@ -324,3 +342,36 @@ export const BUSINESS_TYPES: BusinessType[] = [
         // For simplicity now: if 'other' is selected (or nothing matching), we might seed a broad default.
     }
 ];
+
+/**
+ * The business types that run on a menu and open bills rather than a product
+ * grid. Picking any of these at registration puts the store in hospitality
+ * mode; everything else stays retail.
+ */
+export const HOSPITALITY_TYPE_IDS = ['food_beverage', 'cafe', 'bar_pub'] as const;
+
+export const isHospitalityType = (typeId: string) =>
+    (HOSPITALITY_TYPE_IDS as readonly string[]).includes(typeId);
+
+/**
+ * First-run menu sections, in the order a menu is actually read — starters
+ * before desserts, never alphabetical.
+ *
+ * A venue gets these instead of the retail category tree, so the Menu screen
+ * opens with somewhere to put the first item rather than a blank page. They are
+ * ordinary categories and can be renamed, reordered or deleted.
+ */
+export const MENU_SECTIONS: Record<string, string[]> = {
+    food_beverage: [
+        'Starters', 'Main Courses', 'Sides', 'Desserts',
+        'Soft Drinks', 'Hot Drinks', 'Beers & Ciders', 'Wine & Spirits',
+    ],
+    cafe: [
+        'Hot Drinks', 'Cold Drinks', 'Breakfast',
+        'Sandwiches & Light Bites', 'Cakes & Pastries',
+    ],
+    bar_pub: [
+        'Beers & Ciders', 'Spirits', 'Cocktails', 'Wine',
+        'Soft Drinks', 'Bar Snacks',
+    ],
+};

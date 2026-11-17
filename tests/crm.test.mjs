@@ -260,18 +260,13 @@ const main = async () => {
     check("another store sees nothing in this customer's timeline",
         crossOutreach.status === 200 && crossOutreach.data.length === 0, JSON.stringify(crossOutreach.data));
 
-    /* 5. creditLimit on customer CREATE (used to be dropped) ---------- */
+    /* 5. trade credit is retired: a credit limit is no longer stored --- */
     const newCust = await req('POST', '/customers', {
         name: `Credit ${RUN}`, email: `credit-${RUN}@test.local`, creditLimit: 750,
     }, bearer(tokenA));
-    check('a credit limit set while ADDING a customer is kept',
-        newCust.status === 201 && Number(newCust.data?.creditLimit) === 750,
+    check('a credit limit sent on CREATE is no longer stored',
+        newCust.status === 201 && (newCust.data?.creditLimit ?? null) === null,
         JSON.stringify(newCust.data?.creditLimit));
-
-    const noLimit = await req('POST', '/customers', { name: `NoCredit ${RUN}`, creditLimit: '' }, bearer(tokenA));
-    check('a blank credit limit means no credit line',
-        noLimit.status === 201 && (noLimit.data?.creditLimit === null || noLimit.data?.creditLimit === undefined),
-        JSON.stringify(noLimit.data?.creditLimit));
 
     /* 6. auth --------------------------------------------------------- */
     const anon = await req('GET', '/crm/loyalty/program');

@@ -20,8 +20,6 @@ import reportRoutes from './reports.routes';
 import auditRoutes from './audit.routes';
 import storeRoutes from './stores.routes';
 import superadminRoutes from './superadmin.routes';
-import shopRoutes from './shop.routes';
-import marketplaceRoutes from './marketplace.routes';
 import notificationRoutes from './notifications.routes';
 import pushRoutes from './push.routes';
 import expenseRoutes from './expenses.routes';
@@ -32,7 +30,6 @@ import verificationRoutes from './verification.routes';
 
 import paymentRoutes from './payments.routes';
 import recurringExpenseRoutes from './recurring-expenses.routes';
-import logisticsRoutes from './logistics.routes';
 
 
 import whatsappRoutes from './whatsapp.routes';
@@ -40,6 +37,7 @@ import facebookRoutes from './facebook.routes';
 import smsRoutes from './sms.routes';
 import feedbackRoutes from './feedback.routes';
 import releaseRoutes from './releases.routes';
+import hospitalityRoutes from './hospitality.routes';
 
 const router = express.Router();
 
@@ -65,8 +63,6 @@ router.use('/reports', reportRoutes);
 router.use('/audit', auditRoutes);
 router.use('/stores', storeRoutes);
 router.use('/superadmin', superadminRoutes);
-router.use('/shop', shopRoutes);
-router.use('/marketplace', marketplaceRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/push', pushRoutes);
 router.use('/expenses', expenseRoutes);
@@ -76,12 +72,12 @@ router.use('/subscriptions', subscriptionRoutes);
 router.use('/verification', verificationRoutes);
 router.use('/payments', paymentRoutes);
 router.use('/recurring-expenses', recurringExpenseRoutes);
-router.use('/logistics', logisticsRoutes);
 router.use('/whatsapp', whatsappRoutes);
 router.use('/facebook', facebookRoutes);
 router.use('/sms', smsRoutes);
 router.use('/feedback', feedbackRoutes);
 router.use('/releases', releaseRoutes);
+router.use('/hospitality', hospitalityRoutes);
 
 
 // A simple health check endpoint

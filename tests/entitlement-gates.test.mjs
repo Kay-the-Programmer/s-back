@@ -205,7 +205,7 @@ const main = async () => {
     check('quick_import is marked core and free', byId.quick_import?.is_core === true && Number(byId.quick_import?.price) === 0,
         JSON.stringify(byId.quick_import));
     check('social_marketing is inactive', byId.social_marketing?.active === false);
-    check('public_tracking is inactive', byId.public_tracking?.active === false);
+    check('public_tracking is gone from the catalogue', byId.public_tracking === undefined, JSON.stringify(byId.public_tracking));
     check('whatsapp_messaging is included, not sold',
         byId.whatsapp_messaging?.active === false && byId.whatsapp_messaging?.is_core === true
         && Number(byId.whatsapp_messaging?.price) === 0, JSON.stringify(byId.whatsapp_messaging));

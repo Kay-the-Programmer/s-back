@@ -79,13 +79,16 @@ export type Permission =
     // Reports
     | 'reports:dashboard'
     | 'reports:sales'
-    // Logistics
-    | 'logistics:read'
-    | 'logistics:manage'
     // Messaging integrations (WhatsApp / SMS)
     | 'messaging:read'
     | 'messaging:send'
     | 'messaging:manage'
+    // Open bills (restaurants, bars, cafes). `operate` is the waiter's job:
+    // open a bill, add rounds to it, settle it. `void` throws away a bill with
+    // items on it — a table that walked out, or a mis-keyed order — which is
+    // written off revenue, so it stays with whoever answers for the float.
+    | 'tabs:operate'
+    | 'tabs:void'
     // AI assistant tools
     | 'ai:use';
 
@@ -120,11 +123,11 @@ const STORE_PERMISSIONS: Permission[] = [
     'customers:manage',
     'reports:dashboard',
     'reports:sales',
-    'logistics:read',
-    'logistics:manage',
     'messaging:read',
     'messaging:send',
     'messaging:manage',
+    'tabs:operate',
+    'tabs:void',
     'ai:use',
 ];
 
@@ -149,8 +152,6 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
         'purchasing:manage',
         'reports:dashboard',
         'settings:read',
-        'logistics:read',
-        'logistics:manage',
         'ai:use',
     ],
 
@@ -165,21 +166,21 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
         // Runs their own till, but cannot see the expected figure or anyone
         // else's session — see 'cash:manage'.
         'cash:operate',
+        // Takes orders onto open bills. Voiding one with items on it is
+        // written-off revenue, so that stays with a manager.
+        'tabs:operate',
         'expenses:record',
         'sales_docs:create',
         'customers:read',
         'customers:create',
         'reports:sales',
         'settings:read',
-        'logistics:read',
-        'logistics:manage',
         'messaging:read',
         'messaging:send',
         'ai:use',
     ],
 
-    // External customers and suppliers have no store-management permissions.
-    // They interact through dedicated shop / marketplace endpoints.
+    // Retired account types (customer, supplier). They hold no store permissions.
     customer: [],
     supplier: [],
 };

@@ -84,8 +84,8 @@ export const registerStore = async (req: express.Request, res: express.Response)
     if (!user || !user.id) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
-    // Store registration is for business accounts. Customers and suppliers have
-    // their own flows — without this guard they'd be silently promoted to admin.
+    // Store registration is for business accounts only. Customer and supplier
+    // accounts are retired and cannot register a store.
     if (user.role === 'customer' || user.role === 'supplier') {
       return res.status(403).json({ message: 'This account type cannot register a store. Please sign up with a business account.' });
     }
@@ -202,12 +202,8 @@ export const registerStore = async (req: express.Request, res: express.Response)
       invalidateUserCache(user.id);
 
       // 4. Initialize the new store with defaults (creates the store_settings row).
-      // isWholesaleSupplier: supplier registration — the store opts into the
-      // B2B wholesale marketplace from day one (same flag as the Online Store
-      // app toggle, so it can be turned off later).
       const businessTypes = req.body.businessTypes || [];
-      const isWholesaleSupplier = req.body.isWholesaleSupplier === true;
-      await storeInitService.initializeNewStore(storeId, String(name).trim(), businessTypes, normalizedPhone ?? undefined, address, isWholesaleSupplier);
+      await storeInitService.initializeNewStore(storeId, String(name).trim(), businessTypes, normalizedPhone ?? undefined, address);
 
       // Grant the premium add-ons for the duration of the intro trial so the user
       // experiences the paid features. The lifecycle job revokes these at trial end

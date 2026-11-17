@@ -11,7 +11,13 @@ export const getCategories = async (req: express.Request, res: express.Response)
         if (!storeId) {
             return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
-        const result = await db.query('SELECT * FROM categories WHERE store_id = $1 ORDER BY name', [storeId]);
+        // sort_order first: a menu is read Starters → Desserts, never
+        // alphabetically. Retail stores leave it at 0, so they still sort by
+        // name exactly as before.
+        const result = await db.query(
+            'SELECT * FROM categories WHERE store_id = $1 ORDER BY sort_order, name',
+            [storeId],
+        );
         res.status(200).json(toCamelCase(result.rows));
     } catch (error) {
         console.error('Error fetching categories:', error);
@@ -19,8 +25,21 @@ export const getCategories = async (req: express.Request, res: express.Response)
     }
 };
 
+/**
+ * A new section is appended, not inserted at the top: a menu grows at the end
+ * unless the owner drags it elsewhere. A client that sends an explicit
+ * sortOrder wins.
+ */
+const nextSortOrder = async (storeId: string): Promise<number> => {
+    const r = await db.query(
+        'SELECT COALESCE(MAX(sort_order), 0) + 10 AS next FROM categories WHERE store_id = $1',
+        [storeId],
+    );
+    return Number(r.rows[0]?.next ?? 10);
+};
+
 export const createCategory = async (req: express.Request, res: express.Response) => {
-    const { name, parentId, attributes, revenueAccountId, cogsAccountId } = req.body;
+    const { name, parentId, attributes, revenueAccountId, cogsAccountId, sortOrder, isHidden } = req.body;
     const id = generateId('cat');
 
     try {
@@ -28,9 +47,10 @@ export const createCategory = async (req: express.Request, res: express.Response
         if (!storeId) {
             return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
+        const order = Number.isFinite(Number(sortOrder)) ? Number(sortOrder) : await nextSortOrder(storeId);
         const result = await db.query(
-            'INSERT INTO categories (id, name, parent_id, attributes, revenue_account_id, cogs_account_id, store_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
-            [id, name, parentId || null, JSON.stringify(attributes || []), revenueAccountId, cogsAccountId, storeId]
+            'INSERT INTO categories (id, name, parent_id, attributes, revenue_account_id, cogs_account_id, store_id, sort_order, is_hidden) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
+            [id, name, parentId || null, JSON.stringify(attributes || []), revenueAccountId, cogsAccountId, storeId, order, isHidden === true]
         );
         const newCategory = result.rows[0];
         auditService.log(req.user!, 'Category Created', `Category: "${newCategory.name}"`);
@@ -43,15 +63,24 @@ export const createCategory = async (req: express.Request, res: express.Response
 
 export const updateCategory = async (req: express.Request, res: express.Response) => {
     const { id } = req.params;
-    const { name, parentId, attributes, revenueAccountId, cogsAccountId } = req.body;
+    const { name, parentId, attributes, revenueAccountId, cogsAccountId, sortOrder, isHidden } = req.body;
     try {
         const storeId = req.tenant?.storeId || req.user?.currentStoreId;
         if (!storeId) {
             return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
         }
+        // sort_order and is_hidden are COALESCEd: a screen that predates the
+        // menu (the Stock app's category editor) must not reset a menu's order
+        // to zero just by saving a rename.
         const result = await db.query(
-            'UPDATE categories SET name = $1, parent_id = $2, attributes = $3, revenue_account_id = $4, cogs_account_id = $5 WHERE id = $6 AND store_id = $7 RETURNING *',
-            [name, parentId || null, JSON.stringify(attributes || []), revenueAccountId, cogsAccountId, id, storeId]
+            `UPDATE categories SET name = $1, parent_id = $2, attributes = $3, revenue_account_id = $4, cogs_account_id = $5,
+                 sort_order = COALESCE($8, sort_order), is_hidden = COALESCE($9, is_hidden)
+             WHERE id = $6 AND store_id = $7 RETURNING *`,
+            [
+                name, parentId || null, JSON.stringify(attributes || []), revenueAccountId, cogsAccountId, id, storeId,
+                Number.isFinite(Number(sortOrder)) ? Number(sortOrder) : null,
+                typeof isHidden === 'boolean' ? isHidden : null,
+            ]
         );
         if ((result.rowCount ?? 0) === 0) {
             return res.status(404).json({ message: 'Category not found' });
@@ -185,6 +214,54 @@ export const deleteCategory = async (req: express.Request, res: express.Response
         await client.query('ROLLBACK').catch(() => { });
         console.error(`Error deleting category ${id}:`, error);
         res.status(500).json({ message: 'Error deleting category' });
+    } finally {
+        client.release();
+    }
+};
+
+/**
+ * Reorder menu sections in one shot.
+ *
+ * Dragging a section is one gesture that moves several rows — saving each one
+ * through PUT /categories/:id would leave the menu half-reordered if the
+ * network dropped mid-drag, and would race with itself. So the whole new order
+ * arrives as a list and is written in a single transaction.
+ *
+ * Positions are rewritten as 10, 20, 30… rather than trusting the client's
+ * numbers, so repeated drags can't drift into collisions.
+ */
+export const reorderCategories = async (req: express.Request, res: express.Response) => {
+    const storeId = req.tenant?.storeId || req.user?.currentStoreId;
+    if (!storeId) {
+        return res.status(400).json({ message: 'No shop is selected. Pick one from My Shops and try again.' });
+    }
+
+    const ids: unknown = req.body?.ids;
+    if (!Array.isArray(ids) || ids.length === 0 || !ids.every(i => typeof i === 'string')) {
+        return res.status(400).json({ message: 'Send { ids: [categoryId, ...] } in the order you want them shown.' });
+    }
+
+    const client = await (db as any)._pool.connect();
+    try {
+        await client.query('BEGIN');
+        // Scoped by store_id on every row, so a client cannot reposition
+        // another tenant's categories by guessing ids.
+        let position = 0;
+        let updated = 0;
+        for (const id of ids as string[]) {
+            position += 10;
+            const r = await client.query(
+                'UPDATE categories SET sort_order = $1 WHERE id = $2 AND store_id = $3',
+                [position, id, storeId],
+            );
+            updated += r.rowCount ?? 0;
+        }
+        await client.query('COMMIT');
+        res.status(200).json({ message: 'Order saved', updated });
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => { });
+        console.error('Error reordering categories:', error);
+        res.status(500).json({ message: 'Error reordering categories' });
     } finally {
         client.release();
     }

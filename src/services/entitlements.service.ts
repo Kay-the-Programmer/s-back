@@ -14,7 +14,6 @@ export const MODULES = {
     AI_ASSISTANT: 'ai_assistant',
     QUICK_IMPORT: 'quick_import',
     ADVANCED_REPORTS: 'advanced_reports',
-    PUBLIC_TRACKING: 'public_tracking',
     UNLIMITED_PRODUCTS: 'unlimited_products',
     PAYMENT_GATEWAY: 'payment_gateway',
 } as const;

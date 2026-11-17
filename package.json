@@ -38,7 +38,8 @@
     "test:refund": "npm run build && node tests/refund.test.mjs",
     "test:simpler-flows": "node tests/simpler-flows.test.mjs",
     "test:books": "node tests/books.test.mjs",
-    "test:process-flows": "node tests/process-flows.test.mjs"
+    "test:process-flows": "node tests/process-flows.test.mjs",
+    "test:hospitality": "node tests/hospitality.test.mjs"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.19.0",

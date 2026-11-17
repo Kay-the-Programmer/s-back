@@ -196,9 +196,12 @@ export const createReturn = async (req: express.Request, res: express.Response) 
                 [id, item.productId, item.productName, item.quantity, item.reason, item.addToStock, storeId]
             );
 
+            // `AND track_stock` keeps the restore symmetrical with the sale: a
+            // made-to-order item never left stock, so putting it back would
+            // invent inventory out of a returned plate of food.
             if (item.addToStock) {
                 await client.query(
-                    'UPDATE products SET stock = stock + $1 WHERE id = $2 AND store_id = $3',
+                    'UPDATE products SET stock = stock + $1 WHERE id = $2 AND store_id = $3 AND track_stock',
                     [item.quantity, item.productId, storeId]
                 );
             }

@@ -44,8 +44,10 @@ const cancelStaleOrder = async (transactionId: string, storeId: string): Promise
         // Mirror the manual-cancel path: restock, reverse the customer's
         // balance, reverse the journal entry, then flag cancelled.
         for (const item of sale.cart) {
+            // `AND track_stock` so an untracked (made-to-order) line is not
+            // restocked — it never came out of stock in the first place.
             await client.query(
-                'UPDATE products SET stock = stock + $1 WHERE id = $2 AND store_id = $3',
+                'UPDATE products SET stock = stock + $1 WHERE id = $2 AND store_id = $3 AND track_stock',
                 [item.quantity, item.productId, storeId]
             );
         }
@@ -89,7 +91,7 @@ const cancelStaleOrder = async (transactionId: string, storeId: string): Promise
                     await pushService.sendToUsers([uid], {
                         title: 'Order cancelled',
                         body: `Your order ${transactionId} was cancelled because it stayed unpaid. You can order again anytime.`,
-                        url: '/marketplace?view=my-orders',
+                        url: '/',
                     }, storeId);
                 }
             }

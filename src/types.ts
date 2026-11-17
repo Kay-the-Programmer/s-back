@@ -41,6 +41,12 @@ export interface Product {
   safetyStock?: number;
   status: 'active' | 'archived';
   customAttributes?: { [attributeId: string]: string };
+  /**
+   * Whether this item holds stock. False for made-to-order menu items, which
+   * never decrement and never block a sale. Defaults to true, so every product
+   * that existed before the field keeps counting.
+   */
+  trackStock?: boolean;
 }
 
 export interface User {
@@ -248,7 +254,12 @@ export interface StoreSettings {
   enableStoreCredit: boolean;
   paymentMethods: { id: string; name: string; }[];
   supplierPaymentMethods: { id: string; name: string; }[];
-  isOnlineStoreEnabled?: boolean;
+  /**
+   * Which till this store runs. 'hospitality' (restaurant, bar, cafe) sells
+   * from a menu onto open bills; 'retail' is the product-grid till every store
+   * had before the field existed, and stays the default.
+   */
+  businessMode?: 'retail' | 'hospitality';
 
   // Accounting Mappings
   taxAccountId?: string;

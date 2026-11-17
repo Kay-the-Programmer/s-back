@@ -141,7 +141,7 @@ const main = async () => {
     // This is the part that must not break: paying your way back in.
     check('a lapsed store can still read the plans',
         (await req('GET', '/subscriptions/plans', null, LAPSED)).status === 200);
-    const lapsedNotif = await req('GET', '/notifications/mine', null, LAPSED);
+    const lapsedNotif = await req('GET', `/notifications/stores/${lapsed.storeId}`, null, LAPSED);
     check('a lapsed store can still see notifications', lapsedNotif.status === 200, `status=${lapsedNotif.status}`);
     const lapsedMe = await req('GET', '/auth/me', null, LAPSED);
     check('a lapsed store can still load its own session', lapsedMe.status === 200, `status=${lapsedMe.status}`);

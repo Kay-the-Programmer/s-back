@@ -1,20 +1,32 @@
 import db from '../db_client';
 import { generateId } from '../utils/helpers';
 import { StoreSettings, Account, Category } from '../types';
-import { categoryHierarchy, initialAccountsData, BUSINESS_TYPES } from '../utils/initial-data';
+import { categoryHierarchy, initialAccountsData, BUSINESS_TYPES, MENU_SECTIONS, isHospitalityType } from '../utils/initial-data';
 
 export class StoreInitService {
-    async initializeNewStore(storeId: string, storeName: string, businessTypes: string[] = [], phone?: string, address?: string, isWholesaleSupplier = false) {
-        console.log(`Initializing store: ${storeName} (${storeId}) with types: ${businessTypes.join(', ')}${isWholesaleSupplier ? ' [wholesale supplier]' : ''}`);
+    async initializeNewStore(storeId: string, storeName: string, businessTypes: string[] = [], phone?: string, address?: string) {
+        console.log(`Initializing store: ${storeName} (${storeId}) with types: ${businessTypes.join(', ')}`);
 
-        await this.seedSettings(storeId, storeName, phone, address, isWholesaleSupplier);
+        // The type the owner picked is the whole basis of hospitality mode, and
+        // it used to be read once for category seeding and then dropped. Keep it
+        // on the store so Settings and Super Admin can both see what this is.
+        const hospitalityTypes = businessTypes.filter(isHospitalityType);
+        const isHospitality = hospitalityTypes.length > 0;
+
+        await db.query('UPDATE stores SET business_types = $1 WHERE id = $2', [businessTypes, storeId]);
+
+        await this.seedSettings(storeId, storeName, phone, address, isHospitality);
         const accountsMap = await this.seedAccounts(storeId);
-        await this.seedCategories(storeId, businessTypes);
+        if (isHospitality) {
+            await this.seedMenuSections(storeId, hospitalityTypes);
+        } else {
+            await this.seedCategories(storeId, businessTypes);
+        }
 
-        console.log(`✅ Store ${storeId} initialized successfully.`);
+        console.log(`✅ Store ${storeId} initialized successfully${isHospitality ? ' (hospitality mode)' : ''}.`);
     }
 
-    private async seedSettings(storeId: string, storeName: string, phone?: string, address?: string, isWholesaleSupplier = false) {
+    private async seedSettings(storeId: string, storeName: string, phone?: string, address?: string, isHospitality = false) {
         const paymentMethods = [
             { id: 'cash', name: 'CASH' },
             { id: 'airtel', name: 'AIRTEL' },
@@ -35,14 +47,13 @@ export class StoreInitService {
             enableStoreCredit: false,
             paymentMethods: paymentMethods,
             supplierPaymentMethods: paymentMethods,
-            isOnlineStoreEnabled: true,
             lencoPublicKey: '',
             lencoSecretKey: ''
         };
 
         const query = `
-            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, is_online_store_enabled, lenco_public_key, lenco_secret_key, is_wholesale_supplier)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+            INSERT INTO store_settings (store_id, name, address, phone, email, website, tax_rate, currency, receipt_message, low_stock_threshold, sku_prefix, enable_store_credit, payment_methods, supplier_payment_methods, lenco_public_key, lenco_secret_key, business_mode)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             ON CONFLICT (store_id) DO NOTHING;
         `;
 
@@ -50,8 +61,40 @@ export class StoreInitService {
             storeId, defaults.name, defaults.address, defaults.phone, defaults.email, defaults.website,
             defaults.taxRate, JSON.stringify(defaults.currency), defaults.receiptMessage, defaults.lowStockThreshold,
             defaults.skuPrefix, defaults.enableStoreCredit, JSON.stringify(defaults.paymentMethods), JSON.stringify(defaults.supplierPaymentMethods),
-            defaults.isOnlineStoreEnabled, defaults.lencoPublicKey, defaults.lencoSecretKey, isWholesaleSupplier
+            defaults.lencoPublicKey, defaults.lencoSecretKey, isHospitality ? 'hospitality' : 'retail'
         ]);
+    }
+
+    /**
+     * A venue's first-run catalog is a menu, not a category tree: flat sections
+     * in reading order. Seeding the retail hierarchy instead would bury a
+     * restaurant's first item three levels deep under "Food (Prepared &
+     * Packaged)".
+     *
+     * Multiple types (a restaurant with a bar) merge their sections, first
+     * occurrence winning the position.
+     */
+    private async seedMenuSections(storeId: string, hospitalityTypes: string[]) {
+        const seen = new Set<string>();
+        const sections: string[] = [];
+        for (const typeId of hospitalityTypes) {
+            for (const name of MENU_SECTIONS[typeId] || []) {
+                const key = name.toLowerCase();
+                if (seen.has(key)) continue;
+                seen.add(key);
+                sections.push(name);
+            }
+        }
+        // A type with no section list configured still gets somewhere to start.
+        if (sections.length === 0) sections.push('Food', 'Drinks');
+
+        for (let i = 0; i < sections.length; i++) {
+            await db.query(
+                'INSERT INTO categories (id, name, parent_id, attributes, store_id, sort_order) VALUES ($1, $2, NULL, $3, $4, $5) ON CONFLICT DO NOTHING',
+                [generateId('cat'), sections[i], '[]', storeId, (i + 1) * 10]
+            );
+        }
+        console.log(`   Seeded ${sections.length} menu section(s) for ${storeId}`);
     }
 
     private async seedAccounts(storeId: string) {

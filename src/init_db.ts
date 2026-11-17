@@ -2406,6 +2406,114 @@ async function initializeDatabase() {
         `);
         console.log('✅ CRM loyalty / templates / outreach tables verified/created');
 
+        // --- Hospitality: restaurants, bars and cafes ------------------------
+        //
+        // A venue sells from a MENU, not a product grid: food is made to order
+        // (so it has no stock to count), and a bill stays open while the table
+        // keeps ordering. Four pieces make that possible, and every one of them
+        // is additive — a retail store that never switches mode sees no change.
+
+        // 1. The business type the owner picks at registration used to be
+        //    thrown away: it seeded a few categories and was never stored, so
+        //    nothing downstream could tell a restaurant from a grocery. Keep it.
+        await client.query(`ALTER TABLE stores ADD COLUMN IF NOT EXISTS business_types TEXT[] DEFAULT '{}';`);
+
+        // 2. The switch itself. Defaults to 'retail', so every existing store
+        //    keeps exactly the till it has today. Changeable later in Settings,
+        //    because a shop that added a coffee counter shouldn't re-register.
+        await client.query(`ALTER TABLE store_settings ADD COLUMN IF NOT EXISTS business_mode TEXT NOT NULL DEFAULT 'retail';`);
+        await client.query(`
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'store_settings_business_mode_check') THEN
+                    ALTER TABLE store_settings ADD CONSTRAINT store_settings_business_mode_check
+                        CHECK (business_mode IN ('retail','hospitality'));
+                END IF;
+            EXCEPTION WHEN check_violation THEN
+                RAISE WARNING 'Skipping business_mode CHECK (unexpected values present): %', SQLERRM;
+            END $$;
+        `);
+
+        // 3. A menu is sections in a deliberate order — Starters before
+        //    Desserts, never alphabetical. Sections are categories, so the menu
+        //    is one catalog, not a second one living beside it.
+        await client.query(`ALTER TABLE categories ADD COLUMN IF NOT EXISTS sort_order INT NOT NULL DEFAULT 0;`);
+        await client.query(`ALTER TABLE categories ADD COLUMN IF NOT EXISTS is_hidden BOOLEAN NOT NULL DEFAULT FALSE;`);
+
+        // 4. Made-to-order items. The till hard-blocks selling past stock,
+        //    which is right for a bottle of beer and absurd for a steak. An
+        //    untracked item never decrements and never raises a low-stock
+        //    alert, but still records cost_at_sale, so food costing survives.
+        await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS track_stock BOOLEAN NOT NULL DEFAULT TRUE;`);
+
+        // Which bill a sale came off, frozen onto the sale so a receipt and the
+        // sales history can still say "Table 4" after the tab row is long gone.
+        await client.query(`ALTER TABLE sales ADD COLUMN IF NOT EXISTS tab_label TEXT;`);
+
+        // An open bill: a parked cart that lives on the server instead of in one
+        // browser, so the waiter who opened Table 4 isn't the only person who
+        // can add to it. Settling it goes through the ordinary POST /sales path,
+        // which is why there is no money, tax or stock logic here at all.
+        //
+        // 'settling' is the claim a till takes before it posts the sale: it is
+        // how two tills cannot both charge the same table.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS open_tabs (
+                id TEXT PRIMARY KEY,
+                store_id TEXT NOT NULL,
+                label TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','settling','closed','void')),
+                customer_id TEXT REFERENCES customers(id) ON DELETE SET NULL,
+                note TEXT,
+                opened_by TEXT,
+                opened_by_name TEXT,
+                opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                closed_at TIMESTAMPTZ,
+                closed_by TEXT,
+                sale_id TEXT,
+                void_reason TEXT
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_open_tabs_store_status ON open_tabs(store_id, status);`);
+        // Two waiters both opening "Table 4" would split one table's bill in
+        // half without either noticing. Only live bills collide: the same label
+        // is free again the moment the previous one is settled.
+        await client.query(`
+            DO $$
+            BEGIN
+                CREATE UNIQUE INDEX IF NOT EXISTS uidx_open_tabs_live_label
+                    ON open_tabs (store_id, LOWER(TRIM(label)))
+                    WHERE status IN ('open','settling');
+            EXCEPTION WHEN unique_violation OR others THEN
+                RAISE WARNING 'Skipping unique open-tab label index: %', SQLERRM;
+            END $$;
+        `);
+
+        // name and price are SNAPSHOTS, not joins. A menu reprice at 7pm must
+        // not silently rewrite a bill a table has been drinking against since 5.
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS open_tab_items (
+                id TEXT PRIMARY KEY,
+                tab_id TEXT NOT NULL REFERENCES open_tabs(id) ON DELETE CASCADE,
+                store_id TEXT NOT NULL,
+                product_id TEXT,
+                name TEXT NOT NULL,
+                sku TEXT,
+                price DECIMAL(10,2) NOT NULL DEFAULT 0,
+                cost_price DECIMAL(10,2),
+                quantity DECIMAL(10,3) NOT NULL DEFAULT 1,
+                unit_of_measure TEXT,
+                tax_class TEXT,
+                track_stock BOOLEAN NOT NULL DEFAULT TRUE,
+                added_by TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        `);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_open_tab_items_tab ON open_tab_items(tab_id);`);
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_open_tab_items_store ON open_tab_items(store_id);`);
+        console.log('✅ Hospitality (menu / open bills) tables verified/created');
+
         // Replay anything that ran before its table existed (see deferredMigrations).
         // Every CREATE TABLE has now run, so these must succeed; if one still
         // fails it is a genuine fault and is logged loudly rather than hidden.

@@ -503,29 +503,44 @@ export const createSale = async (req: express.Request, res: express.Response) =>
         const cashSessionId = await findOpenSessionId(storeId, attendedById ?? undefined);
 
         const saleQuery = `
-            INSERT INTO sales(transaction_id, "timestamp", customer_id, total, subtotal, tax, discount, store_credit_used, payment_status, amount_paid, due_date, refund_status, store_id, attended_by, attended_by_id, cash_session_id, tax_breakdown)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb) RETURNING *;
+            INSERT INTO sales(transaction_id, "timestamp", customer_id, total, subtotal, tax, discount, store_credit_used, payment_status, amount_paid, due_date, refund_status, store_id, attended_by, attended_by_id, cash_session_id, tax_breakdown, tab_label)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18) RETURNING *;
         `;
         const saleResult = await client.query(saleQuery, [
             transactionId, timestamp, saleData.customerId, total, netSubtotal, tax,
             discount, storeCreditUsed, paymentStatus, amountPaid, saleData.dueDate, 'none', storeId,
             attendedBy, attendedById, cashSessionId,
-            taxBreakdown === null ? null : JSON.stringify(taxBreakdown)
+            taxBreakdown === null ? null : JSON.stringify(taxBreakdown),
+            // Which bill this came off ("Table 4"), frozen onto the sale so the
+            // receipt and the sales history still say it once the tab row is
+            // gone. Purely descriptive — it buys no trust and moves no money.
+            typeof (saleData as any).tabLabel === 'string' && (saleData as any).tabLabel.trim()
+                ? (saleData as any).tabLabel.trim().slice(0, 60)
+                : null,
         ]);
         const newSale = saleResult.rows[0];
 
         const productIds = saleData.cart.map(i => i.productId);
-        const productsResult = await client.query('SELECT id, name, cost_price, stock, reorder_point FROM products WHERE id = ANY($1::text[]) AND store_id = $2', [productIds, storeId]);
+        const productsResult = await client.query('SELECT id, name, cost_price, stock, reorder_point, track_stock FROM products WHERE id = ANY($1::text[]) AND store_id = $2', [productIds, storeId]);
         const productMap = new Map<string, any>(productsResult.rows.map((p: any) => [p.id, p]));
 
         for (const item of saleData.cart) {
             const product = productMap.get(item.productId);
             const currentCostPrice = parseFloat(product?.cost_price || 0);
+            // Made-to-order items (a restaurant's food) hold no stock. The sale
+            // is still recorded line by line with its cost, so revenue, COGS
+            // and the journals are unchanged — only the counter is left alone.
+            const tracksStock = product?.track_stock !== false;
 
             await client.query(
                 'INSERT INTO sale_items(sale_id, product_id, quantity, price_at_sale, cost_at_sale, store_id, tax_class) VALUES ($1, $2, $3, $4, $5, $6, $7)',
                 [transactionId, item.productId, item.quantity, item.price, currentCostPrice, storeId, toTaxClass(classes.get(String(item.productId)))]
             );
+
+            if (!tracksStock) {
+                item.costPrice = currentCostPrice;
+                continue;
+            }
 
             // Decrement RELATIVELY and take the new level from the database.
             // Computing `stock - qty` in JS from an unlocked SELECT lost a whole
@@ -1024,8 +1039,11 @@ export const updateFulfillmentStatus = async (req: express.Request, res: express
 
             if (status === 'cancelled') {
                 for (const item of sale.cart) {
+                    // `AND track_stock` mirrors the sale: an item that never
+                    // decremented must not be put back, or cancelling an order
+                    // would conjure stock for food that was never counted.
                     await client.query(
-                        'UPDATE products SET stock = stock + $1 WHERE id = $2 AND store_id = $3',
+                        'UPDATE products SET stock = stock + $1 WHERE id = $2 AND store_id = $3 AND track_stock',
                         [item.quantity, item.productId, storeId]
                     );
                 }
@@ -1050,36 +1068,6 @@ export const updateFulfillmentStatus = async (req: express.Request, res: express
                 'UPDATE sales SET fulfillment_status = $1 WHERE transaction_id = $2 AND store_id = $3 RETURNING *',
                 [status, id, storeId]
             );
-
-            // Send Push Notification to Customer — resolve the ACCOUNT id:
-            // customer records are store-scoped (cus-…) and link to the user
-            // via customers.user_id (legacy rows reused the user id directly).
-            if (sale.customerId) {
-                try {
-                    const uidRes = await client.query(
-                        `SELECT COALESCE(c.user_id, u.id) AS uid
-                         FROM customers c LEFT JOIN users u ON u.id = c.id
-                         WHERE c.id = $1 AND c.store_id = $2`,
-                        [sale.customerId, storeId]
-                    );
-                    const buyerUserId = uidRes.rows[0]?.uid;
-                    if (!buyerUserId) throw new Error('no linked user account');
-                    const { pushService } = await import('../services/push.service');
-                    let statusMsg = `Your order ${id} is now ${status}!`;
-                    if (status === 'accepted') statusMsg = `The store accepted your order ${id} and is preparing it. 👍`;
-                    if (status === 'shipped') statusMsg = `Great news! Your order ${id} has been shipped. 🚚`;
-                    if (status === 'fulfilled') statusMsg = `Your order ${id} has been fulfilled and is ready. ✅`;
-                    if (status === 'cancelled') statusMsg = `Your order ${id} has been cancelled. ℹ️`;
-
-                    await pushService.sendToUsers([buyerUserId], {
-                        title: 'Order Update',
-                        body: statusMsg,
-                        url: `/marketplace/orders` // or relevant tracking page
-                    });
-                } catch (pushErr) {
-                    console.error('Failed to send fulfillment push notification:', pushErr);
-                }
-            }
 
             await auditService.log(
                 req.user!,

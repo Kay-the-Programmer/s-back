@@ -1,5 +1,5 @@
 import express from 'express';
-import { getCategories, createCategory, updateCategory, deleteCategory } from '../controllers/categories.controller';
+import { getCategories, createCategory, updateCategory, deleteCategory, reorderCategories } from '../controllers/categories.controller';
 import { protect, canManageInventory, requirePermission } from '../middleware/auth.middleware';
 
 const router = express.Router();
@@ -36,6 +36,31 @@ const router = express.Router();
 router.route('/')
     .get(protect, requirePermission('inventory:read'), getCategories)
     .post(protect, canManageInventory, createCategory);
+
+/**
+ * @openapi
+ * /categories/reorder:
+ *   patch:
+ *     tags: [Categories]
+ *     summary: Save the display order of menu sections in one call
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               ids:
+ *                 type: array
+ *                 items: { type: string }
+ *     responses:
+ *       200:
+ *         description: Order saved
+ */
+// Declared before '/:id' so "reorder" is never read as a category id.
+router.patch('/reorder', protect, canManageInventory, reorderCategories);
 
 /**
  * @openapi
