@@ -38,6 +38,8 @@ app.use(helmet({
   // /uploads images are embedded by the frontend on a DIFFERENT origin
   // (Vercel/salepilot.space) — the default same-origin policy would block them.
   crossOriginResourcePolicy: { policy: 'cross-origin' },
+  // Google Sign-In uses a popup window; allow it to communicate with the opener.
+  crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
 }));
 app.use(compression());
 
@@ -56,6 +58,7 @@ const devOrigins: (string | RegExp)[] = [
 const allowedOrigins: (string | RegExp)[] = [
   process.env.FRONTEND_URL || '',
   'https://salepilot-scope.vercel.app',
+  'https://salepilot-gamma.vercel.app',
   'https://www.salepilot.space',
   'https://salepilot.space',
   ...((!isProduction || process.env.CORS_ALLOW_DEV_ORIGINS === 'true') ? devOrigins : []),

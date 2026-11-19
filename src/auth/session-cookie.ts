@@ -51,10 +51,40 @@ const secure = sameSite === 'none' ? true : isProduction;
 
 const MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // matches the JWT's own 30d expiry
 
-const baseOptions = {
+/**
+ * The cookies' `Domain`.
+ *
+ * Without one they are host-only to the API's own host, and that quietly
+ * breaks the whole double-submit mechanism when the app is served from a
+ * different host: `sp_csrf` exists to be READ by the app's JavaScript, and
+ * JavaScript on salepilot.space cannot see a cookie scoped to
+ * api.salepilot.space, however reliably the browser SENDS it. The session
+ * cookie keeps working, so the client believes it holds a cookie session,
+ * drops its bearer token, and then cannot produce the header the guard below
+ * demands — every write 403s on CSRF while sign-in itself looks fine.
+ *
+ * Setting SESSION_COOKIE_DOMAIN=.salepilot.space scopes both cookies to the
+ * parent domain, so the app host and the API host share them. Left unset the
+ * behaviour is exactly as before, which is what a single-origin deployment
+ * (and every test suite) wants.
+ */
+const cookieDomain = process.env.SESSION_COOKIE_DOMAIN?.trim() || undefined;
+
+/**
+ * Everything except the lifetime. A browser only replaces or removes a cookie
+ * when name, path AND domain all match, so clearing has to reuse these.
+ */
+const sharedOptions = {
     sameSite,
     secure,
     path: '/',
+};
+
+const domainOption = cookieDomain ? { domain: cookieDomain } : {};
+
+const baseOptions = {
+    ...sharedOptions,
+    ...domainOption,
     maxAge: MAX_AGE_MS,
 };
 
@@ -100,6 +130,16 @@ export const isCookieAuthenticated = (req: express.Request): boolean => {
 
 /** Issue the session cookie and its CSRF partner. Called wherever a token is minted. */
 export const setSessionCookies = (res: express.Response, token: string) => {
+    // A browser will happily hold two cookies of the same name — one host-only,
+    // one domain-scoped — and send BOTH. The server would then read whichever
+    // the Cookie header happens to list first while the client echoes the
+    // other, turning a missing CSRF token into a mismatched one. So evict the
+    // host-only pair issued before SESSION_COOKIE_DOMAIN was configured, then
+    // write the scoped pair.
+    if (cookieDomain) {
+        res.clearCookie(SESSION_COOKIE, { ...sharedOptions, httpOnly: true });
+        res.clearCookie(CSRF_COOKIE, { ...sharedOptions, httpOnly: false });
+    }
     res.cookie(SESSION_COOKIE, token, { ...baseOptions, httpOnly: true });
     res.cookie(CSRF_COOKIE, crypto.randomBytes(32).toString('hex'), {
         ...baseOptions,
@@ -114,9 +154,14 @@ export const setSessionCookies = (res: express.Response, token: string) => {
  * stays put.
  */
 export const clearSessionCookies = (res: express.Response) => {
-    const { maxAge, ...rest } = baseOptions;
-    res.clearCookie(SESSION_COOKIE, { ...rest, httpOnly: true });
-    res.clearCookie(CSRF_COOKIE, { ...rest, httpOnly: false });
+    res.clearCookie(SESSION_COOKIE, { ...sharedOptions, ...domainOption, httpOnly: true });
+    res.clearCookie(CSRF_COOKIE, { ...sharedOptions, ...domainOption, httpOnly: false });
+    // Sign-out has to remove the host-only pair too, or a cookie from before
+    // the domain was configured outlives the session it belonged to.
+    if (cookieDomain) {
+        res.clearCookie(SESSION_COOKIE, { ...sharedOptions, httpOnly: true });
+        res.clearCookie(CSRF_COOKIE, { ...sharedOptions, httpOnly: false });
+    }
 };
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
